@@ -65,11 +65,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # The container runs as root while the checkout is owned by another
+          # uid, so git (which gh shells out to) rejects the repo. Mark it safe
+          # and target the repo explicitly so gh doesn't rely on git at all.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           assets="gog-manager-x86_64.AppImage gog-manager-x86_64.AppImage.sha256"
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" $assets --clobber
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" $assets --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$GITHUB_REF_NAME" \
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
               --title "GOG Manager $GITHUB_REF_NAME" \
               --generate-notes \
               $assets
