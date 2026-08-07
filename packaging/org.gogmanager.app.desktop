@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=GOG Manager
+Comment=Install and launch your GOG games
+Exec=gog-manager
+Icon=org.gogmanager.app
+Terminal=false
+Categories=Game;Utility;
+Keywords=gog;games;wine;proton;
+StartupNotify=true

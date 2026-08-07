@@ -1,0 +1,44 @@
+.gog-card {
+  padding: 6px;
+  border-radius: 12px;
+}
+
+.gog-card:hover {
+  background-color: alpha(currentColor, 0.06);
+}
+
+.gog-card-cover {
+  border-radius: 8px;
+  box-shadow: 0 1px 4px alpha(black, 0.35);
+}
+
+.gog-card-title {
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+.gog-badge {
+  font-size: 0.75em;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background-color: alpha(currentColor, 0.12);
+}
+
+.gog-badge-installed {
+  background-color: @success_bg_color;
+  color: @success_fg_color;
+}
+
+.gog-sidebar {
+  padding: 6px;
+}
+
+.gog-detail-title {
+  font-size: 1.6em;
+  font-weight: 700;
+}
+
+.gog-log-view {
+  font-family: monospace;
+  font-size: 0.9em;
+}

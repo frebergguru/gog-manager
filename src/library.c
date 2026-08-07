@@ -1,0 +1,532 @@
+#include "library.h"
+#include "json_util.h"
+#include "text_util.h"
+#include <glib/gstdio.h>
+#include <string.h>
+
+struct _GogLibrary
+{
+  GObject parent_instance;
+  GListStore *store; /* GogGame */
+  char *root_path;
+};
+
+enum
+{
+  SIG_SCAN_PROGRESS,
+  N_SIGNALS,
+};
+
+static guint signals[N_SIGNALS];
+
+G_DEFINE_FINAL_TYPE (GogLibrary, gog_library, G_TYPE_OBJECT)
+
+static void
+gog_library_finalize (GObject *object)
+{
+  GogLibrary *self = GOG_LIBRARY (object);
+  g_clear_object (&self->store);
+  g_free (self->root_path);
+  G_OBJECT_CLASS (gog_library_parent_class)->finalize (object);
+}
+
+static void
+gog_library_class_init (GogLibraryClass *klass)
+{
+  GObjectClass *object_class = G_OBJECT_CLASS (klass);
+  object_class->finalize = gog_library_finalize;
+
+  signals[SIG_SCAN_PROGRESS] =
+      g_signal_new ("scan-progress", G_TYPE_FROM_CLASS (klass), G_SIGNAL_RUN_LAST,
+                     0, NULL, NULL, NULL, G_TYPE_NONE, 2, G_TYPE_DOUBLE, G_TYPE_STRING);
+}
+
+static void
+gog_library_init (GogLibrary *self)
+{
+  self->store = g_list_store_new (GOG_TYPE_GAME);
+}
+
+GogLibrary *
+gog_library_new (void)
+{
+  return g_object_new (GOG_TYPE_LIBRARY, NULL);
+}
+
+GListModel *
+gog_library_get_model (GogLibrary *self)
+{
+  return G_LIST_MODEL (self->store);
+}
+
+GogGame *
+gog_library_find_by_id (GogLibrary *self, gint64 id)
+{
+  guint n = g_list_model_get_n_items (G_LIST_MODEL (self->store));
+  for (guint i = 0; i < n; i++)
+    {
+      GogGame *g = g_list_model_get_item (G_LIST_MODEL (self->store), i);
+      if (gog_game_get_id (g) == id)
+        return g;
+      g_object_unref (g);
+    }
+  return NULL;
+}
+
+GStrv
+gog_library_get_all_languages (GogLibrary *self)
+{
+  GPtrArray *out = g_ptr_array_new ();
+  guint n = g_list_model_get_n_items (G_LIST_MODEL (self->store));
+  for (guint i = 0; i < n; i++)
+    {
+      GogGame *g = g_list_model_get_item (G_LIST_MODEL (self->store), i);
+      for (const char *const *l = gog_game_get_languages (g); l && *l; l++)
+        g_ptr_array_add (out, g_strdup (*l));
+      g_object_unref (g);
+    }
+  g_ptr_array_sort (out, (GCompareFunc) g_strcmp0);
+  for (guint i = 0; i + 1 < out->len;)
+    {
+      if (g_strcmp0 (g_ptr_array_index (out, i), g_ptr_array_index (out, i + 1)) == 0)
+        {
+          g_free (g_ptr_array_index (out, i + 1));
+          g_ptr_array_remove_index (out, i + 1);
+        }
+      else
+        i++;
+    }
+  g_ptr_array_add (out, NULL);
+  return (GStrv) g_ptr_array_free (out, FALSE);
+}
+
+/* ---- disk scanning / parsing helpers ---- */
+
+static char *
+find_prefixed_file (const char *dir, const char *prefix)
+{
+  GDir *d = g_dir_open (dir, 0, NULL);
+  if (!d)
+    return NULL;
+  const char *name;
+  char *found = NULL;
+  while ((name = g_dir_read_name (d)))
+    {
+      if (g_str_has_prefix (name, prefix))
+        {
+          found = g_build_filename (dir, name, NULL);
+          break;
+        }
+    }
+  g_dir_close (d);
+  return found;
+}
+
+static GogOs
+os_from_extension (const char *filename)
+{
+  gchar *lower = g_ascii_strdown (filename, -1);
+  GogOs os = GOG_OS_WINDOWS;
+  if (g_str_has_suffix (lower, ".exe"))
+    os = GOG_OS_WINDOWS;
+  else if (g_str_has_suffix (lower, ".sh"))
+    os = GOG_OS_LINUX;
+  else if (g_str_has_suffix (lower, ".pkg") || g_str_has_suffix (lower, ".dmg"))
+    os = GOG_OS_MAC;
+  g_free (lower);
+  return os;
+}
+
+static gboolean
+is_installer_file (const char *filename)
+{
+  gchar *lower = g_ascii_strdown (filename, -1);
+  gboolean ok = (g_str_has_suffix (lower, ".exe") ||
+                 g_str_has_suffix (lower, ".sh") ||
+                 g_str_has_suffix (lower, ".pkg") ||
+                 g_str_has_suffix (lower, ".dmg")) &&
+                !g_regex_match_simple ("-\\d+\\.bin$", filename, G_REGEX_CASELESS, 0);
+  g_free (lower);
+  return ok;
+}
+
+/* Sum the size of a main installer file plus any split "<stem>-N.bin"
+ * sibling parts (GOG's split InnoSetup archives). */
+static guint64
+installer_total_size (const char *dir, const char *filename)
+{
+  gchar *full = g_build_filename (dir, filename, NULL);
+  GStatBuf st;
+  guint64 total = 0;
+  if (g_stat (full, &st) == 0)
+    total = (guint64) st.st_size;
+  g_free (full);
+
+  const char *dot = strrchr (filename, '.');
+  if (!dot)
+    return total;
+  gchar *stem = g_strndup (filename, (gsize) (dot - filename));
+
+  for (int part = 1; part < 50; part++)
+    {
+      gchar *partname = g_strdup_printf ("%s-%d.bin", stem, part);
+      gchar *partpath = g_build_filename (dir, partname, NULL);
+      if (g_stat (partpath, &st) == 0)
+        total += (guint64) st.st_size;
+      else
+        {
+          g_free (partname);
+          g_free (partpath);
+          break;
+        }
+      g_free (partname);
+      g_free (partpath);
+    }
+  g_free (stem);
+  return total;
+}
+
+/* Find the downloads.installers[] entry that best matches an on-disk
+ * installer file: same OS family, closest total_size. Returns NULL if
+ * installers_arr is empty/absent. */
+static json_object *
+match_json_installer (json_object *installers_arr, GogOs os, guint64 disk_size)
+{
+  if (!installers_arr)
+    return NULL;
+  json_object *best = NULL;
+  guint64 best_diff = G_MAXUINT64;
+  size_t n = json_object_array_length (installers_arr);
+  for (size_t i = 0; i < n; i++)
+    {
+      json_object *entry = json_object_array_get_idx (installers_arr, i);
+      const char *entry_os = ju_get_string (entry, "os", "");
+      GogOs eos = g_strcmp0 (entry_os, "windows") == 0 ? GOG_OS_WINDOWS :
+                  g_strcmp0 (entry_os, "linux") == 0   ? GOG_OS_LINUX :
+                                                          GOG_OS_MAC;
+      if (eos != os)
+        continue;
+      guint64 total = (guint64) ju_get_int64 (entry, "total_size", 0);
+      guint64 diff = total > disk_size ? total - disk_size : disk_size - total;
+      if (diff < best_diff)
+        {
+          best_diff = diff;
+          best = entry;
+        }
+    }
+  return best;
+}
+
+static json_object *
+match_json_bonus (json_object *bonus_arr, guint64 disk_size)
+{
+  if (!bonus_arr)
+    return NULL;
+  json_object *best = NULL;
+  guint64 best_diff = G_MAXUINT64;
+  size_t n = json_object_array_length (bonus_arr);
+  for (size_t i = 0; i < n; i++)
+    {
+      json_object *entry = json_object_array_get_idx (bonus_arr, i);
+      guint64 total = (guint64) ju_get_int64 (entry, "total_size", 0);
+      guint64 diff = total > disk_size ? total - disk_size : disk_size - total;
+      if (diff < best_diff)
+        {
+          best_diff = diff;
+          best = entry;
+        }
+    }
+  return best;
+}
+
+static void
+scan_installers (GogGame *game, const char *dir, json_object *root)
+{
+  json_object *downloads = ju_get_obj (root, "downloads");
+  json_object *installers_arr = ju_get_array (downloads, "installers");
+
+  GDir *d = g_dir_open (dir, 0, NULL);
+  if (!d)
+    return;
+  const char *name;
+  while ((name = g_dir_read_name (d)))
+    {
+      if (!is_installer_file (name))
+        continue;
+
+      GogOs os = os_from_extension (name);
+      guint64 size = installer_total_size (dir, name);
+      json_object *meta = match_json_installer (installers_arr, os, size);
+
+      GogInstallerInfo *info = gog_installer_info_new ();
+      info->os = os;
+      info->file_path = g_build_filename (dir, name, NULL);
+      info->size = size;
+      info->language_code = g_strdup (ju_get_string (meta, "language", "en"));
+      info->language_full = g_strdup (ju_get_string (meta, "language_full", "English"));
+      info->version = g_strdup (ju_get_string (meta, "version", ""));
+      gog_game_add_installer (game, info);
+    }
+  g_dir_close (d);
+}
+
+static void
+scan_extras (GogGame *game, const char *dir, json_object *root)
+{
+  gchar *extras_dir = g_build_filename (dir, "extras", NULL);
+  if (!g_file_test (extras_dir, G_FILE_TEST_IS_DIR))
+    {
+      g_free (extras_dir);
+      return;
+    }
+
+  json_object *downloads = ju_get_obj (root, "downloads");
+  json_object *bonus_arr = ju_get_array (downloads, "bonus_content");
+
+  GDir *d = g_dir_open (extras_dir, 0, NULL);
+  if (!d)
+    {
+      g_free (extras_dir);
+      return;
+    }
+  const char *name;
+  while ((name = g_dir_read_name (d)))
+    {
+      gchar *full = g_build_filename (extras_dir, name, NULL);
+      GStatBuf st;
+      guint64 size = (g_stat (full, &st) == 0) ? (guint64) st.st_size : 0;
+
+      json_object *meta = match_json_bonus (bonus_arr, size);
+
+      GogExtraInfo *info = gog_extra_info_new ();
+      info->file_path = full; /* transfer */
+      info->size = size;
+      info->name = g_strdup (ju_get_string (meta, "name", name));
+      info->type = g_strdup (ju_get_string (meta, "type", "file"));
+      gog_game_add_extra (game, info);
+    }
+  g_dir_close (d);
+  g_free (extras_dir);
+}
+
+static GogGame *
+parse_game_dir (const char *dir_path)
+{
+  gchar *product_json_path = find_prefixed_file (dir_path, "product_");
+  if (!product_json_path)
+    return NULL;
+
+  GError *error = NULL;
+  json_object *root = ju_load_file (product_json_path, &error);
+  g_free (product_json_path);
+  if (!root)
+    {
+      g_warning ("Failed to parse product json in %s: %s", dir_path,
+                 error ? error->message : "unknown error");
+      g_clear_error (&error);
+      return NULL;
+    }
+
+  gchar *basename = g_path_get_basename (dir_path);
+
+  GogGame *game = gog_game_new ();
+  gog_game_set_id (game, ju_get_int64 (root, "id", 0));
+  gog_game_set_slug (game, ju_get_string (root, "slug", basename));
+  gog_game_set_title (game, ju_get_string (root, "title", basename));
+  gog_game_set_folder_path (game, dir_path);
+
+  const char *game_type = ju_get_string (root, "game_type", "game");
+  gog_game_set_product_type (game, g_strcmp0 (game_type, "dlc") == 0 ? GOG_PRODUCT_DLC
+                                                                      : GOG_PRODUCT_GAME);
+
+  json_object *desc = ju_get_obj (root, "description");
+  gchar *plain = text_strip_html (ju_get_string (desc, "full", ""));
+  gog_game_set_description (game, plain);
+  g_free (plain);
+
+  json_object *compat = ju_get_obj (root, "content_system_compatibility");
+  gog_game_set_supports_os (game, GOG_OS_WINDOWS, ju_get_bool (compat, "windows", FALSE));
+  gog_game_set_supports_os (game, GOG_OS_LINUX, ju_get_bool (compat, "linux", FALSE));
+  gog_game_set_supports_os (game, GOG_OS_MAC, ju_get_bool (compat, "osx", FALSE));
+
+  gog_game_set_languages (game, ju_get_languages (root));
+
+  json_object *related = ju_get_array (root, "related_products");
+  if (related)
+    {
+      size_t n = json_object_array_length (related);
+      GArray *ids = g_array_new (FALSE, FALSE, sizeof (gint64));
+      for (size_t i = 0; i < n; i++)
+        {
+          json_object *item = json_object_array_get_idx (related, i);
+          gint64 id = 0;
+          if (json_object_is_type (item, json_type_int))
+            id = json_object_get_int64 (item);
+          else if (json_object_is_type (item, json_type_object))
+            id = ju_get_int64 (item, "id", 0);
+          if (id != 0)
+            g_array_append_val (ids, id);
+        }
+      gog_game_set_related_ids (game, (const gint64 *) ids->data, ids->len);
+      g_array_unref (ids);
+    }
+
+  gchar *icon = find_prefixed_file (dir_path, "icon_");
+  if (icon)
+    gog_game_set_icon_path (game, icon);
+  g_free (icon);
+  gchar *logo = find_prefixed_file (dir_path, "logo_");
+  if (logo)
+    gog_game_set_logo_path (game, logo);
+  g_free (logo);
+
+  scan_installers (game, dir_path, root);
+  scan_extras (game, dir_path, root);
+
+  json_object_put (root);
+  g_free (basename);
+  return game;
+}
+
+/* ---- async scan ---- */
+
+typedef struct
+{
+  char *root_path;
+  GPtrArray *games; /* GogGame*, built on worker thread */
+} ScanData;
+
+static void
+scan_data_free (ScanData *data)
+{
+  g_free (data->root_path);
+  if (data->games)
+    g_ptr_array_unref (data->games);
+  g_free (data);
+}
+
+typedef struct
+{
+  GogLibrary *self; /* borrowed; kept alive by the GTask's ref on source_object */
+  double fraction;
+  gchar *msg;
+} ProgressData;
+
+static gboolean
+emit_progress_idle (gpointer user_data)
+{
+  ProgressData *pd = user_data;
+  g_signal_emit (pd->self, signals[SIG_SCAN_PROGRESS], 0, pd->fraction, pd->msg);
+  g_free (pd->msg);
+  g_free (pd);
+  return G_SOURCE_REMOVE;
+}
+
+static void
+report_progress (GogLibrary *self, double fraction, const char *msg)
+{
+  ProgressData *pd = g_new (ProgressData, 1);
+  pd->self = self;
+  pd->fraction = fraction;
+  pd->msg = g_strdup (msg);
+  g_idle_add (emit_progress_idle, pd);
+}
+
+static void
+scan_thread_func (GTask *task, gpointer source_object, gpointer task_data,
+                   GCancellable *cancellable)
+{
+  GogLibrary *self = GOG_LIBRARY (source_object);
+  ScanData *data = task_data;
+
+  GDir *d = g_dir_open (data->root_path, 0, NULL);
+  if (!d)
+    {
+      g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+                                "Cannot open library directory: %s", data->root_path);
+      return;
+    }
+
+  GPtrArray *entries = g_ptr_array_new_with_free_func (g_free);
+  const char *name;
+  while ((name = g_dir_read_name (d)))
+    g_ptr_array_add (entries, g_build_filename (data->root_path, name, NULL));
+  g_dir_close (d);
+
+  data->games = g_ptr_array_new_with_free_func (g_object_unref);
+
+  for (guint i = 0; i < entries->len; i++)
+    {
+      if (g_cancellable_is_cancelled (cancellable))
+        break;
+
+      const char *path = g_ptr_array_index (entries, i);
+      if (!g_file_test (path, G_FILE_TEST_IS_DIR))
+        continue;
+
+      GogGame *game = parse_game_dir (path);
+      if (game)
+        g_ptr_array_add (data->games, game);
+
+      double fraction = (double) (i + 1) / (double) MAX (entries->len, 1);
+      gchar *msg = g_strdup_printf ("Scanning… %u / %u", i + 1, entries->len);
+      report_progress (self, fraction, msg);
+      g_free (msg);
+    }
+
+  g_ptr_array_unref (entries);
+  g_task_return_boolean (task, TRUE);
+}
+
+void
+gog_library_scan_async (GogLibrary *self, const char *root_path, GCancellable *cancellable,
+                         GAsyncReadyCallback callback, gpointer user_data)
+{
+  GTask *task = g_task_new (self, cancellable, callback, user_data);
+  ScanData *data = g_new0 (ScanData, 1);
+  data->root_path = g_strdup (root_path);
+  g_task_set_task_data (task, data, (GDestroyNotify) scan_data_free);
+  g_task_run_in_thread (task, scan_thread_func);
+  g_object_unref (task);
+}
+
+gboolean
+gog_library_scan_finish (GogLibrary *self, GAsyncResult *result, GError **error)
+{
+  g_return_val_if_fail (g_task_is_valid (result, self), FALSE);
+  GTask *task = G_TASK (result);
+  ScanData *data = g_task_get_task_data (task);
+  gboolean ok = g_task_propagate_boolean (task, error);
+  if (!ok)
+    return FALSE;
+
+  g_list_store_remove_all (self->store);
+  for (guint i = 0; i < data->games->len; i++)
+    g_list_store_append (self->store, g_ptr_array_index (data->games, i));
+
+  /* Resolve DLC -> base game links now that everything is loaded. */
+  guint n = g_list_model_get_n_items (G_LIST_MODEL (self->store));
+  for (guint i = 0; i < n; i++)
+    {
+      GogGame *g = g_list_model_get_item (G_LIST_MODEL (self->store), i);
+      if (gog_game_get_product_type (g) != GOG_PRODUCT_DLC)
+        {
+          g_object_unref (g);
+          continue;
+        }
+      guint nrel = 0;
+      const gint64 *rel = gog_game_get_related_ids (g, &nrel);
+      for (guint r = 0; r < nrel; r++)
+        {
+          GogGame *base = gog_library_find_by_id (self, rel[r]);
+          if (base && gog_game_get_product_type (base) == GOG_PRODUCT_GAME)
+            {
+              gog_game_set_base_game (g, base);
+              break;
+            }
+        }
+      g_object_unref (g);
+    }
+
+  return TRUE;
+}

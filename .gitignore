@@ -1,0 +1,17 @@
+# Meson / Ninja build directories
+/build/
+/build-*/
+
+# AppImage packaging artifacts
+/AppDir/
+/squashfs-root/
+/.appimage-tools/
+*.AppImage
+
+# Local caches / editor / tooling
+/.cache/
+/.claude/
+compile_commands.json
+
+# OS cruft
+.DS_Store
