@@ -70,7 +70,8 @@ meson compile -C build
 
 For a single portable file you can drop into your `GOG/Games` folder, grab the
 latest [**release AppImage**](https://github.com/frebergguru/gog-manager/releases/latest)
-(built by CI, requires glibc ≥ 2.39), or build one yourself:
+(built by CI on current Arch Linux — needs a recent glibc), or build one
+yourself:
 
 ```sh
 ./packaging/build-appimage.sh        # -> gog-manager-x86_64.AppImage

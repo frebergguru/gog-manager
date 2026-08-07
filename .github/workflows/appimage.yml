@@ -3,6 +3,11 @@
 #
 # Build the AppImage on every push/PR (uploaded as a workflow artifact), and
 # publish it to a GitHub Release when a v* tag is pushed.
+#
+# The app uses libadwaita 1.6 APIs (AdwSpinner), which the apt-based Ubuntu
+# runners don't ship, so the build runs inside an Arch Linux container (rolling,
+# always current — matching the project's dev distro). This sets the AppImage's
+# glibc baseline to Arch's current glibc, so it targets recent/rolling distros.
 name: AppImage
 
 on:
@@ -22,21 +27,18 @@ concurrency:
 
 jobs:
   build:
-    # ubuntu-24.04 ships GTK 4.14 + libadwaita 1.5, which the app requires
-    # (AdwDialog / AdwAboutDialog). Note: this sets the AppImage's glibc
-    # baseline to 2.39, so it runs on glibc >= 2.39 distros.
     runs-on: ubuntu-24.04
+    container: archlinux:latest
     steps:
-      - uses: actions/checkout@v4
-
       - name: Install build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential meson ninja-build pkg-config \
-            libgtk-4-dev libadwaita-1-dev libjson-c-dev \
-            patchelf desktop-file-utils librsvg2-common \
-            gtk-update-icon-cache file
+          pacman -Syu --noconfirm --needed \
+            base-devel meson ninja pkgconf \
+            gtk4 libadwaita json-c \
+            patchelf desktop-file-utils librsvg squashfs-tools \
+            wget git github-cli file
+
+      - uses: actions/checkout@v7
 
       - name: Build AppImage
         run: ./packaging/build-appimage.sh
@@ -45,7 +47,7 @@ jobs:
         run: sha256sum gog-manager-x86_64.AppImage | tee gog-manager-x86_64.AppImage.sha256
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gog-manager-x86_64-AppImage
           path: |
