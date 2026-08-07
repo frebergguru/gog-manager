@@ -1,3 +1,7 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (C) 2026 Hypnotize
+ */
+
 #include <adwaita.h>
 #include "ui/main_window.h"
 

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Hypnotize
+
 project('gog-manager', 'c',
   version : '0.1.0',
   license : 'GPL-3.0-or-later',

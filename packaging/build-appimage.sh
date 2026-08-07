@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 #
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Hypnotize
+#
 # Build a self-contained, portable AppImage of GOG Manager.
 #
 # The result is a single executable file — gog-manager-x86_64.AppImage — that

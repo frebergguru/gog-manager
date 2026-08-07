@@ -1,3 +1,7 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (C) 2026 Hypnotize
+ */
+
 #include <glib.h>
 #include <string.h>
 #include "../src/json_util.h"

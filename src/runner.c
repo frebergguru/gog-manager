@@ -1,3 +1,7 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (C) 2026 Hypnotize
+ */
+
 #include "runner.h"
 #include "proton_fetch.h"
 #include <glib/gstdio.h>

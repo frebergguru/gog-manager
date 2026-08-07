@@ -144,7 +144,6 @@ src/
 └── ui/                    GTK widgets (main window, dialogs, detail view)
 
 tests/                     Unit tests (json-util, runner command building)
-Docs/                      Code-review and best-practices documentation
 ```
 
 ---

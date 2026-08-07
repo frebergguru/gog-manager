@@ -1,3 +1,7 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (C) 2026 Hypnotize
+ */
+
 #ifndef GOG_INSTALLER_ENGINE_H
 #define GOG_INSTALLER_ENGINE_H
 

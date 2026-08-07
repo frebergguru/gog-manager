@@ -1,3 +1,7 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (C) 2026 Hypnotize
+ */
+
 #include "proton_fetch_dialog.h"
 #include "../proton_fetch.h"
 

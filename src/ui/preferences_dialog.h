@@ -1,3 +1,7 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (C) 2026 Hypnotize
+ */
+
 #ifndef GOG_PREFERENCES_DIALOG_H
 #define GOG_PREFERENCES_DIALOG_H
 

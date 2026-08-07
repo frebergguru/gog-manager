@@ -1,3 +1,7 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (C) 2026 Hypnotize
+ */
+
 #include "installer_engine.h"
 #include <glib/gstdio.h>
 #include <string.h>

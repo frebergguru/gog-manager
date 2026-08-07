@@ -1,3 +1,7 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (C) 2026 Hypnotize
+ */
+
 #include "main_window.h"
 #include "game_detail.h"
 #include "preferences_dialog.h"
