@@ -1,5 +1,7 @@
 # GOG Manager
 
+[![AppImage](https://github.com/frebergguru/gog-manager/actions/workflows/appimage.yml/badge.svg)](https://github.com/frebergguru/gog-manager/actions/workflows/appimage.yml)
+
 A native GTK4 / libadwaita application for Linux that turns a folder of GOG
 **offline installers** into a browsable library you can install, launch, and
 manage — including Windows-only titles, which it runs transparently through
@@ -66,12 +68,16 @@ meson compile -C build
 ./build/gog-manager
 ```
 
-For a single portable file you can drop into your `GOG/Games` folder, build an
-AppImage instead:
+For a single portable file you can drop into your `GOG/Games` folder, grab the
+latest [**release AppImage**](https://github.com/frebergguru/gog-manager/releases/latest)
+(built by CI, requires glibc ≥ 2.39), or build one yourself:
 
 ```sh
 ./packaging/build-appimage.sh        # -> gog-manager-x86_64.AppImage
 ```
+
+Releases are published automatically when a `v*` tag is pushed — e.g.
+`git tag v0.1.0 && git push origin v0.1.0`.
 
 Full details, per-distro dependencies, the AppImage packaging, and
 troubleshooting are in [Compiling.md](Compiling.md).
