@@ -16,6 +16,7 @@ struct _GogGame
   gchar *icon_path;
   gchar *logo_path;
   gchar *description;
+  gchar *serials;
 
   gboolean supports_os[3];
   GStrv languages;
@@ -92,6 +93,7 @@ gog_game_finalize (GObject *object)
   g_free (self->icon_path);
   g_free (self->logo_path);
   g_free (self->description);
+  g_free (self->serials);
   g_strfreev (self->languages);
   if (self->related_ids)
     g_array_unref (self->related_ids);
@@ -237,6 +239,19 @@ gog_game_set_description (GogGame *self, const char *text)
 {
   g_free (self->description);
   self->description = g_strdup (text);
+}
+
+const char *
+gog_game_get_serials (GogGame *self)
+{
+  return self->serials;
+}
+
+void
+gog_game_set_serials (GogGame *self, const char *text)
+{
+  g_free (self->serials);
+  self->serials = g_strdup (text);
 }
 
 gboolean

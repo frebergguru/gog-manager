@@ -78,6 +78,9 @@ const char   *gog_game_get_logo_path (GogGame *self);
 void          gog_game_set_logo_path (GogGame *self, const char *path);
 const char   *gog_game_get_description (GogGame *self);
 void          gog_game_set_description (GogGame *self, const char *text);
+/* Contents of the product folder's serials.txt (CD keys), or NULL. */
+const char   *gog_game_get_serials (GogGame *self);
+void          gog_game_set_serials (GogGame *self, const char *text);
 
 gboolean gog_game_get_supports_os (GogGame *self, GogOs os);
 void     gog_game_set_supports_os (GogGame *self, GogOs os, gboolean supported);

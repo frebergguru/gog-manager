@@ -73,3 +73,9 @@ test_runner_exe = executable('test-runner-cmdline',
   dependencies : test_deps,
 )
 test('runner-cmdline', test_runner_exe)
+
+test_library_exe = executable('test-library',
+  ['tests/test_library.c', 'src/library.c'] + test_support_sources,
+  dependencies : test_deps,
+)
+test('library', test_library_exe)

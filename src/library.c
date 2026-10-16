@@ -190,6 +190,52 @@ installer_total_size (const char *dir, const char *filename)
   return total;
 }
 
+/* Reads <dir>/serials.txt (name matched case-insensitively), the CD keys
+ * GOG lists for some products. Returns trimmed, valid UTF-8, or NULL if
+ * there is none. */
+static gchar *
+read_serials (const char *dir)
+{
+  GDir *d = g_dir_open (dir, 0, NULL);
+  if (!d)
+    return NULL;
+  const char *name;
+  gchar *path = NULL;
+  while (!path && (name = g_dir_read_name (d)))
+    if (g_ascii_strcasecmp (name, "serials.txt") == 0)
+      path = g_build_filename (dir, name, NULL);
+  g_dir_close (d);
+  if (!path)
+    return NULL;
+
+  gchar *contents = NULL;
+  gsize len = 0;
+  gboolean ok = g_file_get_contents (path, &contents, &len, NULL);
+  g_free (path);
+  if (!ok)
+    return NULL;
+  if (len > 64 * 1024) /* a key list, not a document; don't load junk */
+    {
+      g_free (contents);
+      return NULL;
+    }
+
+  gchar *valid = g_utf8_make_valid (contents, (gssize) len);
+  g_free (contents);
+  /* Windows line endings would show up as stray characters. */
+  gchar **lines = g_strsplit (valid, "\r\n", -1);
+  gchar *joined = g_strjoinv ("\n", lines);
+  g_strfreev (lines);
+  g_free (valid);
+  g_strstrip (joined);
+  if (!*joined)
+    {
+      g_free (joined);
+      return NULL;
+    }
+  return joined;
+}
+
 /* Find the downloads.installers[] entry that best matches an on-disk
  * installer file: same OS family, closest total_size. Returns NULL if
  * installers_arr is empty/absent. */
@@ -383,6 +429,10 @@ parse_game_dir (const char *dir_path)
   if (logo)
     gog_game_set_logo_path (game, logo);
   g_free (logo);
+
+  gchar *serials = read_serials (dir_path);
+  gog_game_set_serials (game, serials);
+  g_free (serials);
 
   scan_installers (game, dir_path, root);
   scan_extras (game, dir_path, root);

@@ -24,6 +24,8 @@ struct _GogGameDetail
   GtkLabel *badges_label;
   GtkBox *action_box;
   GtkLabel *description_label;
+  GtkWidget *serials_group;
+  GtkLabel *serials_label;
   GtkBox *extras_box;
   GtkBox *dlc_box;
   AdwToastOverlay *toast_overlay;
@@ -247,6 +249,18 @@ open_extra_file (GtkWidget *button, const char *path)
 }
 
 static void
+on_copy_serials_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  GogGameDetail *self = user_data;
+  const char *serials = self->game ? gog_game_get_serials (self->game) : NULL;
+  if (!serials)
+    return;
+  gdk_clipboard_set_text (gtk_widget_get_clipboard (GTK_WIDGET (self)), serials);
+  toast (self, "Serial keys copied");
+}
+
+static void
 clear_box (GtkBox *box)
 {
   GtkWidget *child;
@@ -434,6 +448,10 @@ refresh (GogGameDetail *self)
   else
     gtk_picture_set_filename (self->logo, NULL);
 
+  const char *serials = gog_game_get_serials (self->game);
+  gtk_label_set_label (self->serials_label, serials ? serials : "");
+  gtk_widget_set_visible (self->serials_group, serials != NULL);
+
   gtk_label_set_label (self->description_label,
                         gog_game_get_description (self->game) ? gog_game_get_description (self->game)
                                                                 : "");
@@ -491,6 +509,31 @@ gog_game_detail_new (GtkWindow *parent_window, GogLibrary *library, GogConfig *c
 
   self->action_box = GTK_BOX (gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8));
   gtk_box_append (GTK_BOX (content), GTK_WIDGET (self->action_box));
+
+  /* Serial keys from serials.txt, shown verbatim (the file labels each key
+   * itself, e.g. "Doom 3:" followed by the key). Hidden when there are none. */
+  self->serials_group = adw_preferences_group_new ();
+  adw_preferences_group_set_title (ADW_PREFERENCES_GROUP (self->serials_group), "Serial Keys");
+  GtkWidget *copy_btn = gtk_button_new_from_icon_name ("edit-copy-symbolic");
+  gtk_widget_add_css_class (copy_btn, "flat");
+  gtk_widget_set_valign (copy_btn, GTK_ALIGN_CENTER);
+  gtk_widget_set_tooltip_text (copy_btn, "Copy serial keys");
+  gtk_accessible_update_property (GTK_ACCESSIBLE (copy_btn), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                  "Copy serial keys", -1);
+  g_signal_connect (copy_btn, "clicked", G_CALLBACK (on_copy_serials_clicked), self);
+  adw_preferences_group_set_header_suffix (ADW_PREFERENCES_GROUP (self->serials_group), copy_btn);
+  self->serials_label = GTK_LABEL (gtk_label_new (NULL));
+  gtk_label_set_selectable (self->serials_label, TRUE);
+  gtk_label_set_wrap (self->serials_label, TRUE);
+  gtk_label_set_wrap_mode (self->serials_label, PANGO_WRAP_WORD_CHAR);
+  gtk_label_set_xalign (self->serials_label, 0.0);
+  gtk_widget_add_css_class (GTK_WIDGET (self->serials_label), "monospace");
+  gtk_widget_add_css_class (GTK_WIDGET (self->serials_label), "card");
+  gtk_widget_add_css_class (GTK_WIDGET (self->serials_label), "gog-serials");
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (self->serials_group),
+                             GTK_WIDGET (self->serials_label));
+  gtk_widget_set_visible (self->serials_group, FALSE);
+  gtk_box_append (GTK_BOX (content), self->serials_group);
 
   AdwViewStack *stack = ADW_VIEW_STACK (adw_view_stack_new ());
   GtkWidget *switcher = adw_view_switcher_new ();

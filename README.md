@@ -33,6 +33,8 @@ a directory of installers you already own (the `.exe`/`.bin` files and their
 - **DLC & extras** — links DLC products to their base game and installs them
   into the base game's directory; surfaces bonus `extras/` content
   (manuals, soundtracks, wallpapers) per game.
+- **Serial keys** — shows the keys from a product folder's `serials.txt`
+  (for games that need a CD key) on the game's page, with a copy button.
 - **Launch & maintenance** — launches installed games via their GOG manifest
   (with native `start.sh` / `*.exe` fallbacks), and offers `winecfg` / `regedit`
   on a game's existing prefix for Wine installs.
@@ -105,6 +107,7 @@ Games/
 │   ├── product_1207658901.json
 │   ├── icon_1207658901.png        (optional, shown on the card)
 │   ├── logo_1207658901.jpg        (optional, shown on the detail page)
+│   ├── serials.txt                (optional, CD keys shown on the detail page)
 │   └── extras/
 │       └── soundtrack.zip
 └── Another Game/
