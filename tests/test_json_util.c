@@ -83,6 +83,14 @@ test_strip_html_empty (void)
   g_free (out);
 }
 
+static void
+test_strip_html_numeric_entities (void)
+{
+  gchar *out = text_strip_html ("It&#8217;s &#x41;&#66; &#xZZ; &#0;");
+  g_assert_cmpstr (out, ==, "It\xE2\x80\x99s AB &#xZZ; &#0;");
+  g_free (out);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -94,5 +102,6 @@ main (int argc, char *argv[])
   g_test_add_func ("/text_util/strip_html_basic", test_strip_html_basic);
   g_test_add_func ("/text_util/strip_html_list", test_strip_html_list);
   g_test_add_func ("/text_util/strip_html_empty", test_strip_html_empty);
+  g_test_add_func ("/text_util/strip_html_numeric_entities", test_strip_html_numeric_entities);
   return g_test_run ();
 }

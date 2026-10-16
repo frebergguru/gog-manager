@@ -17,7 +17,7 @@ struct _GogGameDetail
   GogConfig *config;
   GogState *state;
 
-  GogGame *game; /* borrowed */
+  GogGame *game; /* owned (reffed): a rescan replaces the library's objects */
 
   GtkPicture *logo;
   GtkLabel *title_label;
@@ -40,8 +40,17 @@ static guint detail_signals[N_SIGNALS];
 G_DEFINE_FINAL_TYPE (GogGameDetail, gog_game_detail, GTK_TYPE_BOX)
 
 static void
+gog_game_detail_dispose (GObject *object)
+{
+  GogGameDetail *self = GOG_GAME_DETAIL (object);
+  g_clear_object (&self->game);
+  G_OBJECT_CLASS (gog_game_detail_parent_class)->dispose (object);
+}
+
+static void
 gog_game_detail_class_init (GogGameDetailClass *klass)
 {
+  G_OBJECT_CLASS (klass)->dispose = gog_game_detail_dispose;
   detail_signals[SIG_CHANGED] =
       g_signal_new (GOG_GAME_DETAIL_SIGNAL_CHANGED, G_TYPE_FROM_CLASS (klass), G_SIGNAL_RUN_LAST,
                     0, NULL, NULL, NULL, G_TYPE_NONE, 0);
@@ -114,18 +123,52 @@ on_uninstall_response (GObject *source, GAsyncResult *res, gpointer user_data)
   if (g_strcmp0 (response, "uninstall") != 0)
     return;
 
+  gchar *removed_path = g_strdup (gog_game_get_install_path (self->game));
+  gboolean is_dlc_record = gog_game_get_base_game (self->game) &&
+                           g_strcmp0 (gog_game_get_install_path (gog_game_get_base_game (self->game)),
+                                      removed_path) == 0;
+
   GError *error = NULL;
   if (!gog_uninstall_game (self->game, &error))
     {
       toast (self, error ? error->message : "Uninstall failed");
       g_clear_error (&error);
+      g_free (removed_path);
       return;
     }
   gog_state_remove (self->state, gog_game_get_id (self->game));
+
+  /* DLC installed into this game's directory went with it. */
+  if (!is_dlc_record && removed_path)
+    {
+      GListModel *model = gog_library_get_model (self->library);
+      guint n = g_list_model_get_n_items (model);
+      for (guint i = 0; i < n; i++)
+        {
+          GogGame *g = g_list_model_get_item (model, i);
+          if (g != self->game && gog_game_get_installed (g) &&
+              g_strcmp0 (gog_game_get_install_path (g), removed_path) == 0)
+            {
+              gog_game_set_installed (g, FALSE);
+              gog_game_set_install_path (g, NULL);
+              gog_game_set_runner_kind (g, GOG_RUNNER_NONE);
+              gog_game_set_runner_path (g, NULL);
+              gog_game_set_prefix_path (g, NULL);
+              gog_state_remove (self->state, gog_game_get_id (g));
+            }
+          g_object_unref (g);
+        }
+    }
+  g_free (removed_path);
+
   GError *save_err = NULL;
-  gog_state_save (self->state, &save_err);
-  g_clear_error (&save_err);
-  toast (self, "Uninstalled");
+  if (!gog_state_save (self->state, &save_err))
+    {
+      toast (self, save_err->message);
+      g_clear_error (&save_err);
+      return;
+    }
+  toast (self, is_dlc_record ? "DLC marked as not installed" : "Uninstalled");
   refresh (self);
   emit_changed (self);
 }
@@ -135,10 +178,19 @@ on_uninstall_clicked (GtkButton *button, gpointer user_data)
 {
   (void) button;
   GogGameDetail *self = user_data;
+  GogGame *base = gog_game_get_base_game (self->game);
+  gboolean is_dlc_record = base && g_strcmp0 (gog_game_get_install_path (base),
+                                              gog_game_get_install_path (self->game)) == 0;
   AdwAlertDialog *dialog = ADW_ALERT_DIALOG (
-      adw_alert_dialog_new ("Uninstall Game?",
-                             "This removes the installed game files (and its Wine/Proton prefix, "
-                             "if any) from disk. The original installer files are not affected."));
+      is_dlc_record
+          ? adw_alert_dialog_new ("Uninstall DLC?",
+                                  "This DLC was installed into its base game's folder and its "
+                                  "files can't be separated from the game's, so they stay on disk. "
+                                  "It will only be marked as not installed.")
+          : adw_alert_dialog_new ("Uninstall Game?",
+                                  "This removes the installed game files (and its Wine/Proton "
+                                  "prefix, if any) from disk, including any DLC installed into "
+                                  "it. The original installer files are not affected."));
   adw_alert_dialog_add_responses (dialog, "cancel", "Cancel", "uninstall", "Uninstall", NULL);
   adw_alert_dialog_set_response_appearance (dialog, "uninstall", ADW_RESPONSE_DESTRUCTIVE);
   adw_alert_dialog_set_default_response (dialog, "cancel");
@@ -223,6 +275,8 @@ build_action_row (GogGameDetail *self)
 
       GtkWidget *reveal = gtk_button_new_from_icon_name ("folder-open-symbolic");
       gtk_widget_set_tooltip_text (reveal, "Show installed files");
+      gtk_accessible_update_property (GTK_ACCESSIBLE (reveal), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                      "Show installed files", -1);
       g_signal_connect (reveal, "clicked", G_CALLBACK (on_reveal_clicked), self);
       gtk_box_append (self->action_box, reveal);
 
@@ -287,6 +341,11 @@ build_extras (GogGameDetail *self)
       adw_action_row_set_subtitle (ADW_ACTION_ROW (row), subtitle);
       GtkWidget *open_btn = gtk_button_new_from_icon_name ("document-open-symbolic");
       gtk_widget_set_valign (open_btn, GTK_ALIGN_CENTER);
+      gchar *open_label = g_strdup_printf ("Open %s", extra->name);
+      gtk_widget_set_tooltip_text (open_btn, open_label);
+      gtk_accessible_update_property (GTK_ACCESSIBLE (open_btn), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                      open_label, -1);
+      g_free (open_label);
       gtk_widget_add_css_class (open_btn, "flat");
       g_signal_connect_data (open_btn, "clicked", G_CALLBACK (open_extra_file),
                               g_strdup (extra->file_path), extra_path_closure_notify, 0);
@@ -307,7 +366,7 @@ build_dlc (GogGameDetail *self)
   for (guint i = 0; i < n; i++)
     {
       GogGame *g = g_list_model_get_item (gog_library_get_model (self->library), i);
-      g_object_unref (g);
+      g_object_unref (g); /* the store keeps it alive */
       if (gog_game_get_base_game (g) != self->game)
         continue;
       found++;
@@ -329,7 +388,7 @@ build_dlc (GogGameDetail *self)
               gtk_widget_add_css_class (btn, "suggested-action");
               g_object_set_data (G_OBJECT (btn), "installer", info);
               /* DLC installs target this game's own record (g), not self->game. */
-              g_object_set_data (G_OBJECT (btn), "dlc-game", g);
+              g_object_set_data_full (G_OBJECT (btn), "dlc-game", g_object_ref (g), g_object_unref);
               g_signal_connect (btn, "clicked", G_CALLBACK (on_install_clicked), self);
               adw_action_row_add_suffix (ADW_ACTION_ROW (row), btn);
             }
@@ -462,6 +521,6 @@ gog_game_detail_new (GtkWindow *parent_window, GogLibrary *library, GogConfig *c
 void
 gog_game_detail_set_game (GogGameDetail *self, GogGame *game)
 {
-  self->game = game;
+  g_set_object (&self->game, game);
   refresh (self);
 }

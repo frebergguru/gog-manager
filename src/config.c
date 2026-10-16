@@ -178,6 +178,12 @@ gog_state_load (void)
   gchar *path = state_file ();
   json_object *root = ju_load_file (path, NULL);
   g_free (path);
+  if (root && !json_object_is_type (root, json_type_object))
+    {
+      g_warning ("Ignoring malformed install state file (top level is not an object)");
+      json_object_put (root);
+      root = NULL;
+    }
   if (!root)
     root = json_object_new_object ();
   state->root = root;

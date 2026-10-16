@@ -18,6 +18,7 @@ struct _GogMainWindow
   GogState *state;
 
   GtkStack *root_stack; /* "empty" | "loading" | "browse" */
+  AdwStatusPage *empty_page;
   GtkLabel *loading_label;
   GtkProgressBar *loading_progress;
 
@@ -49,6 +50,10 @@ struct _GogMainWindow
    * every filter/sort callback on this so those early, spurious signals
    * are no-ops instead of dereferencing not-yet-created objects. */
   gboolean ready;
+
+  gboolean scanning;       /* a scan is in flight; don't start a second one */
+  gboolean rescan_pending; /* start_scan() was called during a scan */
+  GCancellable *scan_cancellable;
 };
 
 G_DEFINE_FINAL_TYPE (GogMainWindow, gog_main_window, ADW_TYPE_APPLICATION_WINDOW)
@@ -183,6 +188,17 @@ on_sort_changed (GtkWidget *widget, gpointer user_data)
  * signature is (object, pspec, user_data) -- one more argument than the
  * "toggled"/"search-changed" handlers above. These thin wrappers carry the
  * correct signature so user_data is genuinely 'self' and not the GParamSpec. */
+/* Install/uninstall changed a game's status, which is both a filter and a
+ * sort key. */
+static void
+on_detail_changed (GogGameDetail *detail, gpointer user_data)
+{
+  (void) detail;
+  GogMainWindow *self = user_data;
+  on_filters_changed (NULL, self);
+  on_sort_changed (NULL, self);
+}
+
 static void
 on_filter_dropdown_changed (GObject *object, GParamSpec *pspec, gpointer user_data)
 {
@@ -337,17 +353,49 @@ on_scan_progress (GogLibrary *library, gdouble fraction, const gchar *message, g
   gtk_label_set_label (self->loading_label, message);
 }
 
+#define EMPTY_PAGE_DESCRIPTION                                                                \
+  "By default the current folder is scanned. "                                              \
+  "Choose the folder containing your downloaded GOG games, "                                \
+  "or set one permanently in Preferences."
+
 static void
 on_scan_done (GObject *source, GAsyncResult *res, gpointer user_data)
 {
   (void) source;
-  GogMainWindow *self = user_data;
+  GogMainWindow *self = user_data; /* reffed by start_scan() */
+  self->scanning = FALSE;
+  g_clear_object (&self->scan_cancellable);
+
+  if (gtk_widget_in_destruction (GTK_WIDGET (self)))
+    {
+      g_object_unref (self);
+      return;
+    }
+
+  if (self->rescan_pending)
+    {
+      /* The library path changed (or Rescan was pressed) mid-scan; this
+       * result is stale. */
+      self->rescan_pending = FALSE;
+      gog_library_scan_finish (self->library, res, NULL);
+      start_scan (self);
+      g_object_unref (self);
+      return;
+    }
+
   GError *error = NULL;
   if (!gog_library_scan_finish (self->library, res, &error))
     {
-      gtk_label_set_label (self->loading_label,
-                            error ? error->message : "Failed to scan library.");
+      /* Don't leave the spinner running forever: offer the folder picker,
+       * with the reason. */
+      gchar *desc = g_strdup_printf ("%s\n\n" EMPTY_PAGE_DESCRIPTION,
+                                     error ? error->message : "Failed to scan library.");
+      adw_status_page_set_title (self->empty_page, "Could Not Scan Library");
+      adw_status_page_set_description (self->empty_page, desc);
+      g_free (desc);
       g_clear_error (&error);
+      gtk_stack_set_visible_child_name (self->root_stack, "empty");
+      g_object_unref (self);
       return;
     }
 
@@ -355,31 +403,51 @@ on_scan_done (GObject *source, GAsyncResult *res, gpointer user_data)
   for (guint i = 0; i < n; i++)
     {
       GogGame *g = g_list_model_get_item (gog_library_get_model (self->library), i);
-      g_object_unref (g);
       gog_state_apply_to_game (self->state, g);
+      g_object_unref (g);
     }
 
   if (n == 0)
     {
       /* Nothing here — most likely the app was launched somewhere that isn't a
        * GOG games folder. Offer the folder picker rather than an empty list. */
+      adw_status_page_set_title (self->empty_page, "No Games Found Here");
+      adw_status_page_set_description (self->empty_page, EMPTY_PAGE_DESCRIPTION);
       gtk_stack_set_visible_child_name (self->root_stack, "empty");
+      g_object_unref (self);
       return;
     }
 
   populate_language_dropdown (self);
-  update_count_label (self);
+  /* Re-filter/re-sort: install state was applied after the models saw the
+   * new items. */
+  on_filters_changed (NULL, self);
+  on_sort_changed (NULL, self);
   gtk_stack_set_visible_child_name (self->root_stack, "browse");
+  g_object_unref (self);
 }
 
 static void
 start_scan (GogMainWindow *self)
 {
+  if (self->scanning)
+    {
+      self->rescan_pending = TRUE;
+      return;
+    }
+  self->scanning = TRUE;
+
+  /* The scan replaces every game object; don't leave a detail page open on
+   * one that is about to be dropped from the library. */
+  adw_navigation_view_pop_to_tag (self->nav_view, "library");
+
   gtk_stack_set_visible_child_name (self->root_stack, "loading");
   gtk_progress_bar_set_fraction (self->loading_progress, 0.0);
   gtk_label_set_label (self->loading_label, "Scanning library…");
   gchar *path = gog_config_effective_library_path (self->config);
-  gog_library_scan_async (self->library, path, NULL, on_scan_done, self);
+  self->scan_cancellable = g_cancellable_new ();
+  gog_library_scan_async (self->library, path, self->scan_cancellable, on_scan_done,
+                          g_object_ref (self));
   g_free (path);
 }
 
@@ -411,13 +479,14 @@ prompt_for_library (GogMainWindow *self)
   GtkFileDialog *dialog = gtk_file_dialog_new ();
   gtk_file_dialog_set_title (dialog, "Choose Your GOG Games Directory");
 
-  const char *guess = "/run/media/hypnotize/Games/GOG/Games";
+  gchar *guess = gog_config_effective_library_path (self->config);
   if (g_file_test (guess, G_FILE_TEST_IS_DIR))
     {
       GFile *initial = g_file_new_for_path (guess);
       gtk_file_dialog_set_initial_folder (dialog, initial);
       g_object_unref (initial);
     }
+  g_free (guess);
 
   gtk_file_dialog_select_folder (dialog, GTK_WINDOW (self), NULL, on_choose_library_response, self);
   g_object_unref (dialog);
@@ -462,7 +531,8 @@ on_about_clicked (GtkButton *button, gpointer user_data)
   (void) button;
   GogMainWindow *self = user_data;
   AdwDialog *about = g_object_new (ADW_TYPE_ABOUT_DIALOG, "application-name", "GOG Library Manager",
-                                    "version", "0.1.0", "developer-name", "You",
+                                    "application-icon", "org.gogmanager.app",
+                                    "version", GOG_MANAGER_VERSION, "developer-name", "Hypnotize",
                                     "comments",
                                     "Browse, sort, and install your local GOG offline installers "
                                     "— Windows titles via Wine or Proton, Linux titles natively.",
@@ -498,6 +568,14 @@ on_nav_visible_page_changed (GObject *nav_view, GParamSpec *pspec, gpointer user
 }
 
 /* ---------------- construction ---------------- */
+
+/* Icon-only controls need a name for screen readers; a tooltip alone is
+ * only a description. */
+static void
+set_accessible_label (GtkWidget *widget, const char *label)
+{
+  gtk_accessible_update_property (GTK_ACCESSIBLE (widget), GTK_ACCESSIBLE_PROPERTY_LABEL, label, -1);
+}
 
 static GtkWidget *
 build_sidebar (GogMainWindow *self)
@@ -536,6 +614,7 @@ build_sidebar (GogMainWindow *self)
   gtk_widget_set_halign (lang_heading, GTK_ALIGN_START);
   gtk_box_append (GTK_BOX (box), lang_heading);
   self->language_dropdown = GTK_DROP_DOWN (gtk_drop_down_new (NULL, NULL));
+  set_accessible_label (GTK_WIDGET (self->language_dropdown), "Language");
   gtk_box_append (GTK_BOX (box), GTK_WIDGET (self->language_dropdown));
   g_signal_connect (self->language_dropdown, "notify::selected", G_CALLBACK (on_filter_dropdown_changed), self);
 
@@ -546,6 +625,7 @@ build_sidebar (GogMainWindow *self)
   GtkStringList *status_list = gtk_string_list_new ((const char *[]) { "All games", "Installed",
                                                                         "Not installed", NULL });
   self->status_dropdown = GTK_DROP_DOWN (gtk_drop_down_new (G_LIST_MODEL (status_list), NULL));
+  set_accessible_label (GTK_WIDGET (self->status_dropdown), "Status");
   gtk_box_append (GTK_BOX (box), GTK_WIDGET (self->status_dropdown));
   g_signal_connect (self->status_dropdown, "notify::selected", G_CALLBACK (on_filter_dropdown_changed), self);
 
@@ -556,6 +636,7 @@ build_sidebar (GogMainWindow *self)
   GtkStringList *sort_list = gtk_string_list_new (
       (const char *[]) { "Title A–Z", "Title Z–A", "Installed first", "Size (largest)", NULL });
   self->sort_dropdown = GTK_DROP_DOWN (gtk_drop_down_new (G_LIST_MODEL (sort_list), NULL));
+  set_accessible_label (GTK_WIDGET (self->sort_dropdown), "Sort By");
   gtk_box_append (GTK_BOX (box), GTK_WIDGET (self->sort_dropdown));
   g_signal_connect (self->sort_dropdown, "notify::selected", G_CALLBACK (on_sort_dropdown_changed), self);
 
@@ -569,32 +650,39 @@ build_header_bar (GogMainWindow *self)
 
   self->back_button = GTK_BUTTON (gtk_button_new_from_icon_name ("go-previous-symbolic"));
   gtk_widget_set_tooltip_text (GTK_WIDGET (self->back_button), "Back to Library");
+  set_accessible_label (GTK_WIDGET (self->back_button), "Back to Library");
   gtk_widget_set_visible (GTK_WIDGET (self->back_button), FALSE);
   g_signal_connect (self->back_button, "clicked", G_CALLBACK (on_back_clicked), self);
   adw_header_bar_pack_start (ADW_HEADER_BAR (header), GTK_WIDGET (self->back_button));
 
   GtkWidget *sidebar_toggle = gtk_button_new_from_icon_name ("sidebar-show-symbolic");
+  gtk_widget_set_tooltip_text (sidebar_toggle, "Show or Hide Filters");
+  set_accessible_label (sidebar_toggle, "Show or Hide Filters");
   g_signal_connect (sidebar_toggle, "clicked", G_CALLBACK (on_sidebar_toggle_clicked), self);
   adw_header_bar_pack_start (ADW_HEADER_BAR (header), sidebar_toggle);
 
   self->search_entry = GTK_SEARCH_ENTRY (gtk_search_entry_new ());
   gtk_widget_set_size_request (GTK_WIDGET (self->search_entry), 260, -1);
   gtk_search_entry_set_placeholder_text (self->search_entry, "Search your library…");
+  set_accessible_label (GTK_WIDGET (self->search_entry), "Search your library");
   g_signal_connect (self->search_entry, "search-changed", G_CALLBACK (on_filters_changed), self);
   adw_header_bar_set_title_widget (ADW_HEADER_BAR (header), GTK_WIDGET (self->search_entry));
 
   GtkWidget *rescan_btn = gtk_button_new_from_icon_name ("view-refresh-symbolic");
   gtk_widget_set_tooltip_text (rescan_btn, "Rescan Library");
+  set_accessible_label (rescan_btn, "Rescan Library");
   g_signal_connect (rescan_btn, "clicked", G_CALLBACK (on_rescan_clicked), self);
   adw_header_bar_pack_end (ADW_HEADER_BAR (header), rescan_btn);
 
   GtkWidget *about_btn = gtk_button_new_from_icon_name ("help-about-symbolic");
   gtk_widget_set_tooltip_text (about_btn, "About");
+  set_accessible_label (about_btn, "About");
   g_signal_connect (about_btn, "clicked", G_CALLBACK (on_about_clicked), self);
   adw_header_bar_pack_end (ADW_HEADER_BAR (header), about_btn);
 
   GtkWidget *prefs_btn = gtk_button_new_from_icon_name ("preferences-system-symbolic");
   gtk_widget_set_tooltip_text (prefs_btn, "Preferences");
+  set_accessible_label (prefs_btn, "Preferences");
   g_signal_connect (prefs_btn, "clicked", G_CALLBACK (on_preferences_clicked), self);
   adw_header_bar_pack_end (ADW_HEADER_BAR (header), prefs_btn);
 
@@ -602,9 +690,32 @@ build_header_bar (GogMainWindow *self)
 }
 
 static void
+gog_main_window_dispose (GObject *object)
+{
+  GogMainWindow *self = GOG_MAIN_WINDOW (object);
+  if (self->scan_cancellable)
+    g_cancellable_cancel (self->scan_cancellable);
+  if (self->library)
+    g_signal_handlers_disconnect_by_data (self->library, self);
+  G_OBJECT_CLASS (gog_main_window_parent_class)->dispose (object);
+}
+
+static void
+gog_main_window_finalize (GObject *object)
+{
+  GogMainWindow *self = GOG_MAIN_WINDOW (object);
+  g_clear_object (&self->library);
+  gog_config_free (self->config);
+  gog_state_free (self->state);
+  G_OBJECT_CLASS (gog_main_window_parent_class)->finalize (object);
+}
+
+static void
 gog_main_window_class_init (GogMainWindowClass *klass)
 {
-  (void) klass;
+  GObjectClass *object_class = G_OBJECT_CLASS (klass);
+  object_class->dispose = gog_main_window_dispose;
+  object_class->finalize = gog_main_window_finalize;
 }
 
 static void
@@ -636,12 +747,10 @@ gog_main_window_new (GtkApplication *app)
 
   /* --- empty page (no library path chosen yet) --- */
   GtkWidget *empty_page = adw_status_page_new ();
+  self->empty_page = ADW_STATUS_PAGE (empty_page);
   adw_status_page_set_icon_name (ADW_STATUS_PAGE (empty_page), "folder-symbolic");
   adw_status_page_set_title (ADW_STATUS_PAGE (empty_page), "No Games Found Here");
-  adw_status_page_set_description (ADW_STATUS_PAGE (empty_page),
-                                    "By default the current folder is scanned. "
-                                    "Choose the folder containing your downloaded GOG games, "
-                                    "or set one permanently in Preferences.");
+  adw_status_page_set_description (ADW_STATUS_PAGE (empty_page), EMPTY_PAGE_DESCRIPTION);
   GtkWidget *choose_btn = gtk_button_new_with_label ("Choose Folder…");
   gtk_widget_add_css_class (choose_btn, "suggested-action");
   gtk_widget_add_css_class (choose_btn, "pill");
@@ -700,8 +809,7 @@ gog_main_window_new (GtkApplication *app)
 
   /* detail page */
   self->detail = gog_game_detail_new (GTK_WINDOW (self), self->library, self->config, self->state);
-  g_signal_connect_swapped (self->detail, GOG_GAME_DETAIL_SIGNAL_CHANGED,
-                             G_CALLBACK (on_filters_changed), self);
+  g_signal_connect (self->detail, GOG_GAME_DETAIL_SIGNAL_CHANGED, G_CALLBACK (on_detail_changed), self);
   AdwNavigationPage *detail_page =
       adw_navigation_page_new_with_tag (GTK_WIDGET (self->detail), "Details", "detail");
   adw_navigation_view_add (self->nav_view, detail_page);

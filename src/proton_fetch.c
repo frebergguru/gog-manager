@@ -8,6 +8,7 @@
 #include <glib/gstdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
 
 #define RELEASES_API_URL \
   "https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases/latest"
@@ -188,6 +189,10 @@ run_capture (GogProtonFetchJob *job, gchar **argv, gchar **out_output, GError **
 
   g_mutex_lock (&job->proc_mutex);
   job->current_proc = proc;
+  /* A cancel that landed between the check above and the spawn would
+   * otherwise miss this process. */
+  if (job->cancelled)
+    g_subprocess_force_exit (proc);
   g_mutex_unlock (&job->proc_mutex);
 
   gchar *output = NULL;
@@ -282,6 +287,14 @@ fetch_sync (GogProtonFetchJob *job, GError **error)
                    "GitHub's response did not include a release tag");
       return FALSE;
     }
+  /* The tag becomes a directory name under the tools dir. */
+  if (!*tag || strchr (tag, '/') || g_strcmp0 (tag, ".") == 0 || g_strcmp0 (tag, "..") == 0)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                   "GitHub returned an unexpected release tag: %s", tag);
+      json_object_put (root);
+      return FALSE;
+    }
   gchar *tag_dup = g_strdup (tag);
 
   gchar *tools_dir = proton_fetch_get_tools_dir ();
@@ -337,11 +350,17 @@ fetch_sync (GogProtonFetchJob *job, GError **error)
   g_free (want_asset_name);
   json_object_put (root);
 
-  gint tmp_fd = -1;
-  gchar *tmp_path = NULL;
-  tmp_fd = g_file_open_tmp ("gog-ge-proton-XXXXXX.tar.gz", &tmp_path, error);
+  /* Download next to where it will be extracted rather than into $TMPDIR:
+   * the archive is several hundred MB, too big for a tmpfs /tmp. */
+  gchar *tmp_path = g_build_filename (tools_dir, ".gog-ge-proton-XXXXXX.tar.gz", NULL);
+  gint tmp_fd = g_mkstemp (tmp_path);
   if (tmp_fd < 0)
     {
+      int saved_errno = errno;
+      g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (saved_errno),
+                   "Could not create a download file in %s: %s", tools_dir,
+                   g_strerror (saved_errno));
+      g_free (tmp_path);
       g_free (download_url_dup);
       g_free (install_dir);
       g_free (tools_dir);
@@ -364,7 +383,9 @@ fetch_sync (GogProtonFetchJob *job, GError **error)
   pd->downloading = &downloading;
   GThread *poller = g_thread_new ("proton-dl-poll", poll_thread_func, pd);
 
-  gchar *dl_argv[] = { "curl", "-fL", "--retry", "3", "-o", tmp_path, download_url_dup, NULL };
+  /* -sS: no progress meter (progress comes from polling the file size),
+   * but still report errors. */
+  gchar *dl_argv[] = { "curl", "-fsSL", "--retry", "3", "-o", tmp_path, download_url_dup, NULL };
   GError *dl_error = NULL;
   gboolean ok = run_capture (job, dl_argv, NULL, &dl_error);
 

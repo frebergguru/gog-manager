@@ -34,24 +34,42 @@ play_task_free (PlayTask *t)
   g_free (t);
 }
 
-static gchar *
-find_info_file (const char *install_dir)
+static PlayTask *find_primary_task (const char *info_path);
+
+/* Finds the primary play task in the install directory's goggame-*.info
+ * manifests. Once DLC is installed into a game's directory there are several
+ * of them (DLC manifests usually have no play tasks), so prefer the one named
+ * after preferred_id, then fall back to the first manifest that has one. */
+static PlayTask *
+find_install_task (const char *install_dir, gint64 preferred_id)
 {
+  if (preferred_id != 0)
+    {
+      gchar *name = g_strdup_printf ("goggame-%" G_GINT64_FORMAT ".info", preferred_id);
+      gchar *path = g_build_filename (install_dir, name, NULL);
+      PlayTask *task = g_file_test (path, G_FILE_TEST_IS_REGULAR) ? find_primary_task (path) : NULL;
+      g_free (path);
+      g_free (name);
+      if (task)
+        return task;
+    }
+
   GDir *d = g_dir_open (install_dir, 0, NULL);
   if (!d)
     return NULL;
   const char *name;
-  gchar *found = NULL;
-  while ((name = g_dir_read_name (d)))
+  PlayTask *task = NULL;
+  while (!task && (name = g_dir_read_name (d)))
     {
       if (g_str_has_prefix (name, "goggame-") && g_str_has_suffix (name, ".info"))
         {
-          found = g_build_filename (install_dir, name, NULL);
-          break;
+          gchar *path = g_build_filename (install_dir, name, NULL);
+          task = find_primary_task (path);
+          g_free (path);
         }
     }
   g_dir_close (d);
-  return found;
+  return task;
 }
 
 static PlayTask *
@@ -156,14 +174,38 @@ spawn_detached (gchar **argv, gchar **envp, const char *cwd, GError **error)
                          NULL, NULL, NULL, error);
 }
 
+/* A runner view of the game's recorded runner. Borrows the game's strings;
+ * nothing to free. */
 static GogRunnerInfo
 runner_from_game (GogGame *game)
 {
   GogRunnerInfo info;
   info.kind = gog_game_get_runner_kind (game);
-  info.name = g_strdup ("");
-  info.bin_path = g_strdup (gog_game_get_runner_path (game));
+  info.name = (gchar *) "";
+  info.bin_path = (gchar *) gog_game_get_runner_path (game);
   return info;
+}
+
+static gboolean
+check_runner (GogGame *game, GError **error)
+{
+  if (gog_game_get_runner_path (game))
+    return TRUE;
+  g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+               "No Wine/Proton runner is recorded for %s; reinstall it to pick one",
+               gog_game_get_title (game));
+  return FALSE;
+}
+
+/* Manifest paths may use Windows separators even in Linux builds. */
+static gchar *
+unix_slashes (const char *path)
+{
+  gchar *copy = g_strdup (path ? path : "");
+  for (gchar *p = copy; *p; p++)
+    if (*p == '\\')
+      *p = '/';
+  return copy;
 }
 
 gboolean
@@ -179,22 +221,51 @@ gog_launch_game (GogGame *game, GError **error)
   const char *install_dir = gog_game_get_install_path (game);
   GogRunnerKind kind = gog_game_get_runner_kind (game);
 
-  gchar *info_path = find_info_file (install_dir);
-  PlayTask *task = info_path ? find_primary_task (info_path) : NULL;
-  g_free (info_path);
+  if (kind != GOG_RUNNER_NATIVE && !check_runner (game, error))
+    return FALSE;
+
+  /* A DLC shares its base game's directory; launching it means launching
+   * the base game. */
+  GogGame *base = gog_game_get_base_game (game);
+  gint64 manifest_id = base ? gog_game_get_id (base) : gog_game_get_id (game);
+  PlayTask *task = find_install_task (install_dir, manifest_id);
 
   if (task)
     {
       gboolean ok;
       if (kind == GOG_RUNNER_NATIVE)
         {
-          gchar *full = g_build_filename (install_dir, task->working_dir ? task->working_dir : "",
-                                           task->path, NULL);
+          /* Both path and workingDir are relative to the install root. */
+          gchar *rel = unix_slashes (task->path);
+          gchar *full = g_build_filename (install_dir, rel, NULL);
+          g_free (rel);
           if (g_chmod (full, 0755) != 0)
             g_warning ("Failed to set execute permission on %s", full);
-          gchar *argv[] = { full, NULL };
-          gchar *cwd = g_build_filename (install_dir, task->working_dir ? task->working_dir : "", NULL);
-          ok = spawn_detached (argv, NULL, cwd, error);
+          gchar *wd = unix_slashes (task->working_dir);
+          gchar *cwd = g_build_filename (install_dir, wd, NULL);
+          g_free (wd);
+
+          GPtrArray *argv = g_ptr_array_new_with_free_func (g_free);
+          g_ptr_array_add (argv, g_strdup (full));
+          if (task->arguments && *task->arguments)
+            {
+              gchar **split = NULL;
+              GError *parse_error = NULL;
+              if (g_shell_parse_argv (task->arguments, NULL, &split, &parse_error))
+                {
+                  for (gchar **a = split; *a; a++)
+                    g_ptr_array_add (argv, g_strdup (*a));
+                  g_strfreev (split);
+                }
+              else
+                {
+                  g_warning ("Failed to parse command arguments: %s", parse_error->message);
+                  g_error_free (parse_error);
+                }
+            }
+          g_ptr_array_add (argv, NULL);
+          ok = spawn_detached ((gchar **) argv->pdata, NULL, cwd, error);
+          g_ptr_array_unref (argv);
           g_free (cwd);
           g_free (full);
         }
@@ -251,6 +322,12 @@ gboolean
 gog_open_winecfg (GogGame *game, GError **error)
 {
   if (!gog_game_get_installed (game) || gog_game_get_runner_kind (game) != GOG_RUNNER_WINE)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+                   "winecfg is only available for games installed with Wine");
+      return FALSE;
+    }
+  if (!check_runner (game, error))
     return FALSE;
   GogRunnerInfo runner = runner_from_game (game);
   GogCommand *cmd = runner_build_winecfg_command (&runner, gog_game_get_install_path (game));
@@ -264,6 +341,12 @@ gog_open_regedit (GogGame *game, GError **error)
 {
   if (!gog_game_get_installed (game) || gog_game_get_runner_kind (game) == GOG_RUNNER_NONE ||
       gog_game_get_runner_kind (game) == GOG_RUNNER_NATIVE)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+                   "regedit is only available for games installed with Wine or Proton");
+      return FALSE;
+    }
+  if (!check_runner (game, error))
     return FALSE;
   GogRunnerInfo runner = runner_from_game (game);
   GogCommand *cmd = runner_build_regedit_command (&runner, gog_game_get_install_path (game));

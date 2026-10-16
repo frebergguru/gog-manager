@@ -21,12 +21,14 @@
 #   - meson, ninja, a C compiler, and the gtk4/libadwaita/json-c -dev packages
 #     (same as a normal build — see Compiling.md section 2)
 #   - patchelf, and one of wget/curl (to fetch the packaging tools)
+#   - python3 (for the strip check, packaging/check-stripped.sh)
 #   - FUSE is NOT required; the script runs the tools in extract-and-run mode.
 #
 set -euo pipefail
 
 ARCH="${ARCH:-x86_64}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT" # linuxdeploy writes the AppImage into the current directory
 BUILD_DIR="$ROOT/build-appimage"
 APPDIR="$ROOT/AppDir"
 TOOLS="$ROOT/.appimage-tools"
@@ -67,7 +69,7 @@ meson compile -C "$BUILD_DIR"
 
 log "Staging install tree into $APPDIR"
 rm -rf "$APPDIR"
-DESTDIR="$APPDIR" meson install -C "$BUILD_DIR" --no-rebuild
+DESTDIR="$APPDIR" meson install -C "$BUILD_DIR" --no-rebuild --strip
 
 # --- 2. Fetch packaging tools --------------------------------------------------
 
@@ -114,6 +116,20 @@ log "Bundling dependencies and building AppImage"
   --desktop-file "$APPDIR/usr/share/applications/$DESKTOP_ID.desktop" \
   --icon-file "$APPDIR/usr/share/icons/hicolor/scalable/apps/$DESKTOP_ID.svg" \
   --output appimage
+
+# --- 4. Refuse to release anything unstripped ---------------------------------
+#
+# linuxdeploy strips the libraries it bundles and `meson install --strip` the
+# app binary; this checks the result rather than trusting either. The AppDir
+# is exactly what was packed, and the AppImage file itself starts with the
+# runtime ELF.
+
+log "Checking that every shipped binary is stripped"
+if ! "$ROOT/packaging/check-stripped.sh" "$APPDIR" "$ROOT/$OUTPUT"; then
+  rm -f "$ROOT/$OUTPUT"
+  echo "error: unstripped binaries in the AppImage; release refused" >&2
+  exit 1
+fi
 
 log "Done: $ROOT/$OUTPUT"
 echo "Copy it wherever you like (e.g. your GOG/Games folder) and run it."

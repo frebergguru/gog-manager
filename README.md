@@ -16,7 +16,7 @@ a directory of installers you already own (the `.exe`/`.bin` files and their
 ## Features
 
 - **Library browser** — scans a directory of GOG products (one subfolder per
-  game), reads each product's `goggame-*.info` metadata, and presents titles,
+  game), reads each product's `product_*.json` metadata, and presents titles,
   logos, descriptions, and sizes in an Adwaita grid.
 - **Search, filter, and sort** — live title search; filter by OS
   (Windows / Linux / macOS), by language, and by install status; sort by
@@ -101,12 +101,22 @@ Expected library layout:
 Games/
 ├── Some Game/
 │   ├── setup_some_game_1.0.exe
-│   ├── goggame-1207658901.info
+│   ├── setup_some_game_1.0-1.bin
+│   ├── product_1207658901.json
+│   ├── icon_1207658901.png        (optional, shown on the card)
+│   ├── logo_1207658901.jpg        (optional, shown on the detail page)
 │   └── extras/
 │       └── soundtrack.zip
 └── Another Game/
+    ├── product_1207658902.json
     └── another_game_en_installer.sh
 ```
+
+A folder is only listed if it contains a `product_*.json`; that file supplies
+the title, description, languages, supported systems and DLC links.
+
+New installs go to `~/GOG Games/<game>` unless you set a default install
+location in **Preferences**; DLC is installed into its base game's folder.
 
 ---
 

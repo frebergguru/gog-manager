@@ -3,7 +3,10 @@
  */
 
 #include <glib.h>
+#include <glib/gstdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include "../src/runner.h"
 
 static gboolean
@@ -110,6 +113,57 @@ test_wine_root_dir_proton_uses_pfx_subdir (void)
   g_free (wine_root2);
 }
 
+/* Wine makes dosdevices/c: a symlink to ../drive_c, so c:/game must resolve
+ * back to the install dir through that link, not through the lexical path. */
+static void
+test_link_c_game_resolves_to_install_dir (void)
+{
+  gchar *tmp = g_dir_make_tmp ("gog-link-test-XXXXXX", NULL);
+  g_assert_nonnull (tmp);
+  gchar *install = g_build_filename (tmp, "Some Game", NULL);
+  gchar *wine_root = runner_wine_root_dir (GOG_RUNNER_WINE, install);
+  gchar *drive_c = g_build_filename (wine_root, "drive_c", NULL);
+  gchar *dosdevices = g_build_filename (wine_root, "dosdevices", NULL);
+  gchar *c_link = g_build_filename (dosdevices, "c:", NULL);
+  g_assert_cmpint (g_mkdir_with_parents (drive_c, 0755), ==, 0);
+  g_assert_cmpint (g_mkdir_with_parents (dosdevices, 0755), ==, 0);
+  g_assert_cmpint (symlink ("../drive_c", c_link), ==, 0);
+
+  /* A wrong link left by an older version must be repaired. */
+  gchar *game_link = g_build_filename (drive_c, "game", NULL);
+  g_assert_cmpint (symlink ("../../../", game_link), ==, 0);
+
+  GError *error = NULL;
+  g_assert_true (runner_link_c_game (wine_root, install, &error));
+  g_assert_no_error (error);
+  /* idempotent */
+  g_assert_true (runner_link_c_game (wine_root, install, &error));
+  g_assert_no_error (error);
+
+  gchar *via_link = g_build_filename (c_link, "game", NULL);
+  char *resolved = realpath (via_link, NULL);
+  char *expected = realpath (install, NULL);
+  g_assert_cmpstr (resolved, ==, expected);
+  free (resolved);
+  free (expected);
+
+  g_remove (game_link);
+  g_remove (c_link);
+  g_rmdir (dosdevices);
+  g_rmdir (drive_c);
+  g_rmdir (wine_root);
+  g_rmdir (install);
+  g_rmdir (tmp);
+  g_free (via_link);
+  g_free (game_link);
+  g_free (c_link);
+  g_free (dosdevices);
+  g_free (drive_c);
+  g_free (wine_root);
+  g_free (install);
+  g_free (tmp);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -119,5 +173,6 @@ main (int argc, char *argv[])
   g_test_add_func ("/runner/proton_install_command_env", test_proton_install_command_env);
   g_test_add_func ("/runner/wine_launch_command", test_wine_launch_command);
   g_test_add_func ("/runner/wine_root_dir", test_wine_root_dir_proton_uses_pfx_subdir);
+  g_test_add_func ("/runner/link_c_game", test_link_c_game_resolves_to_install_dir);
   return g_test_run ();
 }

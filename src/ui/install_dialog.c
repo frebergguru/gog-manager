@@ -19,6 +19,8 @@ typedef struct
   gpointer user_data;
 
   GPtrArray *runners; /* GogRunnerInfo*, only for windows installers */
+  GogRunnerInfo *chosen_runner; /* copy of the runner the job was started with */
+  gboolean runner_locked;       /* DLC: must reuse the base game's runner/prefix */
   GtkDropDown *runner_dropdown;
   GtkLabel *install_dir_label;
   gchar *install_dir;
@@ -39,8 +41,15 @@ ctx_free (InstallCtx *ctx)
 {
   if (ctx->runners)
     g_ptr_array_unref (ctx->runners);
+  gog_runner_info_free (ctx->chosen_runner);
   g_free (ctx->install_dir);
-  g_clear_object (&ctx->job);
+  if (ctx->job)
+    {
+      /* The job's queued idles may still fire after the dialog is gone. */
+      g_signal_handlers_disconnect_by_data (ctx->job, ctx);
+      g_clear_object (&ctx->job);
+    }
+  g_clear_object (&ctx->game);
   g_free (ctx);
 }
 
@@ -89,8 +98,24 @@ on_job_finished (GogInstallJob *job, gboolean success, const gchar *error_messag
 
   if (success)
     {
+      const char *install_dir = gog_install_job_get_install_dir (ctx->job);
+      gog_game_set_install_path (ctx->game, install_dir);
+      /* Launching needs to know how the game was installed. */
+      if (ctx->installer->os == GOG_OS_LINUX || !ctx->chosen_runner)
+        {
+          gog_game_set_runner_kind (ctx->game, GOG_RUNNER_NATIVE);
+          gog_game_set_runner_path (ctx->game, NULL);
+          gog_game_set_prefix_path (ctx->game, NULL);
+        }
+      else
+        {
+          gchar *prefix = runner_prefix_dir_for_install (ctx->chosen_runner->kind, install_dir);
+          gog_game_set_runner_kind (ctx->game, ctx->chosen_runner->kind);
+          gog_game_set_runner_path (ctx->game, ctx->chosen_runner->bin_path);
+          gog_game_set_prefix_path (ctx->game, prefix);
+          g_free (prefix);
+        }
       gog_game_set_installed (ctx->game, TRUE);
-      gog_game_set_install_path (ctx->game, gog_install_job_get_install_dir (ctx->job));
       gog_state_update_from_game (ctx->state, ctx->game);
       GError *save_err = NULL;
       if (!gog_state_save (ctx->state, &save_err))
@@ -112,13 +137,46 @@ on_job_finished (GogInstallJob *job, gboolean success, const gchar *error_messag
   gtk_button_set_label (ctx->action_button, "Close");
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->action_button), TRUE);
   gtk_widget_set_visible (GTK_WIDGET (ctx->cancel_button), FALSE);
+  adw_dialog_set_can_close (ctx->dialog, TRUE);
+  gtk_widget_grab_focus (GTK_WIDGET (ctx->action_button));
 }
 
 static void
 populate_runner_dropdown (InstallCtx *ctx)
 {
+  /* Pre-select the base game's runner for a DLC (it has to share the base
+   * game's prefix), otherwise the default runner from Preferences. */
+  GogGame *base = gog_game_get_base_game (ctx->game);
+  GogRunnerKind want_kind = ctx->config->default_runner_kind;
+  const char *want_path = ctx->config->default_runner_path;
+  if (ctx->runner_locked)
+    {
+      want_kind = gog_game_get_runner_kind (base);
+      want_path = gog_game_get_runner_path (base);
+    }
+
   GtkStringList *list = gtk_string_list_new (NULL);
+  if (ctx->runners)
+    g_ptr_array_unref (ctx->runners);
   ctx->runners = runner_discover_all (ctx->config);
+  guint select_idx = G_MAXUINT;
+  if (ctx->runner_locked && want_path)
+    {
+      /* Keep the base game's runner available even if discovery no longer
+       * finds it, rather than silently switching the DLC to another one. */
+      gboolean listed = FALSE;
+      for (guint i = 0; i < ctx->runners->len; i++)
+        {
+          GogRunnerInfo *r = g_ptr_array_index (ctx->runners, i);
+          listed = listed || (r->kind == want_kind && g_strcmp0 (r->bin_path, want_path) == 0);
+        }
+      if (!listed)
+        {
+          gchar *name = g_path_get_basename (want_path);
+          g_ptr_array_add (ctx->runners, gog_runner_info_new (want_kind, name, want_path));
+          g_free (name);
+        }
+    }
   for (guint i = 0; i < ctx->runners->len; i++)
     {
       GogRunnerInfo *r = g_ptr_array_index (ctx->runners, i);
@@ -126,11 +184,21 @@ populate_runner_dropdown (InstallCtx *ctx)
                                        r->kind == GOG_RUNNER_PROTON ? "Proton" : "Wine");
       gtk_string_list_append (list, label);
       g_free (label);
+      if (select_idx == G_MAXUINT && r->kind == want_kind && g_strcmp0 (r->bin_path, want_path) == 0)
+        select_idx = i;
     }
+  if (select_idx == G_MAXUINT)
+    select_idx = 0;
   gtk_drop_down_set_model (ctx->runner_dropdown, G_LIST_MODEL (list));
   g_object_unref (list);
+  if (ctx->runners->len > 0)
+    gtk_drop_down_set_selected (ctx->runner_dropdown, select_idx);
 
-  gtk_widget_set_sensitive (GTK_WIDGET (ctx->runner_dropdown), ctx->runners->len > 0);
+  gtk_widget_set_sensitive (GTK_WIDGET (ctx->runner_dropdown),
+                            ctx->runners->len > 0 && !ctx->runner_locked);
+  /* A Windows installer can't run without Wine or Proton. */
+  if (ctx->action_button && !ctx->job)
+    gtk_widget_set_sensitive (GTK_WIDGET (ctx->action_button), ctx->runners->len > 0);
 }
 
 static void
@@ -185,6 +253,9 @@ start_install (InstallCtx *ctx)
       guint idx = gtk_drop_down_get_selected (ctx->runner_dropdown);
       if (ctx->runners && idx != GTK_INVALID_LIST_POSITION && idx < ctx->runners->len)
         runner = g_ptr_array_index (ctx->runners, idx);
+      if (!runner)
+        return;
+      ctx->chosen_runner = gog_runner_info_new (runner->kind, runner->name, runner->bin_path);
     }
 
   ctx->job = gog_install_job_new (ctx->game, ctx->installer, ctx->install_dir, runner);
@@ -196,6 +267,9 @@ start_install (InstallCtx *ctx)
   gtk_widget_set_visible (ctx->progress_box, TRUE);
   gtk_button_set_label (ctx->action_button, "Installing…");
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->action_button), FALSE);
+  /* Closing mid-install would orphan the job; use Cancel instead. */
+  adw_dialog_set_can_close (ctx->dialog, FALSE);
+  gtk_widget_grab_focus (GTK_WIDGET (ctx->cancel_button));
 
   gog_install_job_start (ctx->job);
 }
@@ -212,9 +286,8 @@ on_action_clicked (GtkButton *button, gpointer user_data)
       return;
     }
 
-  /* Job already finished (button now reads "Close"). */
-  if (ctx->on_done)
-    ctx->on_done (ctx->game, ctx->succeeded, ctx->user_data);
+  /* Job already finished (button now reads "Close"); on_done runs from
+   * on_dialog_closed so the header close button reports back too. */
   adw_dialog_close (ctx->dialog);
 }
 
@@ -233,7 +306,10 @@ static void
 on_dialog_closed (AdwDialog *dialog, gpointer user_data)
 {
   (void) dialog;
-  ctx_free (user_data);
+  InstallCtx *ctx = user_data;
+  if (ctx->on_done)
+    ctx->on_done (ctx->game, ctx->succeeded, ctx->user_data);
+  ctx_free (ctx);
 }
 
 void
@@ -243,7 +319,7 @@ gog_show_install_dialog (GtkWindow *parent, GogGame *game, GogInstallerInfo *ins
 {
   InstallCtx *ctx = g_new0 (InstallCtx, 1);
   ctx->parent = parent;
-  ctx->game = game;
+  ctx->game = g_object_ref (game);
   ctx->installer = installer;
   ctx->config = config;
   ctx->state = state;
@@ -251,15 +327,15 @@ gog_show_install_dialog (GtkWindow *parent, GogGame *game, GogInstallerInfo *ins
   ctx->user_data = user_data;
 
   GogGame *base = gog_game_get_base_game (game);
-  const char *default_root = config->install_root ? config->install_root
-                                                    : g_get_user_special_dir (G_USER_DIRECTORY_DESKTOP);
-  if (base && gog_game_get_installed (base) && gog_game_get_install_path (base))
+  gboolean into_base = base && gog_game_get_installed (base) && gog_game_get_install_path (base);
+  if (into_base)
     ctx->install_dir = g_strdup (gog_game_get_install_path (base));
+  else if (config->install_root)
+    ctx->install_dir = g_build_filename (config->install_root, gog_game_get_slug (game), NULL);
   else
-    ctx->install_dir = g_build_filename (
-        config->install_root ? config->install_root : g_get_home_dir (), "GOG Games",
-        gog_game_get_slug (game), NULL);
-  (void) default_root;
+    ctx->install_dir = g_build_filename (g_get_home_dir (), "GOG Games", gog_game_get_slug (game), NULL);
+  ctx->runner_locked = into_base && (gog_game_get_runner_kind (base) == GOG_RUNNER_WINE ||
+                                     gog_game_get_runner_kind (base) == GOG_RUNNER_PROTON);
 
   AdwDialog *dialog = adw_dialog_new ();
   ctx->dialog = dialog;
@@ -293,11 +369,15 @@ gog_show_install_dialog (GtkWindow *parent, GogGame *game, GogInstallerInfo *ins
       adw_preferences_row_set_title (ADW_PREFERENCES_ROW (runner_row), "Runner");
       ctx->runner_dropdown = GTK_DROP_DOWN (gtk_drop_down_new (NULL, NULL));
       gtk_widget_set_valign (GTK_WIDGET (ctx->runner_dropdown), GTK_ALIGN_CENTER);
-      populate_runner_dropdown (ctx);
+      gtk_accessible_update_property (GTK_ACCESSIBLE (ctx->runner_dropdown),
+                                      GTK_ACCESSIBLE_PROPERTY_LABEL, "Runner", -1);
       adw_action_row_add_suffix (ADW_ACTION_ROW (runner_row), GTK_WIDGET (ctx->runner_dropdown));
       GtkWidget *get_proton_btn = gtk_button_new_from_icon_name ("software-update-available-symbolic");
       gtk_widget_set_valign (get_proton_btn, GTK_ALIGN_CENTER);
       gtk_widget_set_tooltip_text (get_proton_btn, "Download the latest GE-Proton");
+      gtk_accessible_update_property (GTK_ACCESSIBLE (get_proton_btn), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                      "Download the latest GE-Proton", -1);
+      gtk_widget_set_sensitive (get_proton_btn, !ctx->runner_locked);
       g_signal_connect (get_proton_btn, "clicked", G_CALLBACK (on_get_proton_clicked), ctx);
       adw_action_row_add_suffix (ADW_ACTION_ROW (runner_row), get_proton_btn);
       GtkWidget *runner_group = adw_preferences_group_new ();
@@ -320,10 +400,13 @@ gog_show_install_dialog (GtkWindow *parent, GogGame *game, GogInstallerInfo *ins
   adw_action_row_add_suffix (ADW_ACTION_ROW (dir_row), GTK_WIDGET (ctx->install_dir_label));
   GtkWidget *choose_btn = gtk_button_new_from_icon_name ("folder-open-symbolic");
   gtk_widget_set_valign (choose_btn, GTK_ALIGN_CENTER);
+  gtk_widget_set_tooltip_text (choose_btn, "Choose install directory");
+  gtk_accessible_update_property (GTK_ACCESSIBLE (choose_btn), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                  "Choose install directory", -1);
   g_signal_connect (choose_btn, "clicked", G_CALLBACK (on_choose_dir_clicked), ctx);
   adw_action_row_add_suffix (ADW_ACTION_ROW (dir_row), choose_btn);
 
-  if (base && gog_game_get_installed (base))
+  if (into_base)
     gtk_widget_set_sensitive (choose_btn, FALSE); /* DLC installs into the base game's dir */
 
   GtkWidget *dir_group = adw_preferences_group_new ();
@@ -365,6 +448,9 @@ gog_show_install_dialog (GtkWindow *parent, GogGame *game, GogInstallerInfo *ins
   gtk_box_append (GTK_BOX (btn_box), GTK_WIDGET (ctx->cancel_button));
   gtk_box_append (GTK_BOX (btn_box), GTK_WIDGET (ctx->action_button));
   gtk_box_append (GTK_BOX (outer), btn_box);
+
+  if (ctx->runner_dropdown)
+    populate_runner_dropdown (ctx);
 
   adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (toolbar_view), outer);
   adw_dialog_set_child (dialog, toolbar_view);

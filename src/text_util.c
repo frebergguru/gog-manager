@@ -22,6 +22,19 @@ append_unescaped_entity (GString *out, const char *entity, gsize len)
     g_string_append_c (out, '\'');
   else if (g_ascii_strncasecmp (entity, "&nbsp;", len) == 0 && len == 6)
     g_string_append_c (out, ' ');
+  else if (len > 3 && entity[1] == '#')
+    {
+      /* numeric character reference: &#8217; or &#x2019; */
+      gboolean hex = entity[2] == 'x' || entity[2] == 'X';
+      const char *digits = entity + (hex ? 3 : 2);
+      gchar *end = NULL;
+      guint64 cp = g_ascii_strtoull (digits, &end, hex ? 16 : 10);
+      if (end == entity + len - 1 && end != digits && cp > 0 && cp <= 0x10FFFF &&
+          !(cp >= 0xD800 && cp <= 0xDFFF))
+        g_string_append_unichar (out, (gunichar) cp);
+      else
+        g_string_append_len (out, entity, len);
+    }
   else
     g_string_append_len (out, entity, len);
 }

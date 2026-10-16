@@ -8,7 +8,7 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
-#include <limits.h>
+#include <stdlib.h>
 
 GogRunnerInfo *
 gog_runner_info_new (GogRunnerKind kind, const char *name, const char *bin_path)
@@ -155,58 +155,65 @@ runner_link_c_game (const char *wine_root, const char *install_dir, GError **err
       return FALSE;
     }
 
-  gchar *link_path = g_build_filename (dosdevices, "c:", NULL);
-  /* g_build_filename collapses "c:" fine since it's just a path segment. */
+  gchar *link_dir = g_build_filename (dosdevices, "c:", NULL);
   g_free (dosdevices);
+  gchar *game_link = g_build_filename (link_dir, "game", NULL);
 
-  gchar *game_link = g_build_filename (link_path, "game", NULL);
-  g_free (link_path);
-
-  if (g_file_test (game_link, G_FILE_TEST_EXISTS) || g_file_test (game_link, G_FILE_TEST_IS_SYMLINK))
+  /* Wine creates dosdevices/c: as a symlink to ../drive_c, and the kernel
+   * resolves a relative symlink target against the directory the link
+   * physically lives in -- so compute the "../" chain from the *resolved*
+   * c: directory (and resolved install_dir), not from the lexical path,
+   * which is one level deeper and would point above install_dir. */
+  gchar *real_link_dir = realpath (link_dir, NULL);
+  gchar *real_install = realpath (install_dir, NULL);
+  gchar *relative = NULL;
+  if (real_link_dir && real_install)
     {
-      /* Verify symlink is valid; if it exists but points elsewhere, fail. */
-      gchar link_target[PATH_MAX];
-      ssize_t len = readlink (game_link, link_target, sizeof (link_target) - 1);
-      if (len > 0)
+      GFile *install_gfile = g_file_new_for_path (real_install);
+      GFile *link_gfile = g_file_new_for_path (real_link_dir);
+      gchar *down = g_file_get_relative_path (install_gfile, link_gfile);
+      if (down)
         {
-          link_target[len] = '\0';
+          GString *up = g_string_new (NULL);
+          gchar **segments = g_strsplit (down, G_DIR_SEPARATOR_S, -1);
+          for (guint i = 0; segments[i]; i++)
+            g_string_append (up, ".." G_DIR_SEPARATOR_S);
+          relative = g_string_free (up, FALSE);
+          g_strfreev (segments);
+          g_free (down);
+        }
+      g_object_unref (install_gfile);
+      g_object_unref (link_gfile);
+    }
+  /* Should not happen given how wine_root is always built under install_dir,
+   * but fall back to an absolute target if it ever does. */
+  if (!relative)
+    relative = g_strdup (real_install ? real_install : install_dir);
+  free (real_link_dir);
+  free (real_install);
+  g_free (link_dir);
+
+  if (g_file_test (game_link, G_FILE_TEST_IS_SYMLINK))
+    {
+      gchar *target = g_file_read_link (game_link, NULL);
+      gboolean same = target && g_strcmp0 (target, relative) == 0;
+      g_free (target);
+      if (same)
+        {
+          g_free (relative);
           g_free (game_link);
           return TRUE;
         }
-      /* Symlink exists but readlink failed, or is not a symlink - remove it */
+      /* Stale or wrong link (e.g. one created by an older version that
+       * pointed one directory too high) -- replace it. */
       g_remove (game_link);
     }
-
-  /* link_dir (".../prefix/dosdevices/c") is always a descendant of
-   * install_dir by construction (the prefix lives under install_dir), so
-   * compute install_dir's path *down to* link_dir and turn each segment
-   * into a "../" to build the reverse (link_dir up to install_dir). */
-  gchar *link_dir = g_path_get_dirname (game_link);
-  gchar *relative = NULL;
-  {
-    GFile *install_gfile = g_file_new_for_path (install_dir);
-    GFile *link_gfile = g_file_new_for_path (link_dir);
-    gchar *down = g_file_get_relative_path (install_gfile, link_gfile);
-    if (down)
-      {
-        GString *up = g_string_new (NULL);
-        gchar **segments = g_strsplit (down, G_DIR_SEPARATOR_S, -1);
-        for (guint i = 0; segments[i]; i++)
-          g_string_append (up, ".." G_DIR_SEPARATOR_S);
-        relative = g_string_free (up, FALSE);
-        g_strfreev (segments);
-        g_free (down);
-      }
-    else
-      {
-        /* Should not happen given how wine_root is always built under
-         * install_dir, but fall back to an absolute target if it ever does. */
-        relative = g_strdup (install_dir);
-      }
-    g_object_unref (install_gfile);
-    g_object_unref (link_gfile);
-  }
-  g_free (link_dir);
+  else if (g_file_test (game_link, G_FILE_TEST_EXISTS))
+    {
+      /* A real file/dir is in the way; only an empty directory can be
+       * replaced safely. If this fails, symlink() below reports it. */
+      g_rmdir (game_link);
+    }
 
   gboolean ok = (symlink (relative, game_link) == 0);
   if (!ok)

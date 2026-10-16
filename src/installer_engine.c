@@ -70,7 +70,7 @@ gog_install_job_init (GogInstallJob *self)
 }
 
 GogInstallJob *
-gog_install_job_new (GogGame *game, GogInstallerInfo *installer, const char *install_root,
+gog_install_job_new (GogGame *game, GogInstallerInfo *installer, const char *install_dir,
                       GogRunnerInfo *runner)
 {
   GogInstallJob *self = g_object_new (GOG_TYPE_INSTALL_JOB, NULL);
@@ -81,7 +81,7 @@ gog_install_job_new (GogGame *game, GogInstallerInfo *installer, const char *ins
   if (base && gog_game_get_installed (base) && gog_game_get_install_path (base))
     self->install_dir = g_strdup (gog_game_get_install_path (base));
   else
-    self->install_dir = g_build_filename (install_root, gog_game_get_slug (game), NULL);
+    self->install_dir = g_strdup (install_dir);
 
   if (runner)
     self->runner = gog_runner_info_new (runner->kind, runner->name, runner->bin_path);
@@ -181,8 +181,13 @@ job_finished (GogInstallJob *job, gboolean success, const char *error_message)
 
 /* ---- subprocess execution with live log streaming ---- */
 
+/* Runs argv, streaming its combined output to the log. Exit statuses from 0
+ * up to max_ok_status count as success (unzip, for instance, exits 1 for
+ * mere warnings such as the shell-script stub in front of GOG's Linux
+ * installers). */
 static gboolean
-run_and_stream (GogInstallJob *job, gchar **argv, gchar **envp, GError **error)
+run_and_stream_full (GogInstallJob *job, gchar **argv, gchar **envp, gint max_ok_status,
+                     GError **error)
 {
   if (job->cancelled)
     {
@@ -202,6 +207,10 @@ run_and_stream (GogInstallJob *job, gchar **argv, gchar **envp, GError **error)
 
   g_mutex_lock (&job->proc_mutex);
   job->current_proc = proc;
+  /* A cancel that landed between the check above and the spawn would
+   * otherwise miss this process. */
+  if (job->cancelled)
+    g_subprocess_force_exit (proc);
   g_mutex_unlock (&job->proc_mutex);
 
   GInputStream *raw_out = g_subprocess_get_stdout_pipe (proc);
@@ -211,7 +220,10 @@ run_and_stream (GogInstallJob *job, gchar **argv, gchar **envp, GError **error)
     {
       gsize len = 0;
       GError *line_error = NULL;
-      gchar *line = g_data_input_stream_read_line_utf8 (dis, &len, NULL, &line_error);
+      /* Not read_line_utf8(): Wine and installers happily print text in
+       * legacy code pages, and bailing out on the first invalid byte would
+       * stop draining the pipe and stall the child once it fills up. */
+      gchar *line = g_data_input_stream_read_line (dis, &len, NULL, &line_error);
       if (line_error)
         {
           g_clear_error (&line_error);
@@ -219,7 +231,9 @@ run_and_stream (GogInstallJob *job, gchar **argv, gchar **envp, GError **error)
         }
       if (!line)
         break;
-      job_log (job, line);
+      gchar *valid = g_utf8_make_valid (line, (gssize) len);
+      job_log (job, valid);
+      g_free (valid);
       g_free (line);
     }
 
@@ -237,7 +251,9 @@ run_and_stream (GogInstallJob *job, gchar **argv, gchar **envp, GError **error)
       return FALSE;
     }
 
-  gboolean ok = g_subprocess_get_successful (proc);
+  gboolean ok = g_subprocess_get_successful (proc) ||
+                (max_ok_status > 0 && g_subprocess_get_if_exited (proc) &&
+                 g_subprocess_get_exit_status (proc) <= max_ok_status);
   if (!ok && error && !*error)
     {
       /* get_exit_status() asserts if the process died by signal (e.g. our
@@ -252,6 +268,12 @@ run_and_stream (GogInstallJob *job, gchar **argv, gchar **envp, GError **error)
     }
   g_object_unref (proc);
   return ok;
+}
+
+static gboolean
+run_and_stream (GogInstallJob *job, gchar **argv, gchar **envp, GError **error)
+{
+  return run_and_stream_full (job, argv, envp, 0, error);
 }
 
 /* ---- recursive move (source -> dest, across filesystems if needed) ---- */
@@ -350,7 +372,26 @@ extract_linux_sync (GogInstallJob *job, GError **error)
 {
   job_progress (job, -1, "Extracting…");
 
-  gchar *tmpl = g_build_filename (g_get_tmp_dir (), "gog-extract-XXXXXX", NULL);
+  if (!g_file_test (job->installer->file_path, G_FILE_TEST_IS_REGULAR))
+    {
+      g_set_error (error, G_FILE_ERROR, G_FILE_ERROR_NOENT,
+                   "Installer file not found or is not a regular file: %s", job->installer->file_path);
+      return FALSE;
+    }
+
+  /* Extract next to the install directory rather than into $TMPDIR: games
+   * are often many GB (too big for a tmpfs /tmp), and staying on the same
+   * filesystem lets the final move be a cheap rename instead of a copy. */
+  gchar *parent = g_path_get_dirname (job->install_dir);
+  if (g_mkdir_with_parents (parent, 0755) != 0)
+    {
+      g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (errno),
+                   "Could not create %s", parent);
+      g_free (parent);
+      return FALSE;
+    }
+  gchar *tmpl = g_build_filename (parent, ".gog-extract-XXXXXX", NULL);
+  g_free (parent);
   gchar *tmp_dir = g_mkdtemp (tmpl); /* modifies tmpl in place */
   if (!tmp_dir)
     {
@@ -359,17 +400,10 @@ extract_linux_sync (GogInstallJob *job, GError **error)
       return FALSE;
     }
 
-  if (!g_file_test (job->installer->file_path, G_FILE_TEST_IS_REGULAR))
-    {
-      g_set_error (error, G_FILE_ERROR, G_FILE_ERROR_NOENT,
-                   "Installer file not found or is not a regular file: %s", job->installer->file_path);
-      remove_dir_recursive (tmp_dir);
-      g_free (tmpl);
-      return FALSE;
-    }
-
   gchar *argv[] = { "unzip", "-qq", job->installer->file_path, "-d", tmp_dir, NULL };
-  gboolean ok = run_and_stream (job, argv, NULL, error);
+  /* GOG's .sh installers are a shell stub followed by a zip, so unzip warns
+   * about "extra bytes at beginning" and exits 1 even though it worked. */
+  gboolean ok = run_and_stream_full (job, argv, NULL, 1, error);
   if (!ok)
     {
       remove_dir_recursive (tmp_dir);
@@ -426,6 +460,13 @@ extract_linux_sync (GogInstallJob *job, GError **error)
 static gboolean
 install_windows_sync (GogInstallJob *job, GError **error)
 {
+  if (!job->runner || !job->runner->bin_path)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+                   "No Wine or Proton runner selected; install Wine or download GE-Proton first");
+      return FALSE;
+    }
+
   if (g_mkdir_with_parents (job->install_dir, 0755) != 0)
     {
       g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (errno),
@@ -540,7 +581,26 @@ gog_uninstall_game (GogGame *game, GError **error)
       return TRUE;
     }
 
-  if (g_file_test (path, G_FILE_TEST_IS_DIR))
+  /* A DLC is installed into its base game's directory, and its files can't
+   * be told apart from the base game's -- deleting that directory would
+   * take the base game with it. Only forget the DLC's install record. */
+  GogGame *base = gog_game_get_base_game (game);
+  gboolean shares_base_dir = base && g_strcmp0 (gog_game_get_install_path (base), path) == 0;
+
+  /* The path comes from the state file; never let a corrupt or hand-edited
+   * record turn uninstall into "delete my home directory". */
+  gchar *canonical = g_canonicalize_filename (path, NULL);
+  gboolean dangerous = !g_path_is_absolute (path) || g_strcmp0 (canonical, "/") == 0 ||
+                       g_strcmp0 (canonical, g_get_home_dir ()) == 0;
+  g_free (canonical);
+  if (!shares_base_dir && dangerous)
+    {
+      g_set_error (error, G_FILE_ERROR, G_FILE_ERROR_PERM,
+                   "Refusing to delete %s: not a game install directory", path);
+      return FALSE;
+    }
+
+  if (!shares_base_dir && g_file_test (path, G_FILE_TEST_IS_DIR))
     {
       if (!remove_dir_recursive (path))
         {

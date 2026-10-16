@@ -7,10 +7,14 @@ project('gog-manager', 'c',
   license_files : 'LICENSE',
   default_options : ['c_std=gnu17', 'warning_level=2'])
 
-gtk_dep = dependency('gtk4')
-adw_dep = dependency('libadwaita-1')
+# GtkFileDialog/GtkUriLauncher need GTK 4.10; AdwSpinner needs libadwaita 1.6.
+gtk_dep = dependency('gtk4', version : '>= 4.10')
+adw_dep = dependency('libadwaita-1', version : '>= 1.6')
 gio_dep = dependency('gio-2.0')
 json_dep = dependency('json-c')
+
+add_project_arguments('-DGOG_MANAGER_VERSION="@0@"'.format(meson.project_version()),
+  language : 'c')
 
 gnome = import('gnome')
 

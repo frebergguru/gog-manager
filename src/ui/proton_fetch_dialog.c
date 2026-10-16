@@ -27,7 +27,12 @@ typedef struct
 static void
 ctx_free (FetchCtx *ctx)
 {
-  g_clear_object (&ctx->job);
+  if (ctx->job)
+    {
+      /* The job's queued idles may still fire after the dialog is gone. */
+      g_signal_handlers_disconnect_by_data (ctx->job, ctx);
+      g_clear_object (&ctx->job);
+    }
   g_free (ctx->result);
   g_free (ctx);
 }
@@ -92,6 +97,8 @@ on_job_finished (GogProtonFetchJob *job, gboolean success, const gchar *result, 
   gtk_button_set_label (ctx->action_button, "Close");
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->action_button), TRUE);
   gtk_widget_set_visible (GTK_WIDGET (ctx->cancel_button), FALSE);
+  adw_dialog_set_can_close (ctx->dialog, TRUE);
+  gtk_widget_grab_focus (GTK_WIDGET (ctx->action_button));
 }
 
 static void
@@ -106,6 +113,9 @@ start_download (FetchCtx *ctx)
   gtk_widget_set_visible (ctx->progress_box, TRUE);
   gtk_button_set_label (ctx->action_button, "Downloading…");
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->action_button), FALSE);
+  /* Closing mid-download would orphan the job; use Cancel instead. */
+  adw_dialog_set_can_close (ctx->dialog, FALSE);
+  gtk_widget_grab_focus (GTK_WIDGET (ctx->cancel_button));
 
   gog_proton_fetch_job_start (ctx->job);
 }

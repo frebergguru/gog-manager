@@ -70,9 +70,9 @@ gog_library_find_by_id (GogLibrary *self, gint64 id)
   for (guint i = 0; i < n; i++)
     {
       GogGame *g = g_list_model_get_item (G_LIST_MODEL (self->store), i);
+      g_object_unref (g); /* the store keeps it alive; transfer none */
       if (gog_game_get_id (g) == id)
         return g;
-      g_object_unref (g);
     }
   return NULL;
 }
@@ -411,7 +411,7 @@ scan_data_free (ScanData *data)
 
 typedef struct
 {
-  GogLibrary *self; /* borrowed; kept alive by the GTask's ref on source_object */
+  GogLibrary *self; /* reffed: the idle can outlive the scan task */
   double fraction;
   gchar *msg;
 } ProgressData;
@@ -421,6 +421,7 @@ emit_progress_idle (gpointer user_data)
 {
   ProgressData *pd = user_data;
   g_signal_emit (pd->self, signals[SIG_SCAN_PROGRESS], 0, pd->fraction, pd->msg);
+  g_object_unref (pd->self);
   g_free (pd->msg);
   g_free (pd);
   return G_SOURCE_REMOVE;
@@ -430,7 +431,7 @@ static void
 report_progress (GogLibrary *self, double fraction, const char *msg)
 {
   ProgressData *pd = g_new (ProgressData, 1);
-  pd->self = self;
+  pd->self = g_object_ref (self);
   pd->fraction = fraction;
   pd->msg = g_strdup (msg);
   g_idle_add (emit_progress_idle, pd);

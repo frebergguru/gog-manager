@@ -19,6 +19,7 @@ typedef struct
   AdwActionRow *install_root_row;
   AdwActionRow *runner_row;
   AdwActionRow *no_runners_row;
+  AdwActionRow *custom_runners_row;
   GtkDropDown *default_runner_dropdown;
   GPtrArray *runners;
 
@@ -35,6 +36,12 @@ save_and_close (PrefsCtx *ctx)
       ctx->config->default_runner_kind = r->kind;
       g_free (ctx->config->default_runner_path);
       ctx->config->default_runner_path = g_strdup (r->bin_path);
+    }
+
+  if (ctx->pending_library_path)
+    {
+      g_free (ctx->config->library_path);
+      ctx->config->library_path = g_strdup (ctx->pending_library_path);
     }
 
   GError *error = NULL;
@@ -129,6 +136,90 @@ refresh_runner_dropdown (PrefsCtx *ctx)
 }
 
 static void
+refresh_custom_runners_row (PrefsCtx *ctx)
+{
+  guint n = ctx->config->custom_runner_paths ? g_strv_length (ctx->config->custom_runner_paths) : 0;
+  gchar *subtitle = n == 0 ? g_strdup ("A Wine binary or Proton folder that isn't found automatically")
+                           : g_strdup_printf ("%u added", n);
+  adw_action_row_set_subtitle (ctx->custom_runners_row, subtitle);
+  g_free (subtitle);
+}
+
+/* Stored as "wine=<path>" / "proton=<path>", the encoding
+ * runner_discover_all() reads back. */
+static void
+add_custom_runner (PrefsCtx *ctx, const char *kind_prefix, GFile *file)
+{
+  gchar *path = g_file_get_path (file);
+  if (!path)
+    return;
+  gchar *entry = g_strconcat (kind_prefix, path, NULL);
+  g_free (path);
+
+  GStrv old = ctx->config->custom_runner_paths;
+  if (old && g_strv_contains ((const char *const *) old, entry))
+    {
+      g_free (entry);
+      return;
+    }
+  GStrvBuilder *builder = g_strv_builder_new ();
+  if (old)
+    g_strv_builder_addv (builder, (const char **) old);
+  g_strv_builder_add (builder, entry);
+  g_free (entry);
+  ctx->config->custom_runner_paths = g_strv_builder_end (builder);
+  g_strv_builder_unref (builder);
+  g_strfreev (old);
+
+  refresh_runner_dropdown (ctx);
+  refresh_custom_runners_row (ctx);
+}
+
+static void
+on_add_wine_response (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+  GFile *file = gtk_file_dialog_open_finish (GTK_FILE_DIALOG (source), res, NULL);
+  if (file)
+    {
+      add_custom_runner (user_data, "wine=", file);
+      g_object_unref (file);
+    }
+}
+
+static void
+on_add_wine_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  PrefsCtx *ctx = user_data;
+  GtkFileDialog *dialog = gtk_file_dialog_new ();
+  gtk_file_dialog_set_title (dialog, "Choose a Wine Binary");
+  gtk_file_dialog_open (dialog, ctx->parent, NULL, on_add_wine_response, ctx);
+  g_object_unref (dialog);
+}
+
+static void
+on_add_proton_response (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+  GFile *folder = gtk_file_dialog_select_folder_finish (GTK_FILE_DIALOG (source), res, NULL);
+  if (folder)
+    {
+      add_custom_runner (user_data, "proton=", folder);
+      g_object_unref (folder);
+    }
+}
+
+static void
+on_add_proton_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  PrefsCtx *ctx = user_data;
+  GtkFileDialog *dialog = gtk_file_dialog_new ();
+  gtk_file_dialog_set_title (dialog, "Choose a Proton Folder");
+  gtk_file_dialog_select_folder (dialog, ctx->parent, NULL, on_add_proton_response, ctx);
+  g_object_unref (dialog);
+}
+
+static void
 on_proton_fetch_done (gboolean success, const char *result, gpointer user_data)
 {
   PrefsCtx *ctx = user_data;
@@ -183,9 +274,13 @@ gog_show_preferences_dialog (GtkWindow *parent, GogConfig *config,
   ctx->library_row = ADW_ACTION_ROW (adw_action_row_new ());
   adw_preferences_row_set_title (ADW_PREFERENCES_ROW (ctx->library_row), "Library Directory");
   adw_action_row_set_subtitle (ctx->library_row,
-                                config->library_path ? config->library_path : "(not set)");
+                                config->library_path ? config->library_path
+                                                     : "(not set: the current folder is scanned)");
   GtkWidget *lib_btn = gtk_button_new_from_icon_name ("folder-open-symbolic");
   gtk_widget_set_valign (lib_btn, GTK_ALIGN_CENTER);
+  gtk_widget_set_tooltip_text (lib_btn, "Choose library directory");
+  gtk_accessible_update_property (GTK_ACCESSIBLE (lib_btn), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                  "Choose library directory", -1);
   g_signal_connect (lib_btn, "clicked", G_CALLBACK (on_choose_library_clicked), ctx);
   adw_action_row_add_suffix (ctx->library_row, lib_btn);
   adw_preferences_group_add (lib_group, GTK_WIDGET (ctx->library_row));
@@ -199,9 +294,12 @@ gog_show_preferences_dialog (GtkWindow *parent, GogConfig *config,
   adw_preferences_row_set_title (ADW_PREFERENCES_ROW (ctx->install_root_row), "Default Install Location");
   adw_action_row_set_subtitle (
       ctx->install_root_row,
-      config->install_root ? config->install_root : "(choose per-install)");
+      config->install_root ? config->install_root : "(not set: ~/GOG Games)");
   GtkWidget *root_btn = gtk_button_new_from_icon_name ("folder-open-symbolic");
   gtk_widget_set_valign (root_btn, GTK_ALIGN_CENTER);
+  gtk_widget_set_tooltip_text (root_btn, "Choose default install location");
+  gtk_accessible_update_property (GTK_ACCESSIBLE (root_btn), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                  "Choose default install location", -1);
   g_signal_connect (root_btn, "clicked", G_CALLBACK (on_choose_install_root_clicked), ctx);
   adw_action_row_add_suffix (ctx->install_root_row, root_btn);
   adw_preferences_group_add (install_group, GTK_WIDGET (ctx->install_root_row));
@@ -211,6 +309,8 @@ gog_show_preferences_dialog (GtkWindow *parent, GogConfig *config,
   adw_action_row_set_subtitle (ctx->runner_row, "Used to pre-select Wine/Proton in the install dialog");
   ctx->default_runner_dropdown = GTK_DROP_DOWN (gtk_drop_down_new (NULL, NULL));
   gtk_widget_set_valign (GTK_WIDGET (ctx->default_runner_dropdown), GTK_ALIGN_CENTER);
+  gtk_accessible_update_property (GTK_ACCESSIBLE (ctx->default_runner_dropdown),
+                                  GTK_ACCESSIBLE_PROPERTY_LABEL, "Default Runner", -1);
   adw_action_row_add_suffix (ctx->runner_row, GTK_WIDGET (ctx->default_runner_dropdown));
   adw_preferences_group_add (install_group, GTK_WIDGET (ctx->runner_row));
 
@@ -218,6 +318,19 @@ gog_show_preferences_dialog (GtkWindow *parent, GogConfig *config,
   adw_preferences_row_set_title (ADW_PREFERENCES_ROW (ctx->no_runners_row),
                                   "No Wine or Proton found on this system");
   adw_preferences_group_add (install_group, GTK_WIDGET (ctx->no_runners_row));
+
+  ctx->custom_runners_row = ADW_ACTION_ROW (adw_action_row_new ());
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (ctx->custom_runners_row), "Custom Runners");
+  GtkWidget *add_wine_btn = gtk_button_new_with_label ("Add Wine…");
+  gtk_widget_set_valign (add_wine_btn, GTK_ALIGN_CENTER);
+  g_signal_connect (add_wine_btn, "clicked", G_CALLBACK (on_add_wine_clicked), ctx);
+  adw_action_row_add_suffix (ctx->custom_runners_row, add_wine_btn);
+  GtkWidget *add_proton_btn = gtk_button_new_with_label ("Add Proton…");
+  gtk_widget_set_valign (add_proton_btn, GTK_ALIGN_CENTER);
+  g_signal_connect (add_proton_btn, "clicked", G_CALLBACK (on_add_proton_clicked), ctx);
+  adw_action_row_add_suffix (ctx->custom_runners_row, add_proton_btn);
+  adw_preferences_group_add (install_group, GTK_WIDGET (ctx->custom_runners_row));
+  refresh_custom_runners_row (ctx);
 
   AdwActionRow *download_row = ADW_ACTION_ROW (adw_action_row_new ());
   adw_preferences_row_set_title (ADW_PREFERENCES_ROW (download_row), "Get GE-Proton");

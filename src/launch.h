@@ -25,8 +25,8 @@ G_BEGIN_DECLS
 gboolean gog_launch_game (GogGame *game, GError **error);
 
 /* Opens winecfg / regedit against a game's existing Wine or Proton prefix.
- * No-op (returns FALSE) for natively-installed or not-yet-installed games,
- * or when the runner is Proton (no winecfg equivalent). */
+ * Returns FALSE with error set for natively-installed or not-yet-installed
+ * games, or (winecfg only) when the runner is Proton. */
 gboolean gog_open_winecfg (GogGame *game, GError **error);
 gboolean gog_open_regedit (GogGame *game, GError **error);
 
