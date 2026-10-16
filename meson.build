@@ -2,7 +2,7 @@
 # Copyright (C) 2026 Hypnotize
 
 project('gog-manager', 'c',
-  version : '0.1.0',
+  version : '0.2.0',
   license : 'GPL-3.0-or-later',
   license_files : 'LICENSE',
   default_options : ['c_std=gnu17', 'warning_level=2'])
