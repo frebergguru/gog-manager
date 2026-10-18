@@ -7,7 +7,7 @@
 
 typedef struct
 {
-  AdwDialog *dialog;
+  GtkWindow *window; /* a real window, so it can be resized */
   gchar *library_dir;
   GogLibrary *library;
   GogSyncDoneFunc on_done;
@@ -18,6 +18,7 @@ typedef struct
   GtkWidget *results_box;
   GtkWidget *progress_box;
   GtkProgressBar *progress_bar;
+  GtkWidget *log_scroll;
   GtkTextView *log_view;
   GtkButton *check_button;
   GtkButton *select_all_button;
@@ -28,6 +29,7 @@ typedef struct
   GPtrArray *checks; /* GtkCheckButton*, parallel to items */
 
   GogSyncJob *job;
+  gboolean busy;
   gboolean downloaded;
 } SyncCtx;
 
@@ -51,7 +53,7 @@ static void
 announce (SyncCtx *ctx, const char *message)
 {
 #if GTK_CHECK_VERSION(4, 14, 0)
-  gtk_accessible_announce (GTK_ACCESSIBLE (ctx->dialog), message,
+  gtk_accessible_announce (GTK_ACCESSIBLE (ctx->window), message,
                            GTK_ACCESSIBLE_ANNOUNCEMENT_PRIORITY_MEDIUM);
 #else
   (void) ctx;
@@ -62,6 +64,7 @@ announce (SyncCtx *ctx, const char *message)
 static void
 append_log_line (SyncCtx *ctx, const char *line)
 {
+  gtk_widget_set_visible (ctx->log_scroll, TRUE);
   GtkTextBuffer *buf = gtk_text_view_get_buffer (ctx->log_view);
   GtkTextIter end;
   gtk_text_buffer_get_end_iter (buf, &end);
@@ -110,8 +113,9 @@ set_busy (SyncCtx *ctx, gboolean busy)
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->download_button), !busy && any_checked (ctx));
   gtk_widget_set_sensitive (ctx->results_box, !busy);
   gtk_widget_set_visible (GTK_WIDGET (ctx->cancel_button), busy);
-  /* Closing mid-run would orphan the job; use Cancel instead. */
-  adw_dialog_set_can_close (ctx->dialog, !busy);
+  /* Closing mid-run would orphan the job; use Cancel instead (see
+   * on_close_request). */
+  ctx->busy = busy;
 }
 
 static void
@@ -289,7 +293,8 @@ on_download_finished (GogSyncJob *job, gboolean success, const gchar *error_mess
   g_clear_object (&ctx->job);
 
   gint64 checked = 0;
-  show_items (ctx, gog_sync_load_results (&checked), checked);
+  GPtrArray *saved = gog_sync_load_results (&checked); /* sets checked first */
+  show_items (ctx, saved, checked);
   set_busy (ctx, FALSE);
 }
 
@@ -300,6 +305,7 @@ start_job (SyncCtx *ctx, GogSyncJob *job)
   g_signal_connect (job, "progress", G_CALLBACK (on_job_progress), ctx);
   g_signal_connect (job, "log-line", G_CALLBACK (on_job_log_line), ctx);
   gtk_text_buffer_set_text (gtk_text_view_get_buffer (ctx->log_view), "", -1);
+  gtk_widget_set_visible (ctx->log_scroll, FALSE); /* until there is something to show */
   gtk_progress_bar_set_fraction (ctx->progress_bar, 0);
   gtk_widget_set_visible (ctx->progress_box, TRUE);
   set_busy (ctx, TRUE);
@@ -355,10 +361,23 @@ on_cancel_clicked (GtkButton *button, gpointer user_data)
     gog_sync_job_cancel (ctx->job);
 }
 
-static void
-on_dialog_closed (AdwDialog *dialog, gpointer user_data)
+static gboolean
+on_close_request (GtkWindow *window, gpointer user_data)
 {
-  (void) dialog;
+  (void) window;
+  SyncCtx *ctx = user_data;
+  if (ctx->busy)
+    {
+      announce (ctx, "Still working. Press Cancel first to stop it.");
+      return TRUE;
+    }
+  return FALSE;
+}
+
+static void
+on_window_destroy (GtkWidget *window, gpointer user_data)
+{
+  (void) window;
   SyncCtx *ctx = user_data;
   if (ctx->on_done)
     ctx->on_done (ctx->downloaded, ctx->user_data);
@@ -377,10 +396,22 @@ gog_show_sync_dialog (GtkWindow *parent, const char *library_dir, GogLibrary *li
   ctx->items = g_ptr_array_new_with_free_func ((GDestroyNotify) gog_sync_item_free);
   ctx->checks = g_ptr_array_new ();
 
-  AdwDialog *dialog = adw_dialog_new ();
-  ctx->dialog = dialog;
-  adw_dialog_set_title (dialog, "New Games and Updates on GOG");
-  adw_dialog_set_content_width (dialog, 560);
+  GtkWindow *window = GTK_WINDOW (adw_window_new ());
+  ctx->window = window;
+  gtk_window_set_title (window, "New Games and Updates on GOG");
+  gtk_window_set_transient_for (window, parent);
+  gtk_window_set_modal (window, TRUE);
+  gtk_window_set_destroy_with_parent (window, TRUE);
+  gtk_window_set_default_size (window, 640, 620);
+  gtk_widget_set_size_request (GTK_WIDGET (window), 360, 320);
+
+  /* Esc closes it, like the app's other dialogs. */
+  GtkEventController *shortcuts = gtk_shortcut_controller_new ();
+  gtk_shortcut_controller_add_shortcut (
+      GTK_SHORTCUT_CONTROLLER (shortcuts),
+      gtk_shortcut_new (gtk_keyval_trigger_new (GDK_KEY_Escape, 0),
+                        gtk_named_action_new ("window.close")));
+  gtk_widget_add_controller (GTK_WIDGET (window), shortcuts);
 
   GtkWidget *toolbar_view = adw_toolbar_view_new ();
   adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (toolbar_view), adw_header_bar_new ());
@@ -400,8 +431,9 @@ gog_show_sync_dialog (GtkWindow *parent, const char *library_dir, GogLibrary *li
   ctx->results_scroll = gtk_scrolled_window_new ();
   gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (ctx->results_scroll), GTK_POLICY_NEVER,
                                   GTK_POLICY_AUTOMATIC);
-  gtk_scrolled_window_set_propagate_natural_height (GTK_SCROLLED_WINDOW (ctx->results_scroll), TRUE);
-  gtk_scrolled_window_set_max_content_height (GTK_SCROLLED_WINDOW (ctx->results_scroll), 360);
+  /* The list gets all the room the window has. */
+  gtk_widget_set_vexpand (ctx->results_scroll, TRUE);
+  gtk_scrolled_window_set_min_content_height (GTK_SCROLLED_WINDOW (ctx->results_scroll), 120);
   gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (ctx->results_scroll), ctx->results_box);
   gtk_box_append (GTK_BOX (outer), ctx->results_scroll);
 
@@ -412,7 +444,9 @@ gog_show_sync_dialog (GtkWindow *parent, const char *library_dir, GogLibrary *li
   gtk_progress_bar_set_ellipsize (ctx->progress_bar, PANGO_ELLIPSIZE_MIDDLE);
   gtk_box_append (GTK_BOX (ctx->progress_box), GTK_WIDGET (ctx->progress_bar));
   GtkWidget *log_scroll = gtk_scrolled_window_new ();
+  ctx->log_scroll = log_scroll;
   gtk_widget_set_size_request (log_scroll, -1, 140);
+  gtk_widget_set_visible (log_scroll, FALSE);
   gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (log_scroll), GTK_POLICY_NEVER,
                                   GTK_POLICY_AUTOMATIC);
   ctx->log_view = GTK_TEXT_VIEW (gtk_text_view_new ());
@@ -446,12 +480,13 @@ gog_show_sync_dialog (GtkWindow *parent, const char *library_dir, GogLibrary *li
   gtk_box_append (GTK_BOX (outer), btn_box);
 
   adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (toolbar_view), outer);
-  adw_dialog_set_child (dialog, toolbar_view);
+  adw_window_set_content (ADW_WINDOW (window), toolbar_view);
 
   if (gog_sync_is_available ())
     {
       gint64 checked = 0;
-      show_items (ctx, gog_sync_load_results (&checked), checked);
+      GPtrArray *saved = gog_sync_load_results (&checked); /* sets checked first */
+      show_items (ctx, saved, checked);
       set_busy (ctx, FALSE);
     }
   else
@@ -466,6 +501,7 @@ gog_show_sync_dialog (GtkWindow *parent, const char *library_dir, GogLibrary *li
       gtk_widget_set_sensitive (GTK_WIDGET (ctx->download_button), FALSE);
     }
 
-  g_signal_connect (dialog, "closed", G_CALLBACK (on_dialog_closed), ctx);
-  adw_dialog_present (dialog, GTK_WIDGET (parent));
+  g_signal_connect (window, "close-request", G_CALLBACK (on_close_request), ctx);
+  g_signal_connect (window, "destroy", G_CALLBACK (on_window_destroy), ctx);
+  gtk_window_present (window);
 }
