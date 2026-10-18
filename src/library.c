@@ -77,33 +77,46 @@ gog_library_find_by_id (GogLibrary *self, gint64 id)
   return NULL;
 }
 
+/* g_ptr_array_sort passes pointers to the elements, not the strings.
+ * Case-folded, so "bahasa Indonesia" sorts among the Bs, not after "Türkçe". */
+static gint
+compare_language_names (gconstpointer a, gconstpointer b)
+{
+  gchar *fa = g_utf8_casefold (*(const gchar *const *) a, -1);
+  gchar *fb = g_utf8_casefold (*(const gchar *const *) b, -1);
+  gint result = g_utf8_collate (fa, fb);
+  g_free (fa);
+  g_free (fb);
+  return result;
+}
+
 GStrv
 gog_library_get_all_languages (GogLibrary *self)
 {
-  GPtrArray *out = g_ptr_array_new ();
+  /* Set of names (keys owned by the table) so each language is listed once
+   * however many games mention it. */
+  GHashTable *seen = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
   guint n = g_list_model_get_n_items (G_LIST_MODEL (self->store));
   for (guint i = 0; i < n; i++)
     {
       GogGame *g = g_list_model_get_item (G_LIST_MODEL (self->store), i);
       for (const char *const *l = gog_game_get_languages (g); l && *l; l++)
-        g_ptr_array_add (out, g_strdup (*l));
+        g_hash_table_add (seen, g_strdup (*l));
       GStrv downloaded = gog_game_dup_installer_languages (g);
       for (GStrv l = downloaded; *l; l++)
-        g_ptr_array_add (out, g_strdup (*l));
+        g_hash_table_add (seen, g_strdup (*l));
       g_strfreev (downloaded);
       g_object_unref (g);
     }
-  g_ptr_array_sort (out, (GCompareFunc) g_strcmp0);
-  for (guint i = 0; i + 1 < out->len;)
-    {
-      if (g_strcmp0 (g_ptr_array_index (out, i), g_ptr_array_index (out, i + 1)) == 0)
-        {
-          g_free (g_ptr_array_index (out, i + 1));
-          g_ptr_array_remove_index (out, i + 1);
-        }
-      else
-        i++;
-    }
+
+  GPtrArray *out = g_ptr_array_new ();
+  GHashTableIter iter;
+  gpointer key;
+  g_hash_table_iter_init (&iter, seen);
+  while (g_hash_table_iter_next (&iter, &key, NULL))
+    g_ptr_array_add (out, g_strdup (key));
+  g_hash_table_unref (seen);
+  g_ptr_array_sort (out, compare_language_names);
   g_ptr_array_add (out, NULL);
   return (GStrv) g_ptr_array_free (out, FALSE);
 }

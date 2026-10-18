@@ -144,6 +144,57 @@ test_scan_detects_installer_languages (void)
   g_free (root);
 }
 
+/* Every game lists English and most list Deutsch; each language must still
+ * appear once in the menu, sorted. */
+static void
+test_all_languages_listed_once (void)
+{
+  gchar *root = g_dir_make_tmp ("gog-library-test-XXXXXX", NULL);
+  const char *dirs[] = { "a", "b", "c" };
+  const char *jsons[] = {
+    "{\"id\": 11, \"title\": \"A\", \"languages\": {\"en\": \"English\", \"de\": \"Deutsch\"}}",
+    "{\"id\": 12, \"title\": \"B\", \"languages\": {\"de\": \"Deutsch\", \"en\": \"English\", \"fr\": \"français\"}}",
+    "{\"id\": 13, \"title\": \"C\", \"languages\": {\"en\": \"English\"}}",
+  };
+  for (gsize i = 0; i < G_N_ELEMENTS (dirs); i++)
+    {
+      gchar *dir = g_build_filename (root, dirs[i], NULL);
+      g_assert_cmpint (g_mkdir (dir, 0755), ==, 0);
+      write_file (dir, "product_x.json", jsons[i]);
+      /* Untagged installer: English, already in the metadata list. */
+      write_file (dir, "setup_x_(1).exe", "MZ");
+      g_free (dir);
+    }
+
+  GogLibrary *library = gog_library_new ();
+  gboolean done = FALSE;
+  gog_library_scan_async (library, root, NULL, on_scan_done, &done);
+  while (!done)
+    g_main_context_iteration (NULL, TRUE);
+
+  GStrv all = gog_library_get_all_languages (library);
+  g_assert_cmpuint (g_strv_length (all), ==, 3);
+  g_assert_cmpstr (all[0], ==, "Deutsch");
+  g_assert_cmpstr (all[1], ==, "English");
+  g_assert_cmpstr (all[2], ==, "français");
+  g_strfreev (all);
+
+  while (g_main_context_iteration (NULL, FALSE))
+    ;
+  g_object_unref (library);
+
+  for (gsize i = 0; i < G_N_ELEMENTS (dirs); i++)
+    {
+      gchar *dir = g_build_filename (root, dirs[i], NULL);
+      remove_file (dir, "product_x.json");
+      remove_file (dir, "setup_x_(1).exe");
+      g_rmdir (dir);
+      g_free (dir);
+    }
+  g_rmdir (root);
+  g_free (root);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -151,5 +202,6 @@ main (int argc, char *argv[])
   g_test_add_func ("/library/scan_reads_serials", test_scan_reads_serials);
   g_test_add_func ("/library/language_from_installer_name", test_language_from_installer_name);
   g_test_add_func ("/library/scan_detects_installer_languages", test_scan_detects_installer_languages);
+  g_test_add_func ("/library/all_languages_listed_once", test_all_languages_listed_once);
   return g_test_run ();
 }
