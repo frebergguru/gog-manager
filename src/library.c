@@ -87,6 +87,10 @@ gog_library_get_all_languages (GogLibrary *self)
       GogGame *g = g_list_model_get_item (G_LIST_MODEL (self->store), i);
       for (const char *const *l = gog_game_get_languages (g); l && *l; l++)
         g_ptr_array_add (out, g_strdup (*l));
+      GStrv downloaded = gog_game_dup_installer_languages (g);
+      for (GStrv l = downloaded; *l; l++)
+        g_ptr_array_add (out, g_strdup (*l));
+      g_strfreev (downloaded);
       g_object_unref (g);
     }
   g_ptr_array_sort (out, (GCompareFunc) g_strcmp0);
@@ -152,6 +156,79 @@ is_installer_file (const char *filename)
                 !g_regex_match_simple ("-\\d+\\.bin$", filename, G_REGEX_CASELESS, 0);
   g_free (lower);
   return ok;
+}
+
+/* GOG names extra-language installers with an English tag, e.g.
+ * "setup_foo_1.1_(german)_(24519).exe" or "foo_(french_64bit)_(123).exe";
+ * the untagged installer is the English one. Codes and names are the ones
+ * GOG uses in its product metadata, so they merge with its language lists. */
+typedef struct
+{
+  const char *tag;
+  const char *code;
+  const char *name;
+} FileLanguage;
+
+static const FileLanguage file_languages[] = {
+  { "english", "en", "English" },
+  { "german", "de", "Deutsch" },
+  { "french", "fr", "français" },
+  { "spanish", "es", "español" },
+  { "spanish_latam", "es_mx", "Español (AL)" },
+  { "italian", "it", "italiano" },
+  { "polish", "pl", "polski" },
+  { "russian", "ru", "русский" },
+  { "czech", "cz", "český" },
+  { "cs", "cz", "český" },
+  { "hungarian", "hu", "magyar" },
+  { "dutch", "nl", "nederlands" },
+  { "portuguese", "pt", "português" },
+  { "portuguese_brazilian", "br", "Português do Brasil" },
+  { "brazilian", "br", "Português do Brasil" },
+  { "swedish", "sv", "svenska" },
+  { "danish", "da", "Dansk" },
+  { "finnish", "fi", "suomi" },
+  { "norwegian", "no", "norsk" },
+  { "turkish", "tr", "Türkçe" },
+  { "ukrainian", "uk", "yкраїнська" },
+  { "greek", "gk", "Ελληνικά" },
+  { "romanian", "ro", "română" },
+  { "bulgarian", "bl", "български" },
+  { "slovak", "sk", "slovenský" },
+  { "arabic", "ar", "العربية" },
+  { "thai", "th", "ไทย" },
+  { "korean", "ko", "한국어" },
+  { "japanese", "jp", "日本語" },
+  { "chinese", "cn", "中文" },
+  { "chinese_simplified", "cn", "中文" },
+  { "chinese_traditional", "zh", "中文(繁體)" },
+};
+
+gboolean
+gog_library_language_from_installer_name (const char *filename, const char **out_code,
+                                          const char **out_name)
+{
+  for (const char *open = strchr (filename, '('); open; open = strchr (open + 1, '('))
+    {
+      const char *close = strchr (open, ')');
+      if (!close)
+        break;
+      gchar *tag = g_ascii_strdown (open + 1, close - open - 1);
+      if (g_str_has_suffix (tag, "_64bit") || g_str_has_suffix (tag, "_32bit"))
+        tag[strlen (tag) - strlen ("_64bit")] = '\0';
+      for (gsize i = 0; i < G_N_ELEMENTS (file_languages); i++)
+        if (g_strcmp0 (tag, file_languages[i].tag) == 0)
+          {
+            g_free (tag);
+            if (out_code)
+              *out_code = file_languages[i].code;
+            if (out_name)
+              *out_name = file_languages[i].name;
+            return TRUE;
+          }
+      g_free (tag);
+    }
+  return FALSE;
 }
 
 /* Sum the size of a main installer file plus any split "<stem>-N.bin"
@@ -239,13 +316,18 @@ read_serials (const char *dir)
 /* Find the downloads.installers[] entry that best matches an on-disk
  * installer file: same OS family, closest total_size. Returns NULL if
  * installers_arr is empty/absent. */
+/* The metadata entry for an installer file: same OS, in language
+ * want_code when such an entry exists (sizes alone can't tell languages
+ * apart; several often share one size), closest in size otherwise. */
 static json_object *
-match_json_installer (json_object *installers_arr, GogOs os, guint64 disk_size)
+match_json_installer (json_object *installers_arr, GogOs os, guint64 disk_size,
+                      const char *want_code)
 {
   if (!installers_arr)
     return NULL;
   json_object *best = NULL;
   guint64 best_diff = G_MAXUINT64;
+  gboolean best_has_lang = FALSE;
   size_t n = json_object_array_length (installers_arr);
   for (size_t i = 0; i < n; i++)
     {
@@ -256,6 +338,14 @@ match_json_installer (json_object *installers_arr, GogOs os, guint64 disk_size)
                                                           GOG_OS_MAC;
       if (eos != os)
         continue;
+      gboolean has_lang = g_strcmp0 (ju_get_string (entry, "language", ""), want_code) == 0;
+      if (best_has_lang && !has_lang)
+        continue;
+      if (has_lang && !best_has_lang)
+        {
+          best_has_lang = TRUE;
+          best_diff = G_MAXUINT64;
+        }
       guint64 total = (guint64) ju_get_int64 (entry, "total_size", 0);
       guint64 diff = total > disk_size ? total - disk_size : disk_size - total;
       if (diff < best_diff)
@@ -306,14 +396,26 @@ scan_installers (GogGame *game, const char *dir, json_object *root)
 
       GogOs os = os_from_extension (name);
       guint64 size = installer_total_size (dir, name);
-      json_object *meta = match_json_installer (installers_arr, os, size);
+      const char *tag_code = NULL, *tag_name = NULL;
+      gboolean tagged = gog_library_language_from_installer_name (name, &tag_code, &tag_name);
+      json_object *meta = match_json_installer (installers_arr, os, size,
+                                                tagged ? tag_code : "en");
 
       GogInstallerInfo *info = gog_installer_info_new ();
       info->os = os;
       info->file_path = g_build_filename (dir, name, NULL);
       info->size = size;
-      info->language_code = g_strdup (ju_get_string (meta, "language", "en"));
-      info->language_full = g_strdup (ju_get_string (meta, "language_full", "English"));
+      if (tagged && g_strcmp0 (ju_get_string (meta, "language", ""), tag_code) != 0)
+        {
+          /* The file name is more reliable than a size guess. */
+          info->language_code = g_strdup (tag_code);
+          info->language_full = g_strdup (tag_name);
+        }
+      else
+        {
+          info->language_code = g_strdup (ju_get_string (meta, "language", "en"));
+          info->language_full = g_strdup (ju_get_string (meta, "language_full", "English"));
+        }
       info->version = g_strdup (ju_get_string (meta, "version", ""));
       gog_game_add_installer (game, info);
     }

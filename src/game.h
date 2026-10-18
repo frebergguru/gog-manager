@@ -101,6 +101,12 @@ void          gog_game_set_related_ids (GogGame *self, const gint64 *ids, guint 
 GPtrArray *gog_game_get_installers (GogGame *self);
 void       gog_game_add_installer (GogGame *self, GogInstallerInfo *info);
 
+/* Distinct languages of the installers found on disk, sorted by name: the
+ * native names (e.g. "Deutsch") or, with codes, GOG's language codes in the
+ * same order (e.g. "de"). Transfer full; never NULL. */
+GStrv gog_game_dup_installer_languages (GogGame *self);
+GStrv gog_game_dup_installer_language_codes (GogGame *self);
+
 /* Extras found on disk. Element type: GogExtraInfo*, owned by self. */
 GPtrArray *gog_game_get_extras (GogGame *self);
 void       gog_game_add_extra (GogGame *self, GogExtraInfo *info);

@@ -5,6 +5,7 @@
 #include "proton_manage_dialog.h"
 #include "../proton_fetch.h"
 #include "../game.h"
+#include "../text_util.h"
 
 typedef struct
 {
@@ -23,6 +24,10 @@ typedef struct
 
   GPtrArray *names;  /* installed build names, newest first */
   GPtrArray *checks; /* GtkCheckButton*, parallel to names */
+  GPtrArray *rows;   /* AdwActionRow*, parallel to names */
+  GPtrArray *row_notes; /* gchar* subtitle without the size, parallel to names */
+  GArray *sizes;     /* guint64 bytes, parallel to names once measured, else NULL */
+  GCancellable *measuring;
   GStrv pending;     /* builds being removed */
   gboolean busy;
   gboolean changed;
@@ -75,6 +80,49 @@ titles_using (ManageCtx *ctx, const char *const *names)
       g_object_unref (g);
     }
   return out ? g_string_free (out, FALSE) : NULL;
+}
+
+GStrv
+gog_proton_unused_old_versions (GogConfig *config, GogLibrary *library)
+{
+  GPtrArray *names = proton_fetch_list_installed ();
+  GStrvBuilder *builder = g_strv_builder_new ();
+  GListModel *model = gog_library_get_model (library);
+  guint n_games = g_list_model_get_n_items (model);
+
+  for (guint i = 1; i < names->len; i++) /* names[0] is the newest */
+    {
+      gchar *path = build_path (g_ptr_array_index (names, i));
+      gboolean used = config->default_runner_kind == GOG_RUNNER_PROTON &&
+                      g_strcmp0 (config->default_runner_path, path) == 0;
+      for (guint j = 0; j < n_games && !used; j++)
+        {
+          GogGame *g = g_list_model_get_item (model, j);
+          used = game_uses_runner (g, path);
+          g_object_unref (g);
+        }
+      if (!used)
+        g_strv_builder_add (builder, g_ptr_array_index (names, i));
+      g_free (path);
+    }
+
+  g_ptr_array_unref (names);
+  GStrv out = g_strv_builder_end (builder);
+  g_strv_builder_unref (builder);
+  return out;
+}
+
+/* Total size of names, or 0 when sizes are not known yet. */
+static guint64
+size_of (ManageCtx *ctx, const char *const *names)
+{
+  if (!ctx->sizes)
+    return 0;
+  guint64 total = 0;
+  for (guint i = 0; i < ctx->names->len; i++)
+    if (g_strv_contains (names, g_ptr_array_index (ctx->names, i)))
+      total += g_array_index (ctx->sizes, guint64, i);
+  return total;
 }
 
 static void
@@ -276,7 +324,16 @@ confirm_remove (ManageCtx *ctx, GStrv names)
       g_string_append_printf (body, "%s\n\n", list);
       g_free (list);
     }
-  g_string_append (body, "The files are deleted from this computer.");
+  guint64 freed = size_of (ctx, (const char *const *) names);
+  if (freed > 0)
+    {
+      gchar *freed_str = text_format_size (freed);
+      g_string_append_printf (body, "The files are deleted from this computer, freeing %s.",
+                              freed_str);
+      g_free (freed_str);
+    }
+  else
+    g_string_append (body, "The files are deleted from this computer.");
 
   gchar *users = titles_using (ctx, (const char *const *) names);
   if (users)
@@ -341,12 +398,54 @@ on_remove_old_clicked (GtkButton *button, gpointer user_data)
 }
 
 static void
+on_measured (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+  (void) source;
+  GError *error = NULL;
+  GArray *sizes = proton_fetch_measure_finish (res, &error);
+  if (!sizes)
+    {
+      /* Cancelled: the list was rebuilt or the dialog closed, and user_data
+       * may be gone. */
+      g_clear_error (&error);
+      return;
+    }
+  ManageCtx *ctx = user_data;
+  g_clear_object (&ctx->measuring);
+  if (sizes->len != ctx->names->len)
+    {
+      g_array_unref (sizes);
+      return;
+    }
+  g_clear_pointer (&ctx->sizes, g_array_unref);
+  ctx->sizes = sizes;
+  for (guint i = 0; i < ctx->rows->len; i++)
+    {
+      gchar *size_str = text_format_size (g_array_index (sizes, guint64, i));
+      gchar *subtitle = g_strdup_printf ("%s · %s", size_str,
+                                         (const char *) g_ptr_array_index (ctx->row_notes, i));
+      adw_action_row_set_subtitle (g_ptr_array_index (ctx->rows, i), subtitle);
+      g_free (subtitle);
+      g_free (size_str);
+    }
+}
+
+static void
 rebuild_list (ManageCtx *ctx)
 {
+  if (ctx->measuring)
+    {
+      g_cancellable_cancel (ctx->measuring);
+      g_clear_object (&ctx->measuring);
+    }
+  g_clear_pointer (&ctx->sizes, g_array_unref);
+
   GtkWidget *child;
   while ((child = gtk_widget_get_first_child (ctx->list_box)))
     gtk_list_box_remove (GTK_LIST_BOX (ctx->list_box), child);
   g_ptr_array_set_size (ctx->checks, 0);
+  g_ptr_array_set_size (ctx->rows, 0);
+  g_ptr_array_set_size (ctx->row_notes, 0);
   g_ptr_array_unref (ctx->names);
   ctx->names = proton_fetch_list_installed ();
 
@@ -359,16 +458,18 @@ rebuild_list (ManageCtx *ctx)
 
       const char *one[] = { name, NULL };
       gchar *users = titles_using (ctx, one);
-      gchar *subtitle = NULL;
+      gchar *note = NULL;
       if (i == 0 && users)
-        subtitle = g_strdup_printf ("Newest. Used by %s", users);
+        note = g_strdup_printf ("Newest. Used by %s", users);
       else if (i == 0)
-        subtitle = g_strdup ("Newest");
+        note = g_strdup ("Newest");
       else if (users)
-        subtitle = g_strdup_printf ("Used by %s", users);
-      if (subtitle)
-        adw_action_row_set_subtitle (row, subtitle);
-      g_free (subtitle);
+        note = g_strdup_printf ("Used by %s", users);
+      else
+        note = g_strdup ("Not used by any game");
+      adw_action_row_set_subtitle (row, note);
+      g_ptr_array_add (ctx->rows, row);
+      g_ptr_array_add (ctx->row_notes, note);
       g_free (users);
 
       GtkWidget *check = gtk_check_button_new ();
@@ -388,6 +489,15 @@ rebuild_list (ManageCtx *ctx)
   gtk_widget_set_visible (ctx->list_box, ctx->names->len > 0);
   gtk_widget_set_visible (ctx->empty_label, ctx->names->len == 0);
   update_buttons (ctx);
+
+  if (ctx->names->len > 0)
+    {
+      ctx->measuring = g_cancellable_new ();
+      g_ptr_array_add (ctx->names, NULL);
+      proton_fetch_measure_async ((const char *const *) ctx->names->pdata, ctx->measuring,
+                                  on_measured, ctx);
+      g_ptr_array_remove_index (ctx->names, ctx->names->len - 1);
+    }
 }
 
 static void
@@ -397,8 +507,16 @@ on_dialog_closed (AdwDialog *dialog, gpointer user_data)
   ManageCtx *ctx = user_data;
   if (ctx->on_done)
     ctx->on_done (ctx->changed, ctx->user_data);
+  if (ctx->measuring)
+    {
+      g_cancellable_cancel (ctx->measuring);
+      g_object_unref (ctx->measuring);
+    }
+  g_clear_pointer (&ctx->sizes, g_array_unref);
   g_ptr_array_unref (ctx->names);
   g_ptr_array_unref (ctx->checks);
+  g_ptr_array_unref (ctx->rows);
+  g_ptr_array_unref (ctx->row_notes);
   g_strfreev (ctx->pending);
   g_free (ctx);
 }
@@ -416,6 +534,8 @@ gog_show_proton_manage_dialog (GtkWindow *parent, GogConfig *config, GogLibrary 
   ctx->user_data = user_data;
   ctx->names = g_ptr_array_new_with_free_func (g_free);
   ctx->checks = g_ptr_array_new ();
+  ctx->rows = g_ptr_array_new ();
+  ctx->row_notes = g_ptr_array_new_with_free_func (g_free);
 
   AdwDialog *dialog = adw_dialog_new ();
   ctx->dialog = dialog;

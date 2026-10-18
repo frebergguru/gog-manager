@@ -8,6 +8,7 @@
 #include <adwaita.h>
 #include "../game.h"
 #include "../config.h"
+#include "../library.h"
 
 G_BEGIN_DECLS
 
@@ -21,7 +22,8 @@ G_BEGIN_DECLS
 typedef void (*GogInstallDoneFunc) (GogGame *game, gboolean success, gpointer user_data);
 
 void gog_show_install_dialog (GtkWindow *parent, GogGame *game, GogInstallerInfo *installer,
-                               GogConfig *config, GogState *state, GogInstallDoneFunc on_done,
+                               GogConfig *config, GogLibrary *library, GogState *state,
+                               GogInstallDoneFunc on_done,
                                gpointer user_data);
 
 G_END_DECLS

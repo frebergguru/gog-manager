@@ -63,6 +63,7 @@ typedef struct
   GtkPicture *cover;
   GtkLabel *title;
   GtkLabel *badges;
+  GtkLabel *languages;
 } CardWidgets;
 
 static void start_scan (GogMainWindow *self);
@@ -112,6 +113,14 @@ filter_func (gpointer item, gpointer user_data)
             break;
           }
       if (!found)
+        {
+          /* Also the languages of the installers on disk, which GOG's own
+           * list occasionally leaves out. */
+          GStrv downloaded = gog_game_dup_installer_languages (game);
+          found = g_strv_contains ((const char *const *) downloaded, wanted);
+          g_strfreev (downloaded);
+        }
+      if (!found)
         return FALSE;
     }
 
@@ -122,6 +131,29 @@ filter_func (gpointer item, gpointer user_data)
     return FALSE;
 
   return TRUE;
+}
+
+/* Games with the same set of downloaded installer languages sort together,
+ * groups ordered by language name. Games without installers go last. */
+static gint
+compare_installer_languages (GogGame *ga, GogGame *gb)
+{
+  GStrv la = gog_game_dup_installer_languages (ga);
+  GStrv lb = gog_game_dup_installer_languages (gb);
+  gint result;
+  if (!la[0] || !lb[0])
+    result = (la[0] == NULL) - (lb[0] == NULL);
+  else
+    {
+      gchar *ka = g_strjoinv ("\n", la);
+      gchar *kb = g_strjoinv ("\n", lb);
+      result = g_utf8_collate (ka, kb);
+      g_free (ka);
+      g_free (kb);
+    }
+  g_strfreev (la);
+  g_strfreev (lb);
+  return result;
 }
 
 static gint
@@ -147,6 +179,13 @@ sort_func (gconstpointer a, gconstpointer b, gpointer user_data)
         if (sa == sb)
           return 0;
         return sa < sb ? 1 : -1;
+      }
+    case 4: /* Language of the downloaded installers */
+      {
+        gint by_lang = compare_installer_languages (ga, gb);
+        if (by_lang != 0)
+          return by_lang;
+        return g_utf8_collate (gog_game_get_title (ga), gog_game_get_title (gb));
       }
     default: /* Title A-Z */
       return g_utf8_collate (gog_game_get_title (ga), gog_game_get_title (gb));
@@ -234,6 +273,33 @@ update_card (CardWidgets *cw, GogGame *game)
   gtk_label_set_label (cw->badges, badges->str);
   g_string_free (badges, TRUE);
 
+  /* Codes keep the card short; the full names go to tooltip and screen
+   * readers. */
+  GStrv names = gog_game_dup_installer_languages (game);
+  GStrv codes = gog_game_dup_installer_language_codes (game);
+  for (GStrv c = codes; *c; c++)
+    {
+      gchar *upper = g_utf8_strup (*c, -1);
+      g_free (*c);
+      *c = upper;
+    }
+  gchar *code_text = g_strjoinv (" · ", codes);
+  gtk_label_set_label (cw->languages, code_text);
+  gtk_widget_set_visible (GTK_WIDGET (cw->languages), codes[0] != NULL);
+  if (names[0])
+    {
+      gchar *joined = g_strjoinv (", ", names);
+      gchar *full = g_strdup_printf ("Installers in %s", joined);
+      gtk_widget_set_tooltip_text (GTK_WIDGET (cw->languages), full);
+      gtk_accessible_update_property (GTK_ACCESSIBLE (cw->languages),
+                                      GTK_ACCESSIBLE_PROPERTY_LABEL, full, -1);
+      g_free (full);
+      g_free (joined);
+    }
+  g_free (code_text);
+  g_strfreev (codes);
+  g_strfreev (names);
+
   if (gog_game_get_icon_path (game))
     gtk_picture_set_filename (cw->cover, gog_game_get_icon_path (game));
   else
@@ -280,12 +346,20 @@ on_factory_setup (GtkSignalListItemFactory *factory, GtkListItem *list_item, gpo
   gtk_label_set_xalign (GTK_LABEL (badges), 0.0);
   gtk_box_append (GTK_BOX (box), badges);
 
+  GtkWidget *languages = gtk_label_new (NULL);
+  gtk_widget_add_css_class (languages, "dim-label");
+  gtk_widget_add_css_class (languages, "caption");
+  gtk_label_set_wrap (GTK_LABEL (languages), TRUE);
+  gtk_label_set_xalign (GTK_LABEL (languages), 0.0);
+  gtk_box_append (GTK_BOX (box), languages);
+
   gtk_list_item_set_child (list_item, box);
 
   CardWidgets *cw = g_new0 (CardWidgets, 1);
   cw->cover = GTK_PICTURE (cover);
   cw->title = GTK_LABEL (title);
   cw->badges = GTK_LABEL (badges);
+  cw->languages = GTK_LABEL (languages);
   g_object_set_data_full (G_OBJECT (list_item), "cw", cw, g_free);
 }
 
@@ -634,7 +708,8 @@ build_sidebar (GogMainWindow *self)
   gtk_widget_set_halign (sort_heading, GTK_ALIGN_START);
   gtk_box_append (GTK_BOX (box), sort_heading);
   GtkStringList *sort_list = gtk_string_list_new (
-      (const char *[]) { "Title A–Z", "Title Z–A", "Installed first", "Size (largest)", NULL });
+      (const char *[]) { "Title A–Z", "Title Z–A", "Installed first", "Size (largest)",
+                         "Language", NULL });
   self->sort_dropdown = GTK_DROP_DOWN (gtk_drop_down_new (G_LIST_MODEL (sort_list), NULL));
   set_accessible_label (GTK_WIDGET (self->sort_dropdown), "Sort By");
   gtk_box_append (GTK_BOX (box), GTK_WIDGET (self->sort_dropdown));

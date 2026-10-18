@@ -3,12 +3,16 @@
  */
 
 #include "proton_fetch_dialog.h"
+#include "proton_manage_dialog.h"
 #include "../proton_fetch.h"
+#include "../text_util.h"
 
 typedef struct
 {
   AdwDialog *dialog;
   GtkWindow *parent;
+  GogConfig *config;
+  GogLibrary *library;
   GogProtonFetchDoneFunc on_done;
   gpointer user_data;
 
@@ -18,6 +22,12 @@ typedef struct
   GtkTextView *log_view;
   GtkButton *action_button; /* Download -> Close */
   GtkButton *cancel_button;
+
+  GtkWidget *cleanup_box; /* offer to remove unused older versions */
+  GtkLabel *cleanup_label;
+  GtkButton *cleanup_button;
+  GStrv unused;           /* the versions offered */
+  GCancellable *measuring;
 
   GogProtonFetchJob *job;
   gboolean succeeded;
@@ -33,6 +43,12 @@ ctx_free (FetchCtx *ctx)
       g_signal_handlers_disconnect_by_data (ctx->job, ctx);
       g_clear_object (&ctx->job);
     }
+  if (ctx->measuring)
+    {
+      g_cancellable_cancel (ctx->measuring);
+      g_object_unref (ctx->measuring);
+    }
+  g_strfreev (ctx->unused);
   g_free (ctx->result);
   g_free (ctx);
 }
@@ -72,6 +88,100 @@ on_job_log_line (GogProtonFetchJob *job, const gchar *line, gpointer user_data)
 }
 
 static void
+set_cleanup_text (FetchCtx *ctx, guint64 total)
+{
+  gchar *list = g_strjoinv (", ", ctx->unused);
+  guint n = g_strv_length (ctx->unused);
+  gchar *text;
+  if (total > 0)
+    {
+      gchar *size_str = text_format_size (total);
+      text = g_strdup_printf (n == 1 ? "An older version no game uses takes up %s: %s."
+                                     : "Older versions no game uses take up %s: %s.",
+                              size_str, list);
+      g_free (size_str);
+    }
+  else
+    text = g_strdup_printf (n == 1 ? "An older version no game uses is still here: %s."
+                                   : "Older versions no game uses are still here: %s.",
+                            list);
+  gtk_label_set_text (ctx->cleanup_label, text);
+  g_free (text);
+  g_free (list);
+}
+
+static void
+on_unused_measured (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+  (void) source;
+  GArray *sizes = proton_fetch_measure_finish (res, NULL);
+  if (!sizes)
+    return; /* cancelled: the dialog is gone */
+  FetchCtx *ctx = user_data;
+  g_clear_object (&ctx->measuring);
+  guint64 total = 0;
+  for (guint i = 0; i < sizes->len; i++)
+    total += g_array_index (sizes, guint64, i);
+  g_array_unref (sizes);
+  set_cleanup_text (ctx, total);
+}
+
+static void
+offer_cleanup (FetchCtx *ctx)
+{
+  if (!ctx->library || !ctx->config)
+    return;
+  g_strfreev (ctx->unused);
+  ctx->unused = gog_proton_unused_old_versions (ctx->config, ctx->library);
+  if (!ctx->unused[0])
+    return;
+  set_cleanup_text (ctx, 0);
+  gtk_button_set_label (ctx->cleanup_button,
+                        g_strv_length (ctx->unused) == 1 ? "Remove It" : "Remove Them");
+  gtk_widget_set_visible (ctx->cleanup_box, TRUE);
+  ctx->measuring = g_cancellable_new ();
+  proton_fetch_measure_async ((const char *const *) ctx->unused, ctx->measuring,
+                              on_unused_measured, ctx);
+}
+
+static void
+on_cleanup_finished (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+  (void) source;
+  FetchCtx *ctx = user_data;
+  GError *error = NULL;
+  if (proton_fetch_remove_finish (res, &error))
+    {
+      gtk_label_set_text (ctx->cleanup_label, "Older versions removed.");
+      append_log_line (ctx, "Removed older GE-Proton versions no game used.");
+    }
+  else
+    {
+      gchar *msg = g_strdup_printf ("Could not remove everything: %s", error->message);
+      gtk_label_set_text (ctx->cleanup_label, msg);
+      append_log_line (ctx, msg);
+      g_free (msg);
+      g_clear_error (&error);
+    }
+  gtk_widget_set_visible (GTK_WIDGET (ctx->cleanup_button), FALSE);
+  gtk_widget_set_sensitive (GTK_WIDGET (ctx->action_button), TRUE);
+  adw_dialog_set_can_close (ctx->dialog, TRUE);
+  gtk_widget_grab_focus (GTK_WIDGET (ctx->action_button));
+}
+
+static void
+on_cleanup_clicked (GtkButton *button, gpointer user_data)
+{
+  FetchCtx *ctx = user_data;
+  gtk_widget_set_sensitive (GTK_WIDGET (button), FALSE);
+  gtk_widget_set_sensitive (GTK_WIDGET (ctx->action_button), FALSE);
+  /* Removing takes a moment; keep ctx alive until it is done. */
+  adw_dialog_set_can_close (ctx->dialog, FALSE);
+  gtk_label_set_text (ctx->cleanup_label, "Removing older versions…");
+  proton_fetch_remove_async ((const char *const *) ctx->unused, NULL, on_cleanup_finished, ctx);
+}
+
+static void
 on_job_finished (GogProtonFetchJob *job, gboolean success, const gchar *result, gpointer user_data)
 {
   (void) job;
@@ -87,6 +197,7 @@ on_job_finished (GogProtonFetchJob *job, gboolean success, const gchar *result, 
       gtk_progress_bar_set_text (ctx->progress_bar, msg);
       append_log_line (ctx, msg);
       g_free (msg);
+      offer_cleanup (ctx);
     }
   else
     {
@@ -155,10 +266,13 @@ on_dialog_closed (AdwDialog *dialog, gpointer user_data)
 }
 
 void
-gog_show_proton_fetch_dialog (GtkWindow *parent, GogProtonFetchDoneFunc on_done, gpointer user_data)
+gog_show_proton_fetch_dialog (GtkWindow *parent, GogConfig *config, GogLibrary *library,
+                              GogProtonFetchDoneFunc on_done, gpointer user_data)
 {
   FetchCtx *ctx = g_new0 (FetchCtx, 1);
   ctx->parent = parent;
+  ctx->config = config;
+  ctx->library = library;
   ctx->on_done = on_done;
   ctx->user_data = user_data;
 
@@ -215,6 +329,20 @@ gog_show_proton_fetch_dialog (GtkWindow *parent, GogProtonFetchDoneFunc on_done,
   gtk_box_append (GTK_BOX (ctx->progress_box), log_scroll);
 
   gtk_box_append (GTK_BOX (outer), ctx->progress_box);
+
+  ctx->cleanup_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
+  gtk_widget_set_visible (ctx->cleanup_box, FALSE);
+  ctx->cleanup_label = GTK_LABEL (gtk_label_new (NULL));
+  gtk_label_set_wrap (ctx->cleanup_label, TRUE);
+  gtk_label_set_xalign (ctx->cleanup_label, 0);
+  gtk_widget_set_hexpand (GTK_WIDGET (ctx->cleanup_label), TRUE);
+  gtk_box_append (GTK_BOX (ctx->cleanup_box), GTK_WIDGET (ctx->cleanup_label));
+  ctx->cleanup_button = GTK_BUTTON (gtk_button_new_with_label ("Remove Them"));
+  gtk_widget_set_valign (GTK_WIDGET (ctx->cleanup_button), GTK_ALIGN_CENTER);
+  gtk_widget_add_css_class (GTK_WIDGET (ctx->cleanup_button), "destructive-action");
+  g_signal_connect (ctx->cleanup_button, "clicked", G_CALLBACK (on_cleanup_clicked), ctx);
+  gtk_box_append (GTK_BOX (ctx->cleanup_box), GTK_WIDGET (ctx->cleanup_button));
+  gtk_box_append (GTK_BOX (outer), ctx->cleanup_box);
 
   GtkWidget *btn_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
   gtk_widget_set_halign (btn_box, GTK_ALIGN_END);

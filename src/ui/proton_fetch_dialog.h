@@ -6,6 +6,8 @@
 #define GOG_PROTON_FETCH_DIALOG_H
 
 #include <adwaita.h>
+#include "../config.h"
+#include "../library.h"
 
 G_BEGIN_DECLS
 
@@ -15,9 +17,11 @@ G_BEGIN_DECLS
 typedef void (*GogProtonFetchDoneFunc) (gboolean success, const char *result, gpointer user_data);
 
 /* Presents a modal dialog that downloads and installs the latest GE-Proton
- * release from GitHub, with a live progress bar and log. */
-void gog_show_proton_fetch_dialog (GtkWindow *parent, GogProtonFetchDoneFunc on_done,
-                                    gpointer user_data);
+ * release from GitHub, with a live progress bar and log. Afterwards it
+ * offers to remove older downloaded versions that no game in library (and
+ * not config's default runner) uses. */
+void gog_show_proton_fetch_dialog (GtkWindow *parent, GogConfig *config, GogLibrary *library,
+                                    GogProtonFetchDoneFunc on_done, gpointer user_data);
 
 G_END_DECLS
 

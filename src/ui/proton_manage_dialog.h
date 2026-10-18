@@ -24,6 +24,10 @@ void gog_show_proton_manage_dialog (GtkWindow *parent, GogConfig *config, GogLib
                                      GogState *state, GogProtonManageDoneFunc on_done,
                                      gpointer user_data);
 
+/* Downloaded builds other than the newest that no installed game and not
+ * the default runner use: safe to remove without moving anything. */
+GStrv gog_proton_unused_old_versions (GogConfig *config, GogLibrary *library);
+
 G_END_DECLS
 
 #endif

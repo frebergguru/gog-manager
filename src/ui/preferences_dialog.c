@@ -24,6 +24,10 @@ typedef struct
   AdwActionRow *runner_row;
   AdwActionRow *no_runners_row;
   AdwActionRow *custom_runners_row;
+  AdwActionRow *download_row;
+  GCancellable *checking; /* the GitHub check for a newer GE-Proton */
+  gchar *latest_tag;
+  gchar *latest_dir;
   AdwActionRow *manage_proton_row;
   GtkWidget *manage_proton_button;
   GtkDropDown *default_runner_dropdown;
@@ -241,6 +245,45 @@ refresh_manage_proton_row (PrefsCtx *ctx)
 }
 
 static void
+refresh_update_status (PrefsCtx *ctx)
+{
+  if (!ctx->latest_tag)
+    return;
+  gchar *subtitle = proton_fetch_is_installed (ctx->latest_tag, ctx->latest_dir)
+                        ? g_strdup_printf ("You have the newest version, %s", ctx->latest_tag)
+                        : g_strdup_printf ("Update available: %s. Download it to use it for "
+                                           "new installs.",
+                                           ctx->latest_tag);
+  adw_action_row_set_subtitle (ctx->download_row, subtitle);
+  g_free (subtitle);
+}
+
+static void
+on_latest_checked (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+  (void) source;
+  gchar *tag = NULL, *dir_name = NULL;
+  GError *error = NULL;
+  if (!proton_fetch_check_latest_finish (res, &tag, &dir_name, &error))
+    {
+      /* Cancelled means the dialog is gone. Offline or rate-limited: keep
+       * the plain description rather than nagging. */
+      gboolean cancelled = g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
+      g_clear_error (&error);
+      if (!cancelled)
+        g_clear_object (&((PrefsCtx *) user_data)->checking);
+      return;
+    }
+  PrefsCtx *ctx = user_data;
+  g_clear_object (&ctx->checking);
+  g_free (ctx->latest_tag);
+  g_free (ctx->latest_dir);
+  ctx->latest_tag = tag;
+  ctx->latest_dir = dir_name;
+  refresh_update_status (ctx);
+}
+
+static void
 on_proton_fetch_done (gboolean success, const char *result, gpointer user_data)
 {
   PrefsCtx *ctx = user_data;
@@ -248,6 +291,7 @@ on_proton_fetch_done (gboolean success, const char *result, gpointer user_data)
     {
       refresh_runner_dropdown (ctx);
       refresh_manage_proton_row (ctx);
+      refresh_update_status (ctx);
     }
   (void) result;
 }
@@ -260,6 +304,7 @@ on_proton_manage_done (gboolean changed, gpointer user_data)
     {
       refresh_runner_dropdown (ctx);
       refresh_manage_proton_row (ctx);
+      refresh_update_status (ctx);
     }
 }
 
@@ -277,7 +322,8 @@ on_download_proton_clicked (GtkButton *button, gpointer user_data)
 {
   (void) button;
   PrefsCtx *ctx = user_data;
-  gog_show_proton_fetch_dialog (ctx->parent, on_proton_fetch_done, ctx);
+  gog_show_proton_fetch_dialog (ctx->parent, ctx->config, ctx->library, on_proton_fetch_done,
+                                ctx);
 }
 
 static void
@@ -285,6 +331,13 @@ on_dialog_closed (AdwDialog *dialog, gpointer user_data)
 {
   (void) dialog;
   PrefsCtx *ctx = user_data;
+  if (ctx->checking)
+    {
+      g_cancellable_cancel (ctx->checking);
+      g_object_unref (ctx->checking);
+    }
+  g_free (ctx->latest_tag);
+  g_free (ctx->latest_dir);
   save_and_close (ctx);
   if (ctx->runners)
     g_ptr_array_unref (ctx->runners);
@@ -380,6 +433,7 @@ gog_show_preferences_dialog (GtkWindow *parent, GogConfig *config, GogLibrary *l
   refresh_custom_runners_row (ctx);
 
   AdwActionRow *download_row = ADW_ACTION_ROW (adw_action_row_new ());
+  ctx->download_row = download_row;
   adw_preferences_row_set_title (ADW_PREFERENCES_ROW (download_row), "Get GE-Proton");
   adw_action_row_set_subtitle (download_row,
                                 "Download the latest GE-Proton build from GitHub for playing "
@@ -401,6 +455,9 @@ gog_show_preferences_dialog (GtkWindow *parent, GogConfig *config, GogLibrary *l
   adw_action_row_add_suffix (ctx->manage_proton_row, ctx->manage_proton_button);
   adw_preferences_group_add (install_group, GTK_WIDGET (ctx->manage_proton_row));
   refresh_manage_proton_row (ctx);
+
+  ctx->checking = g_cancellable_new ();
+  proton_fetch_check_latest_async (ctx->checking, on_latest_checked, ctx);
 
   refresh_runner_dropdown (ctx);
 

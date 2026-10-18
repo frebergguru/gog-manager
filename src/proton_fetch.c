@@ -210,6 +210,71 @@ proton_fetch_remove_finish (GAsyncResult *result, GError **error)
   return g_task_propagate_boolean (G_TASK (result), error);
 }
 
+/* Apparent size of everything under path, without following symlinks. */
+static guint64
+tree_size (const char *path)
+{
+  GStatBuf st;
+  if (g_lstat (path, &st) != 0)
+    return 0;
+  if (!S_ISDIR (st.st_mode))
+    return S_ISREG (st.st_mode) ? (guint64) st.st_size : 0;
+
+  guint64 total = 0;
+  GDir *d = g_dir_open (path, 0, NULL);
+  if (!d)
+    return 0;
+  const char *name;
+  while ((name = g_dir_read_name (d)))
+    {
+      gchar *child = g_build_filename (path, name, NULL);
+      total += tree_size (child);
+      g_free (child);
+    }
+  g_dir_close (d);
+  return total;
+}
+
+static void
+measure_thread_func (GTask *task, gpointer source_object, gpointer task_data,
+                     GCancellable *cancellable)
+{
+  (void) source_object;
+  gchar **names = task_data;
+  gchar *tools_dir = proton_fetch_get_tools_dir ();
+  GArray *sizes = g_array_new (FALSE, TRUE, sizeof (guint64));
+  for (gchar **name = names; *name && !g_cancellable_is_cancelled (cancellable); name++)
+    {
+      guint64 size = 0;
+      if (is_safe_dir_name (*name))
+        {
+          gchar *dir = g_build_filename (tools_dir, *name, NULL);
+          size = tree_size (dir);
+          g_free (dir);
+        }
+      g_array_append_val (sizes, size);
+    }
+  g_free (tools_dir);
+  g_task_return_pointer (task, sizes, (GDestroyNotify) g_array_unref);
+}
+
+void
+proton_fetch_measure_async (const char *const *names, GCancellable *cancellable,
+                            GAsyncReadyCallback callback, gpointer user_data)
+{
+  GTask *task = g_task_new (NULL, cancellable, callback, user_data);
+  g_task_set_source_tag (task, proton_fetch_measure_async);
+  g_task_set_task_data (task, g_strdupv ((gchar **) names), (GDestroyNotify) g_strfreev);
+  g_task_run_in_thread (task, measure_thread_func);
+  g_object_unref (task);
+}
+
+GArray *
+proton_fetch_measure_finish (GAsyncResult *result, GError **error)
+{
+  return g_task_propagate_pointer (G_TASK (result), error);
+}
+
 static void
 gog_proton_fetch_job_finalize (GObject *object)
 {
@@ -335,13 +400,13 @@ job_finished (GogProtonFetchJob *job, gboolean success, const char *result)
 
 /* ---- helpers ---- */
 
-/* Runs argv to completion, capturing combined output. Registers the
- * subprocess as job->current_proc while it runs so gog_proton_fetch_job_cancel()
- * can force-exit it. */
+/* Runs argv to completion, capturing combined output. When job is not NULL,
+ * registers the subprocess as job->current_proc while it runs so
+ * gog_proton_fetch_job_cancel() can force-exit it. */
 static gboolean
 run_capture (GogProtonFetchJob *job, gchar **argv, gchar **out_output, GError **error)
 {
-  if (job->cancelled)
+  if (job && job->cancelled)
     {
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_CANCELLED, "Cancelled");
       return FALSE;
@@ -354,20 +419,26 @@ run_capture (GogProtonFetchJob *job, gchar **argv, gchar **out_output, GError **
   if (!proc)
     return FALSE;
 
-  g_mutex_lock (&job->proc_mutex);
-  job->current_proc = proc;
-  /* A cancel that landed between the check above and the spawn would
-   * otherwise miss this process. */
-  if (job->cancelled)
-    g_subprocess_force_exit (proc);
-  g_mutex_unlock (&job->proc_mutex);
+  if (job)
+    {
+      g_mutex_lock (&job->proc_mutex);
+      job->current_proc = proc;
+      /* A cancel that landed between the check above and the spawn would
+       * otherwise miss this process. */
+      if (job->cancelled)
+        g_subprocess_force_exit (proc);
+      g_mutex_unlock (&job->proc_mutex);
+    }
 
   gchar *output = NULL;
   gboolean ok = g_subprocess_communicate_utf8 (proc, NULL, NULL, &output, NULL, error);
 
-  g_mutex_lock (&job->proc_mutex);
-  job->current_proc = NULL;
-  g_mutex_unlock (&job->proc_mutex);
+  if (job)
+    {
+      g_mutex_lock (&job->proc_mutex);
+      job->current_proc = NULL;
+      g_mutex_unlock (&job->proc_mutex);
+    }
 
   if (ok && !g_subprocess_get_successful (proc))
     {
@@ -425,59 +496,211 @@ poll_thread_func (gpointer data)
   return NULL;
 }
 
-/* ---- worker thread ---- */
+/* ---- finding the newest release ---- */
 
-/* Returns the asset in @release that we can run on this machine, or NULL. */
-static json_object *
-find_release_asset (json_object *release)
+typedef struct
 {
-  const char *tag = ju_get_string (release, "tag_name", NULL);
-  json_object *assets = ju_get_array (release, "assets");
-  if (!tag || !assets)
+  gchar *tag;        /* e.g. "GE-Proton11-9" */
+  gchar *dir_name;   /* what the archive unpacks to, e.g. "GE-Proton11-9-x86_64" */
+  gchar *url;
+  guint64 size;
+  gchar *sha512_url; /* NULL when the release publishes no checksum */
+} ReleaseInfo;
+
+static void
+release_info_free (ReleaseInfo *info)
+{
+  if (!info)
+    return;
+  g_free (info->tag);
+  g_free (info->dir_name);
+  g_free (info->url);
+  g_free (info->sha512_url);
+  g_free (info);
+}
+
+/* The newest release seen by any lookup, so Preferences can show whether an
+ * update exists without asking GitHub every time it opens. */
+G_LOCK_DEFINE_STATIC (latest_cache);
+static gchar *latest_cache_tag;
+static gchar *latest_cache_dir;
+static gint64 latest_cache_time;
+#define LATEST_CACHE_USECS (10 * G_TIME_SPAN_MINUTE)
+
+static void
+remember_latest (const ReleaseInfo *info)
+{
+  G_LOCK (latest_cache);
+  g_free (latest_cache_tag);
+  g_free (latest_cache_dir);
+  latest_cache_tag = g_strdup (info->tag);
+  latest_cache_dir = g_strdup (info->dir_name);
+  latest_cache_time = g_get_monotonic_time ();
+  G_UNLOCK (latest_cache);
+}
+
+static gchar *
+format_local_time (const char *unix_seconds)
+{
+  gint64 t = g_ascii_strtoll (unix_seconds, NULL, 10);
+  if (t <= 0)
     return NULL;
+  GDateTime *dt = g_date_time_new_from_unix_local (t);
+  if (!dt)
+    return NULL;
+  gchar *out = g_date_time_format (dt, "%H:%M");
+  g_date_time_unref (dt);
+  return out;
+}
 
-  gchar *arch_name = ASSET_ARCH ? g_strdup_printf ("%s-%s.tar.gz", tag, ASSET_ARCH) : NULL;
-  gchar *plain_name = g_strdup_printf ("%s.tar.gz", tag);
-  json_object *arch_asset = NULL, *plain_asset = NULL;
+/* GETs a GitHub API URL and returns the body. Network failures and HTTP
+ * errors (notably GitHub's limit on requests without an account) become
+ * readable messages instead of "curl exited with status N". */
+static gchar *
+github_api_get (GogProtonFetchJob *job, const char *url, GError **error)
+{
+  gchar *argv[] = { "curl", "-sSL", "--connect-timeout", "15", "--max-time", "60", "-D", "-",
+                    "-H", "Accept: application/vnd.github+json", "-H", "Cache-Control: no-cache",
+                    (gchar *) url, NULL };
+  gchar *output = NULL;
+  GError *local_error = NULL;
+  if (!run_capture (job, argv, &output, &local_error))
+    {
+      g_free (output);
+      if ((job && job->cancelled) ||
+          g_error_matches (local_error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+        {
+          g_propagate_error (error, local_error);
+          return NULL;
+        }
+      /* Without -f, curl only fails when it gets no HTTP answer at all. */
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_NETWORK_UNREACHABLE,
+                   "Could not reach GitHub. Check your internet connection. (%s)",
+                   local_error->message);
+      g_error_free (local_error);
+      return NULL;
+    }
 
+  /* -D - puts the response headers (one block per redirect) before the body. */
+  int status = 0;
+  gchar *remaining = NULL;
+  gchar *reset = NULL;
+  const char *body = output;
+  while (g_str_has_prefix (body, "HTTP/"))
+    {
+      const char *end = strstr (body, "\r\n\r\n");
+      if (!end)
+        break;
+      gchar *block = g_strndup (body, end - body);
+      gchar **lines = g_strsplit (block, "\r\n", -1);
+      status = 0;
+      sscanf (lines[0], "%*s %d", &status);
+      for (gchar **line = lines + 1; *line; line++)
+        {
+          if (g_ascii_strncasecmp (*line, "x-ratelimit-remaining:", 22) == 0)
+            {
+              g_free (remaining);
+              remaining = g_strstrip (g_strdup (*line + 22));
+            }
+          else if (g_ascii_strncasecmp (*line, "x-ratelimit-reset:", 18) == 0)
+            {
+              g_free (reset);
+              reset = g_strstrip (g_strdup (*line + 18));
+            }
+        }
+      g_strfreev (lines);
+      g_free (block);
+      body = end + 4;
+    }
+
+  gchar *result = NULL;
+  if (status == 200)
+    result = g_strdup (body);
+  else if ((status == 403 || status == 429) &&
+           (g_strcmp0 (remaining, "0") == 0 || strstr (body, "rate limit")))
+    {
+      gchar *when = reset ? format_local_time (reset) : NULL;
+      if (when)
+        g_set_error (error, G_IO_ERROR, G_IO_ERROR_BUSY,
+                     "GitHub allows about 60 checks an hour from one network without an account, "
+                     "and that limit has been reached. Try again after %s.",
+                     when);
+      else
+        g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_BUSY,
+                             "GitHub allows about 60 checks an hour from one network without an "
+                             "account, and that limit has been reached. Try again in an hour.");
+      g_free (when);
+    }
+  else if (status == 0)
+    g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                         "GitHub sent an answer that could not be read. Try again later.");
+  else
+    g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                 "GitHub answered with an error (HTTP %d). Try again later.", status);
+
+  g_free (remaining);
+  g_free (reset);
+  g_free (output);
+  return result;
+}
+
+/* The asset called name in release, if it has a download URL. */
+static json_object *
+find_named_asset (json_object *release, const char *name)
+{
+  json_object *assets = ju_get_array (release, "assets");
+  if (!assets)
+    return NULL;
   size_t n = json_object_array_length (assets);
   for (size_t i = 0; i < n; i++)
     {
       json_object *asset = json_object_array_get_idx (assets, i);
-      const char *name = ju_get_string (asset, "name", "");
-      if (!ju_get_string (asset, "browser_download_url", NULL))
-        continue;
-      if (arch_name && g_strcmp0 (name, arch_name) == 0)
-        arch_asset = asset;
-      else if (g_strcmp0 (name, plain_name) == 0)
-        plain_asset = asset;
+      if (g_strcmp0 (ju_get_string (asset, "name", ""), name) == 0 &&
+          ju_get_string (asset, "browser_download_url", NULL))
+        return asset;
     }
-
-  g_free (arch_name);
-  g_free (plain_name);
-  return arch_asset ? arch_asset : plain_asset;
+  return NULL;
 }
 
-static gboolean
-fetch_sync (GogProtonFetchJob *job, GError **error)
+/* Returns the archive in release that we can run on this machine, or NULL. */
+static json_object *
+find_release_asset (json_object *release)
 {
-  job_progress (job, -1, "Checking for the latest GE-Proton release…");
+  const char *tag = ju_get_string (release, "tag_name", NULL);
+  if (!tag)
+    return NULL;
+  json_object *asset = NULL;
+  if (ASSET_ARCH)
+    {
+      gchar *arch_name = g_strdup_printf ("%s-%s.tar.gz", tag, ASSET_ARCH);
+      asset = find_named_asset (release, arch_name);
+      g_free (arch_name);
+    }
+  if (!asset)
+    {
+      gchar *plain_name = g_strdup_printf ("%s.tar.gz", tag);
+      asset = find_named_asset (release, plain_name);
+      g_free (plain_name);
+    }
+  return asset;
+}
 
-  gchar *api_argv[] = { "curl", "-fsSL", "-H", "Accept: application/vnd.github+json",
-                        "-H", "Cache-Control: no-cache", RELEASES_API_URL, NULL };
-  gchar *api_output = NULL;
-  if (!run_capture (job, api_argv, &api_output, error))
-    return FALSE;
+static ReleaseInfo *
+query_newest_release (GogProtonFetchJob *job, GError **error)
+{
+  gchar *body = github_api_get (job, RELEASES_API_URL, error);
+  if (!body)
+    return NULL;
 
-  json_object *root = json_tokener_parse (api_output);
-  g_free (api_output);
+  json_object *root = json_tokener_parse (body);
+  g_free (body);
   if (!root || !json_object_is_type (root, json_type_array))
     {
       if (root)
         json_object_put (root);
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                   "Could not parse GitHub's list of GE-Proton releases");
-      return FALSE;
+                   "Could not read GitHub's list of GE-Proton releases");
+      return NULL;
     }
 
   /* Newest published, non-draft, non-prerelease release that has a
@@ -506,54 +729,209 @@ fetch_sync (GogProtonFetchJob *job, GError **error)
       json_object_put (root);
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
                    "Could not find a GE-Proton release with a download for this computer");
-      return FALSE;
+      return NULL;
     }
 
   const char *tag = ju_get_string (best_release, "tag_name", NULL);
   const char *asset_name = ju_get_string (best_asset, "name", "");
+  ReleaseInfo *info = g_new0 (ReleaseInfo, 1);
+  info->tag = g_strdup (tag);
   /* The archive unpacks into a directory named after itself, which then
    * sits under the tools dir. */
-  gchar *dir_name = g_strndup (asset_name, strlen (asset_name) - strlen (".tar.gz"));
-  if (!is_safe_dir_name (tag) || !is_safe_dir_name (dir_name))
+  info->dir_name = g_strndup (asset_name, strlen (asset_name) - strlen (".tar.gz"));
+  info->url = g_strdup (ju_get_string (best_asset, "browser_download_url", NULL));
+  info->size = (guint64) ju_get_int64 (best_asset, "size", 0);
+  gchar *sum_name = g_strdup_printf ("%s.sha512sum", info->dir_name);
+  json_object *sum_asset = find_named_asset (best_release, sum_name);
+  g_free (sum_name);
+  if (sum_asset)
+    info->sha512_url = g_strdup (ju_get_string (sum_asset, "browser_download_url", NULL));
+  json_object_put (root);
+
+  if (!is_safe_dir_name (info->tag) || !is_safe_dir_name (info->dir_name))
     {
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
                    "GitHub returned an unexpected release name: %s", asset_name);
-      g_free (dir_name);
-      json_object_put (root);
-      return FALSE;
+      release_info_free (info);
+      return NULL;
     }
-  gchar *tag_dup = g_strdup (tag);
-  gchar *log_line = g_strdup_printf ("Newest GE-Proton release: %s", tag_dup);
-  job_log (job, log_line);
-  g_free (log_line);
 
+  remember_latest (info);
+  return info;
+}
+
+gboolean
+proton_fetch_is_installed (const char *tag, const char *dir_name)
+{
   gchar *tools_dir = proton_fetch_get_tools_dir ();
-  gchar *install_dir = g_build_filename (tools_dir, dir_name, NULL);
-  gchar *proton_bin = g_build_filename (install_dir, "proton", NULL);
+  gchar *proton_bin = g_build_filename (tools_dir, dir_name, "proton", NULL);
   /* Releases fetched before the per-architecture archives live in <tag>/. */
-  gchar *legacy_bin = g_build_filename (tools_dir, tag_dup, "proton", NULL);
-  g_free (dir_name);
-  if (g_file_test (proton_bin, G_FILE_TEST_IS_REGULAR) ||
-      g_file_test (legacy_bin, G_FILE_TEST_IS_REGULAR))
-    {
-      job_log (job, "Already up to date.");
-      g_free (legacy_bin);
-      g_free (proton_bin);
-      g_free (install_dir);
-      g_free (tools_dir);
-      json_object_put (root);
-      job_finished (job, TRUE, tag_dup);
-      g_free (tag_dup);
-      return TRUE;
-    }
+  gchar *legacy_bin = g_build_filename (tools_dir, tag, "proton", NULL);
+  gboolean found = g_file_test (proton_bin, G_FILE_TEST_IS_REGULAR) ||
+                   g_file_test (legacy_bin, G_FILE_TEST_IS_REGULAR);
   g_free (legacy_bin);
   g_free (proton_bin);
+  g_free (tools_dir);
+  return found;
+}
 
-  const char *download_url = ju_get_string (best_asset, "browser_download_url", NULL);
-  guint64 total_size = (guint64) ju_get_int64 (best_asset, "size", 0);
+static void
+check_latest_thread_func (GTask *task, gpointer source_object, gpointer task_data,
+                          GCancellable *cancellable)
+{
+  (void) source_object;
+  (void) task_data;
+  (void) cancellable;
 
-  gchar *download_url_dup = g_strdup (download_url);
-  json_object_put (root);
+  G_LOCK (latest_cache);
+  if (latest_cache_tag && g_get_monotonic_time () - latest_cache_time < LATEST_CACHE_USECS)
+    {
+      gchar **result = g_new0 (gchar *, 3);
+      result[0] = g_strdup (latest_cache_tag);
+      result[1] = g_strdup (latest_cache_dir);
+      G_UNLOCK (latest_cache);
+      g_task_return_pointer (task, result, (GDestroyNotify) g_strfreev);
+      return;
+    }
+  G_UNLOCK (latest_cache);
+
+  GError *error = NULL;
+  ReleaseInfo *info = query_newest_release (NULL, &error);
+  if (!info)
+    {
+      g_task_return_error (task, error);
+      return;
+    }
+  gchar **result = g_new0 (gchar *, 3);
+  result[0] = g_strdup (info->tag);
+  result[1] = g_strdup (info->dir_name);
+  release_info_free (info);
+  g_task_return_pointer (task, result, (GDestroyNotify) g_strfreev);
+}
+
+void
+proton_fetch_check_latest_async (GCancellable *cancellable, GAsyncReadyCallback callback,
+                                 gpointer user_data)
+{
+  GTask *task = g_task_new (NULL, cancellable, callback, user_data);
+  g_task_set_source_tag (task, proton_fetch_check_latest_async);
+  g_task_run_in_thread (task, check_latest_thread_func);
+  g_object_unref (task);
+}
+
+gboolean
+proton_fetch_check_latest_finish (GAsyncResult *result, gchar **out_tag, gchar **out_dir_name,
+                                  GError **error)
+{
+  gchar **pair = g_task_propagate_pointer (G_TASK (result), error);
+  if (!pair)
+    return FALSE;
+  if (out_tag)
+    *out_tag = g_strdup (pair[0]);
+  if (out_dir_name)
+    *out_dir_name = g_strdup (pair[1]);
+  g_strfreev (pair);
+  return TRUE;
+}
+
+/* ---- worker thread ---- */
+
+/* Checks path against the SHA-512 sum GE-Proton publishes next to each
+ * archive ("<hex>  <file name>"). */
+static gboolean
+verify_sha512 (GogProtonFetchJob *job, const char *path, const char *sum_url, GError **error)
+{
+  gchar *sum_argv[] = { "curl", "-fsSL", "--retry", "3", (gchar *) sum_url, NULL };
+  gchar *sum_text = NULL;
+  if (!run_capture (job, sum_argv, &sum_text, error))
+    {
+      g_free (sum_text);
+      g_prefix_error (error, "Could not download the checksum file: ");
+      return FALSE;
+    }
+
+  const char *p = sum_text;
+  while (*p && g_ascii_isspace (*p))
+    p++;
+  gsize hex_len = strspn (p, "0123456789abcdefABCDEF");
+  if (hex_len != 128)
+    {
+      g_free (sum_text);
+      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                           "The published checksum file could not be read");
+      return FALSE;
+    }
+  gchar *expected = g_ascii_strdown (p, 128);
+  g_free (sum_text);
+
+  FILE *f = g_fopen (path, "rb");
+  if (!f)
+    {
+      int saved_errno = errno;
+      g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (saved_errno),
+                   "Could not read the download: %s", g_strerror (saved_errno));
+      g_free (expected);
+      return FALSE;
+    }
+  GChecksum *checksum = g_checksum_new (G_CHECKSUM_SHA512);
+  const gsize buf_size = 1 << 20;
+  guchar *buf = g_malloc (buf_size);
+  gsize n;
+  gboolean ok = TRUE;
+  while ((n = fread (buf, 1, buf_size, f)) > 0)
+    {
+      if (job->cancelled)
+        {
+          g_set_error (error, G_IO_ERROR, G_IO_ERROR_CANCELLED, "Cancelled");
+          ok = FALSE;
+          break;
+        }
+      g_checksum_update (checksum, buf, n);
+    }
+  if (ok && ferror (f))
+    {
+      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED, "Could not read the download");
+      ok = FALSE;
+    }
+  fclose (f);
+  g_free (buf);
+
+  if (ok && g_strcmp0 (g_checksum_get_string (checksum), expected) != 0)
+    {
+      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                           "The download is damaged or has been changed: it does not match the "
+                           "checksum GE-Proton published. Nothing was installed.");
+      ok = FALSE;
+    }
+  g_checksum_free (checksum);
+  g_free (expected);
+  return ok;
+}
+
+static gboolean
+fetch_sync (GogProtonFetchJob *job, GError **error)
+{
+  job_progress (job, -1, "Checking for the latest GE-Proton release…");
+
+  ReleaseInfo *rel = query_newest_release (job, error);
+  if (!rel)
+    return FALSE;
+
+  gchar *line = g_strdup_printf ("Newest GE-Proton release: %s", rel->tag);
+  job_log (job, line);
+  g_free (line);
+
+  if (proton_fetch_is_installed (rel->tag, rel->dir_name))
+    {
+      job_log (job, "Already up to date.");
+      job_finished (job, TRUE, rel->tag);
+      release_info_free (rel);
+      return TRUE;
+    }
+
+  gboolean ok = FALSE;
+  gchar *tools_dir = proton_fetch_get_tools_dir ();
+  gchar *install_dir = g_build_filename (tools_dir, rel->dir_name, NULL);
 
   /* Download next to where it will be extracted rather than into $TMPDIR:
    * the archive is several hundred MB, too big for a tmpfs /tmp. */
@@ -565,17 +943,13 @@ fetch_sync (GogProtonFetchJob *job, GError **error)
       g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (saved_errno),
                    "Could not create a download file in %s: %s", tools_dir,
                    g_strerror (saved_errno));
-      g_free (tmp_path);
-      g_free (download_url_dup);
-      g_free (install_dir);
-      g_free (tools_dir);
-      g_free (tag_dup);
-      return FALSE;
+      g_clear_pointer (&tmp_path, g_free);
+      goto out;
     }
   close (tmp_fd);
 
-  gchar *size_str = text_format_size (total_size);
-  gchar *start_msg = g_strdup_printf ("Downloading GE-Proton %s (%s)…", tag_dup, size_str);
+  gchar *size_str = text_format_size (rel->size);
+  gchar *start_msg = g_strdup_printf ("Downloading GE-Proton %s (%s)…", rel->tag, size_str);
   job_progress (job, 0.0, start_msg);
   g_free (start_msg);
   g_free (size_str);
@@ -584,77 +958,70 @@ fetch_sync (GogProtonFetchJob *job, GError **error)
   PollData *pd = g_new (PollData, 1);
   pd->job = job;
   pd->tmp_path = g_strdup (tmp_path);
-  pd->total_size = total_size;
+  pd->total_size = rel->size;
   pd->downloading = &downloading;
   GThread *poller = g_thread_new ("proton-dl-poll", poll_thread_func, pd);
 
   /* -sS: no progress meter (progress comes from polling the file size),
    * but still report errors. */
-  gchar *dl_argv[] = { "curl", "-fsSL", "--retry", "3", "-o", tmp_path, download_url_dup, NULL };
+  gchar *dl_argv[] = { "curl", "-fsSL", "--retry", "3", "-o", tmp_path, rel->url, NULL };
   GError *dl_error = NULL;
-  gboolean ok = run_capture (job, dl_argv, NULL, &dl_error);
+  gboolean downloaded = run_capture (job, dl_argv, NULL, &dl_error);
 
   downloading = FALSE;
   g_thread_join (poller);
-  g_free (download_url_dup);
 
-  if (!ok)
+  if (!downloaded)
     {
-      g_remove (tmp_path);
-      g_free (tmp_path);
-      g_free (install_dir);
-      g_free (tools_dir);
-      g_free (tag_dup);
-      if (error)
-        *error = dl_error;
-      else
-        g_clear_error (&dl_error);
-      return FALSE;
+      if (!job->cancelled)
+        g_prefix_error (&dl_error, "Download failed: ");
+      g_propagate_error (error, dl_error);
+      goto out;
     }
 
-  gchar *extract_msg = g_strdup_printf ("Extracting %s…", tag_dup);
+  if (rel->sha512_url)
+    {
+      job_progress (job, -1, "Checking that the download is intact…");
+      if (!verify_sha512 (job, tmp_path, rel->sha512_url, error))
+        goto out;
+      job_log (job, "Checksum matches (SHA-512).");
+    }
+  else
+    job_log (job, "This release has no published checksum, so the download was not verified.");
+
+  gchar *extract_msg = g_strdup_printf ("Extracting %s…", rel->tag);
   job_progress (job, -1, extract_msg);
   g_free (extract_msg);
-  g_mkdir_with_parents (install_dir, 0755);
   gchar *tar_argv[] = { "tar", "-xf", tmp_path, "-C", tools_dir, NULL };
-  GError *tar_error = NULL;
   gchar *tar_output = NULL;
-  ok = run_capture (job, tar_argv, &tar_output, &tar_error);
+  gboolean extracted = run_capture (job, tar_argv, &tar_output, error);
   if (tar_output && *tar_output)
     job_log (job, tar_output);
   g_free (tar_output);
+  if (!extracted)
+    goto out;
 
-  g_remove (tmp_path);
-  g_free (tmp_path);
-
-  if (ok)
+  gchar *proton_bin = g_build_filename (install_dir, "proton", NULL);
+  gboolean found = g_file_test (proton_bin, G_FILE_TEST_IS_REGULAR);
+  g_free (proton_bin);
+  if (!found)
     {
-      proton_bin = g_build_filename (install_dir, "proton", NULL);
-      if (!g_file_test (proton_bin, G_FILE_TEST_IS_REGULAR))
-        {
-          ok = FALSE;
-          g_set_error (&tar_error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                       "The %s archive did not unpack to %s as expected", tag_dup, install_dir);
-          g_rmdir (install_dir); /* only succeeds if we left it empty */
-        }
-      g_free (proton_bin);
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                   "The %s archive did not unpack to %s as expected", rel->tag, install_dir);
+      goto out;
     }
+
+  ok = TRUE;
+  job_finished (job, TRUE, rel->tag);
+
+out:
+  if (tmp_path)
+    g_remove (tmp_path);
+  g_free (tmp_path);
   g_free (install_dir);
   g_free (tools_dir);
-
-  if (!ok)
-    {
-      g_free (tag_dup);
-      if (error)
-        *error = tar_error;
-      else
-        g_clear_error (&tar_error);
-      return FALSE;
-    }
-
-  job_finished (job, TRUE, tag_dup);
-  g_free (tag_dup);
-  return TRUE;
+  release_info_free (rel);
+  return ok;
 }
 
 static gpointer

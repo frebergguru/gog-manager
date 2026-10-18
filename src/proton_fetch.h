@@ -31,10 +31,30 @@ void     proton_fetch_remove_async  (const char *const *names, GCancellable *can
                                      GAsyncReadyCallback callback, gpointer user_data);
 gboolean proton_fetch_remove_finish (GAsyncResult *result, GError **error);
 
+/* Disk space used by each named build, measured on a worker thread.
+ * finish returns a GArray of guint64, one per name in order, transfer full. */
+void    proton_fetch_measure_async  (const char *const *names, GCancellable *cancellable,
+                                     GAsyncReadyCallback callback, gpointer user_data);
+GArray *proton_fetch_measure_finish (GAsyncResult *result, GError **error);
+
+/* TRUE if the release (tag, plus the directory its archive unpacks to) is
+ * already in the tools dir. */
+gboolean proton_fetch_is_installed (const char *tag, const char *dir_name);
+
+/* Asks GitHub for the newest GE-Proton release without downloading it.
+ * The answer is remembered for ten minutes. On success the finish function
+ * sets the tag (e.g. "GE-Proton11-9") and the directory name its archive
+ * unpacks to (e.g. "GE-Proton11-9-x86_64"), both transfer full. */
+void     proton_fetch_check_latest_async  (GCancellable *cancellable,
+                                           GAsyncReadyCallback callback, gpointer user_data);
+gboolean proton_fetch_check_latest_finish (GAsyncResult *result, gchar **out_tag,
+                                           gchar **out_dir_name, GError **error);
+
 #define GOG_TYPE_PROTON_FETCH_JOB (gog_proton_fetch_job_get_type ())
 G_DECLARE_FINAL_TYPE (GogProtonFetchJob, gog_proton_fetch_job, GOG, PROTON_FETCH_JOB, GObject)
 
-/* Downloads and extracts the newest published GE-Proton release from
+/* Downloads, checks (against the published SHA-512 sum, when there is one)
+ * and extracts the newest published GE-Proton release from
  * GloriousEggroll/proton-ge-custom on GitHub (via `curl` + `tar`, mirroring
  * how the rest of the app shells out rather than adding an HTTP client
  * dependency). No-op success if that version is already present.

@@ -189,12 +189,35 @@ runner_from_game (GogGame *game)
 static gboolean
 check_runner (GogGame *game, GError **error)
 {
-  if (gog_game_get_runner_path (game))
-    return TRUE;
-  g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-               "No Wine/Proton runner is recorded for %s; reinstall it to pick one",
-               gog_game_get_title (game));
-  return FALSE;
+  const char *path = gog_game_get_runner_path (game);
+  if (!path)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+                   "No Wine/Proton runner is recorded for %s; choose one under Runner on its page",
+                   gog_game_get_title (game));
+      return FALSE;
+    }
+
+  gboolean present;
+  if (gog_game_get_runner_kind (game) == GOG_RUNNER_PROTON)
+    {
+      gchar *proton_bin = g_build_filename (path, "proton", NULL);
+      present = g_file_test (proton_bin, G_FILE_TEST_IS_REGULAR);
+      g_free (proton_bin);
+    }
+  else
+    present = g_file_test (path, G_FILE_TEST_IS_EXECUTABLE);
+  if (!present)
+    {
+      gchar *name = g_path_get_basename (path);
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+                   "%s, the runner %s uses, is no longer on this computer; choose another under "
+                   "Runner on its page",
+                   name, gog_game_get_title (game));
+      g_free (name);
+      return FALSE;
+    }
+  return TRUE;
 }
 
 /* Manifest paths may use Windows separators even in Linux builds. */

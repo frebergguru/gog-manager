@@ -32,6 +32,12 @@ gboolean gog_library_scan_finish (GogLibrary *self, GAsyncResult *result, GError
  * currently loaded games. Transfer full. */
 GStrv gog_library_get_all_languages (GogLibrary *self);
 
+/* Reads the language tag GOG puts in extra-language installer names, e.g.
+ * "(german)" or "(french_64bit)". Returns FALSE for untagged (English)
+ * names. The strings are GOG's language code and native name, static. */
+gboolean gog_library_language_from_installer_name (const char *filename, const char **out_code,
+                                                   const char **out_name);
+
 /* Look up a loaded game by product id, or NULL. Transfer none. */
 GogGame *gog_library_find_by_id (GogLibrary *self, gint64 id);
 

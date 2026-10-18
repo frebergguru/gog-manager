@@ -6,6 +6,7 @@
 #include "install_dialog.h"
 #include "../installer_engine.h"
 #include "../launch.h"
+#include "../runner.h"
 #include "../text_util.h"
 
 struct _GogGameDetail
@@ -23,6 +24,10 @@ struct _GogGameDetail
   GtkLabel *title_label;
   GtkLabel *badges_label;
   GtkBox *action_box;
+  GtkWidget *runner_group;
+  AdwComboRow *runner_row;
+  GPtrArray *runner_choices; /* GogRunnerInfo*, parallel to runner_row's model */
+  gulong runner_handler;
   GtkLabel *description_label;
   GtkWidget *serials_group;
   GtkLabel *serials_label;
@@ -46,6 +51,7 @@ gog_game_detail_dispose (GObject *object)
 {
   GogGameDetail *self = GOG_GAME_DETAIL (object);
   g_clear_object (&self->game);
+  g_clear_pointer (&self->runner_choices, g_ptr_array_unref);
   G_OBJECT_CLASS (gog_game_detail_parent_class)->dispose (object);
 }
 
@@ -97,8 +103,8 @@ on_install_clicked (GtkButton *button, gpointer user_data)
   GogGame *target = g_object_get_data (G_OBJECT (button), "dlc-game");
   if (!target)
     target = self->game;
-  gog_show_install_dialog (self->parent_window, target, installer, self->config, self->state,
-                            on_install_done, self);
+  gog_show_install_dialog (self->parent_window, target, installer, self->config, self->library,
+                            self->state, on_install_done, self);
 }
 
 static void
@@ -258,6 +264,111 @@ on_copy_serials_clicked (GtkButton *button, gpointer user_data)
     return;
   gdk_clipboard_set_text (gtk_widget_get_clipboard (GTK_WIDGET (self)), serials);
   toast (self, "Serial keys copied");
+}
+
+/* Same-kind runners only: Wine and Proton keep their prefixes in different
+ * places, so switching kind would need a fresh prefix (a reinstall). */
+static void
+build_runner_row (GogGameDetail *self)
+{
+  GogRunnerKind kind = gog_game_get_runner_kind (self->game);
+  gboolean show = gog_game_get_installed (self->game) && !gog_game_get_base_game (self->game) &&
+                  (kind == GOG_RUNNER_WINE || kind == GOG_RUNNER_PROTON);
+  gtk_widget_set_visible (self->runner_group, show);
+  if (!show)
+    return;
+
+  const char *current = gog_game_get_runner_path (self->game);
+  g_clear_pointer (&self->runner_choices, g_ptr_array_unref);
+  self->runner_choices = g_ptr_array_new_with_free_func ((GDestroyNotify) gog_runner_info_free);
+  GPtrArray *all = runner_discover_all (self->config);
+  guint selected = G_MAXUINT;
+  for (guint i = 0; i < all->len; i++)
+    {
+      GogRunnerInfo *r = g_ptr_array_index (all, i);
+      if (r->kind != kind)
+        continue;
+      if (g_strcmp0 (r->bin_path, current) == 0)
+        selected = self->runner_choices->len;
+      g_ptr_array_add (self->runner_choices, gog_runner_info_new (r->kind, r->name, r->bin_path));
+    }
+  g_ptr_array_unref (all);
+
+  gboolean missing = selected == G_MAXUINT;
+  GtkStringList *list = gtk_string_list_new (NULL);
+  for (guint i = 0; i < self->runner_choices->len; i++)
+    gtk_string_list_append (list, ((GogRunnerInfo *) g_ptr_array_index (self->runner_choices, i))->name);
+  if (missing)
+    {
+      /* Keep the recorded runner visible so the user sees what is gone. */
+      gchar *name = current ? g_path_get_basename (current) : g_strdup ("None");
+      gchar *label = g_strdup_printf ("%s (missing)", name);
+      gtk_string_list_append (list, label);
+      g_ptr_array_add (self->runner_choices, gog_runner_info_new (kind, name, current));
+      selected = self->runner_choices->len - 1;
+      g_free (label);
+      g_free (name);
+    }
+
+  g_signal_handler_block (self->runner_row, self->runner_handler);
+  adw_combo_row_set_model (self->runner_row, G_LIST_MODEL (list));
+  adw_combo_row_set_selected (self->runner_row, selected);
+  g_signal_handler_unblock (self->runner_row, self->runner_handler);
+  g_object_unref (list);
+
+  adw_action_row_set_subtitle (ADW_ACTION_ROW (self->runner_row),
+                               missing ? "The runner this game used is no longer on this computer. "
+                                         "Choose another one."
+                                       : (kind == GOG_RUNNER_PROTON ? "Proton version used to run this game"
+                                                                    : "Wine used to run this game"));
+}
+
+static void
+on_runner_selected (GObject *row, GParamSpec *pspec, gpointer user_data)
+{
+  (void) row;
+  (void) pspec;
+  GogGameDetail *self = user_data;
+  guint idx = adw_combo_row_get_selected (self->runner_row);
+  if (!self->game || !self->runner_choices || idx >= self->runner_choices->len)
+    return;
+  GogRunnerInfo *r = g_ptr_array_index (self->runner_choices, idx);
+  const char *old_path = gog_game_get_runner_path (self->game);
+  if (g_strcmp0 (r->bin_path, old_path) == 0)
+    return;
+
+  /* DLC installed into this game's directory runs through the same prefix,
+   * so it follows along. */
+  const char *install_path = gog_game_get_install_path (self->game);
+  GListModel *model = gog_library_get_model (self->library);
+  guint n = g_list_model_get_n_items (model);
+  for (guint i = 0; i < n; i++)
+    {
+      GogGame *g = g_list_model_get_item (model, i);
+      if (g == self->game ||
+          (gog_game_get_base_game (g) == self->game && gog_game_get_installed (g) &&
+           g_strcmp0 (gog_game_get_install_path (g), install_path) == 0))
+        {
+          gog_game_set_runner_path (g, r->bin_path);
+          gog_state_update_from_game (self->state, g);
+        }
+      g_object_unref (g);
+    }
+
+  GError *error = NULL;
+  if (!gog_state_save (self->state, &error))
+    {
+      toast (self, error->message);
+      g_clear_error (&error);
+    }
+  else
+    {
+      gchar *msg = g_strdup_printf ("%s now uses %s", gog_game_get_title (self->game), r->name);
+      toast (self, msg);
+      g_free (msg);
+    }
+  build_runner_row (self);
+  emit_changed (self);
 }
 
 static void
@@ -440,6 +551,14 @@ refresh (GogGameDetail *self)
   g_free (size_str);
   if (gog_game_get_installed (self->game))
     g_string_append (badges, "  ·  Installed");
+  GStrv installer_langs = gog_game_dup_installer_languages (self->game);
+  if (installer_langs[0])
+    {
+      gchar *joined = g_strjoinv (", ", installer_langs);
+      g_string_append_printf (badges, "\nInstallers in %s", joined);
+      g_free (joined);
+    }
+  g_strfreev (installer_langs);
   gtk_label_set_label (self->badges_label, badges->str);
   g_string_free (badges, TRUE);
 
@@ -457,6 +576,7 @@ refresh (GogGameDetail *self)
                                                                 : "");
 
   build_action_row (self);
+  build_runner_row (self);
   build_extras (self);
   build_dlc (self);
 }
@@ -503,12 +623,24 @@ gog_game_detail_new (GtkWindow *parent_window, GogLibrary *library, GogConfig *c
   gtk_box_append (GTK_BOX (content), GTK_WIDGET (self->title_label));
 
   self->badges_label = GTK_LABEL (gtk_label_new (NULL));
+  gtk_label_set_wrap (self->badges_label, TRUE);
+  gtk_label_set_xalign (self->badges_label, 0.0);
   gtk_widget_add_css_class (GTK_WIDGET (self->badges_label), "dim-label");
   gtk_widget_set_halign (GTK_WIDGET (self->badges_label), GTK_ALIGN_START);
   gtk_box_append (GTK_BOX (content), GTK_WIDGET (self->badges_label));
 
   self->action_box = GTK_BOX (gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8));
   gtk_box_append (GTK_BOX (content), GTK_WIDGET (self->action_box));
+
+  self->runner_group = adw_preferences_group_new ();
+  self->runner_row = ADW_COMBO_ROW (adw_combo_row_new ());
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (self->runner_row), "Runner");
+  self->runner_handler = g_signal_connect (self->runner_row, "notify::selected",
+                                           G_CALLBACK (on_runner_selected), self);
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (self->runner_group),
+                             GTK_WIDGET (self->runner_row));
+  gtk_widget_set_visible (self->runner_group, FALSE);
+  gtk_box_append (GTK_BOX (content), self->runner_group);
 
   /* Serial keys from serials.txt, shown verbatim (the file labels each key
    * itself, e.g. "Doom 3:" followed by the key). Hidden when there are none. */

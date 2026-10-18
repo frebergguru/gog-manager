@@ -319,6 +319,56 @@ gog_game_add_installer (GogGame *self, GogInstallerInfo *info)
   g_ptr_array_add (self->installers, info);
 }
 
+static gint
+compare_installer_language (gconstpointer a, gconstpointer b)
+{
+  const GogInstallerInfo *ia = *(const GogInstallerInfo *const *) a;
+  const GogInstallerInfo *ib = *(const GogInstallerInfo *const *) b;
+  return g_utf8_collate (ia->language_full ? ia->language_full : "",
+                         ib->language_full ? ib->language_full : "");
+}
+
+static GStrv
+dup_installer_languages (GogGame *self, gboolean codes)
+{
+  GPtrArray *sorted = g_ptr_array_new ();
+  for (guint i = 0; i < self->installers->len; i++)
+    {
+      GogInstallerInfo *info = g_ptr_array_index (self->installers, i);
+      if (info->language_full)
+        g_ptr_array_add (sorted, info);
+    }
+  g_ptr_array_sort (sorted, compare_installer_language);
+
+  GStrvBuilder *builder = g_strv_builder_new ();
+  const char *last = NULL;
+  for (guint i = 0; i < sorted->len; i++)
+    {
+      GogInstallerInfo *info = g_ptr_array_index (sorted, i);
+      if (g_strcmp0 (info->language_full, last) == 0)
+        continue;
+      last = info->language_full;
+      g_strv_builder_add (builder, codes ? (info->language_code ? info->language_code : "")
+                                         : info->language_full);
+    }
+  g_ptr_array_unref (sorted);
+  GStrv out = g_strv_builder_end (builder);
+  g_strv_builder_unref (builder);
+  return out;
+}
+
+GStrv
+gog_game_dup_installer_languages (GogGame *self)
+{
+  return dup_installer_languages (self, FALSE);
+}
+
+GStrv
+gog_game_dup_installer_language_codes (GogGame *self)
+{
+  return dup_installer_languages (self, TRUE);
+}
+
 GPtrArray *
 gog_game_get_extras (GogGame *self)
 {

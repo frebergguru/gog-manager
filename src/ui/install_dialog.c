@@ -14,6 +14,7 @@ typedef struct
   GogGame *game;
   GogInstallerInfo *installer;
   GogConfig *config;
+  GogLibrary *library;
   GogState *state;
   GogInstallDoneFunc on_done;
   gpointer user_data;
@@ -215,7 +216,8 @@ on_get_proton_clicked (GtkButton *button, gpointer user_data)
 {
   (void) button;
   InstallCtx *ctx = user_data;
-  gog_show_proton_fetch_dialog (ctx->parent, on_proton_fetch_done, ctx);
+  gog_show_proton_fetch_dialog (ctx->parent, ctx->config, ctx->library, on_proton_fetch_done,
+                                ctx);
 }
 
 static void
@@ -314,14 +316,15 @@ on_dialog_closed (AdwDialog *dialog, gpointer user_data)
 
 void
 gog_show_install_dialog (GtkWindow *parent, GogGame *game, GogInstallerInfo *installer,
-                          GogConfig *config, GogState *state, GogInstallDoneFunc on_done,
-                          gpointer user_data)
+                          GogConfig *config, GogLibrary *library, GogState *state,
+                          GogInstallDoneFunc on_done, gpointer user_data)
 {
   InstallCtx *ctx = g_new0 (InstallCtx, 1);
   ctx->parent = parent;
   ctx->game = g_object_ref (game);
   ctx->installer = installer;
   ctx->config = config;
+  ctx->library = library;
   ctx->state = state;
   ctx->on_done = on_done;
   ctx->user_data = user_data;

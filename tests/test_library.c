@@ -73,10 +73,83 @@ test_scan_reads_serials (void)
   g_free (root);
 }
 
+static void
+test_language_from_installer_name (void)
+{
+  const char *code = NULL, *name = NULL;
+  g_assert_true (gog_library_language_from_installer_name (
+      "setup_broken_sword_4_1.1a_(german)_(24519).exe", &code, &name));
+  g_assert_cmpstr (code, ==, "de");
+  g_assert_cmpstr (name, ==, "Deutsch");
+  g_assert_true (gog_library_language_from_installer_name ("foo_(french_64bit)_(1).exe", &code, NULL));
+  g_assert_cmpstr (code, ==, "fr");
+  g_assert_true (gog_library_language_from_installer_name ("foo_(portuguese_brazilian)_(1).exe", &code, NULL));
+  g_assert_cmpstr (code, ==, "br");
+  g_assert_false (gog_library_language_from_installer_name ("setup_foo_1.0_(64bit)_(24519).exe", NULL, NULL));
+  g_assert_false (gog_library_language_from_installer_name ("setup_foo_1.0_(24519).exe", NULL, NULL));
+}
+
+/* English and Spanish metadata entries share a size (as in real GOG data),
+ * and the German installer has no metadata entry at all. */
+static void
+test_scan_detects_installer_languages (void)
+{
+  gchar *root = g_dir_make_tmp ("gog-library-test-XXXXXX", NULL);
+  gchar *game = g_build_filename (root, "game", NULL);
+  g_assert_cmpint (g_mkdir (game, 0755), ==, 0);
+  write_file (game, "product_game.json",
+              "{\"id\": 3, \"title\": \"Lang Game\", \"downloads\": {\"installers\": ["
+              "{\"os\": \"windows\", \"language\": \"es\", \"language_full\": \"español\", \"total_size\": 4},"
+              "{\"os\": \"windows\", \"language\": \"en\", \"language_full\": \"English\", \"total_size\": 4}"
+              "]}}");
+  const char *files[] = { "setup_game_1.0_(1).exe", "setup_game_1.0_(spanish)_(1).exe",
+                          "setup_game_1.0_(german)_(1).exe" };
+  for (gsize i = 0; i < G_N_ELEMENTS (files); i++)
+    write_file (game, files[i], "MZ..");
+
+  GogLibrary *library = gog_library_new ();
+  gboolean done = FALSE;
+  gog_library_scan_async (library, root, NULL, on_scan_done, &done);
+  while (!done)
+    g_main_context_iteration (NULL, TRUE);
+
+  GogGame *g = gog_library_find_by_id (library, 3);
+  g_assert_nonnull (g);
+  GStrv names = gog_game_dup_installer_languages (g);
+  GStrv codes = gog_game_dup_installer_language_codes (g);
+  g_assert_cmpuint (g_strv_length (names), ==, 3);
+  g_assert_cmpstr (names[0], ==, "Deutsch");
+  g_assert_cmpstr (names[1], ==, "English");
+  g_assert_cmpstr (names[2], ==, "español");
+  g_assert_cmpstr (codes[0], ==, "de");
+  g_assert_cmpstr (codes[1], ==, "en");
+  g_assert_cmpstr (codes[2], ==, "es");
+  g_strfreev (names);
+  g_strfreev (codes);
+
+  GStrv all = gog_library_get_all_languages (library);
+  g_assert_true (g_strv_contains ((const char *const *) all, "Deutsch"));
+  g_strfreev (all);
+
+  while (g_main_context_iteration (NULL, FALSE))
+    ;
+  g_object_unref (library);
+
+  remove_file (game, "product_game.json");
+  for (gsize i = 0; i < G_N_ELEMENTS (files); i++)
+    remove_file (game, files[i]);
+  g_rmdir (game);
+  g_rmdir (root);
+  g_free (game);
+  g_free (root);
+}
+
 int
 main (int argc, char *argv[])
 {
   g_test_init (&argc, &argv, NULL);
   g_test_add_func ("/library/scan_reads_serials", test_scan_reads_serials);
+  g_test_add_func ("/library/language_from_installer_name", test_language_from_installer_name);
+  g_test_add_func ("/library/scan_detects_installer_languages", test_scan_detects_installer_languages);
   return g_test_run ();
 }
