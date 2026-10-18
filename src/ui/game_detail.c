@@ -51,6 +51,7 @@ static void
 gog_game_detail_dispose (GObject *object)
 {
   GogGameDetail *self = GOG_GAME_DETAIL (object);
+  gog_launch_set_failed_func (NULL, NULL);
   g_clear_object (&self->game);
   g_clear_pointer (&self->runner_choices, g_ptr_array_unref);
   G_OBJECT_CLASS (gog_game_detail_parent_class)->dispose (object);
@@ -83,6 +84,12 @@ static void
 toast (GogGameDetail *self, const char *msg)
 {
   adw_toast_overlay_add_toast (self->toast_overlay, adw_toast_new (msg));
+}
+
+static void
+on_launch_failed (const char *message, gpointer user_data)
+{
+  toast (user_data, message);
 }
 
 static void
@@ -613,6 +620,8 @@ gog_game_detail_new (GtkWindow *parent_window, GogLibrary *library, GogConfig *c
 
   self->toast_overlay = ADW_TOAST_OVERLAY (adw_toast_overlay_new ());
   gtk_widget_set_vexpand (GTK_WIDGET (self->toast_overlay), TRUE);
+  /* A launch that sets up its prefix first can fail after Play returned. */
+  gog_launch_set_failed_func (on_launch_failed, self);
   gtk_box_append (GTK_BOX (self), GTK_WIDGET (self->toast_overlay));
 
   GtkWidget *scroller = gtk_scrolled_window_new ();

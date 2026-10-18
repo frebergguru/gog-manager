@@ -66,6 +66,13 @@ is_safe_dir_name (const char *name)
 gint
 proton_fetch_compare_newest_first (gconstpointer a, gconstpointer b)
 {
+  /* GE-Proton builds come first, newest first; anything else in the tools
+   * folder (Proton-9.0, a hand-unpacked build) after them, so it is never
+   * taken for the newest GE-Proton. */
+  gboolean ge_a = g_str_has_prefix (a, "GE-Proton");
+  gboolean ge_b = g_str_has_prefix (b, "GE-Proton");
+  if (ge_a != ge_b)
+    return ge_a ? -1 : 1;
   gchar *key_a = g_utf8_collate_key_for_filename (a, -1);
   gchar *key_b = g_utf8_collate_key_for_filename (b, -1);
   gint result = strcmp (key_b, key_a);
@@ -836,10 +843,35 @@ proton_fetch_check_latest_finish (GAsyncResult *result, gchar **out_tag, gchar *
 
 /* ---- worker thread ---- */
 
+/* Removes download and unpack leftovers (".gog-ge-proton-*") more than a
+ * day old: what a crash or kill mid-download leaves behind. */
+static void
+sweep_stale_downloads (const char *tools_dir)
+{
+  GDir *d = g_dir_open (tools_dir, 0, NULL);
+  if (!d)
+    return;
+  gint64 now = g_get_real_time () / G_USEC_PER_SEC;
+  const char *name;
+  while ((name = g_dir_read_name (d)))
+    {
+      if (!g_str_has_prefix (name, ".gog-ge-proton-"))
+        continue;
+      gchar *path = g_build_filename (tools_dir, name, NULL);
+      GStatBuf st;
+      if (g_lstat (path, &st) == 0 && now - st.st_mtime > 24 * 3600)
+        remove_tree (path, NULL);
+      g_free (path);
+    }
+  g_dir_close (d);
+}
+
 /* Checks path against the SHA-512 sum GE-Proton publishes next to each
- * archive ("<hex>  <file name>"). */
+ * archive ("<hex>  <file name>"). With several lines, the one naming
+ * archive_name counts. */
 static gboolean
-verify_sha512 (GogProtonFetchJob *job, const char *path, const char *sum_url, GError **error)
+verify_sha512 (GogProtonFetchJob *job, const char *path, const char *sum_url,
+               const char *archive_name, GError **error)
 {
   gchar *sum_argv[] = { "curl", "-fsSL", "--retry", "3", (gchar *) sum_url, NULL };
   gchar *sum_text = NULL;
@@ -851,6 +883,21 @@ verify_sha512 (GogProtonFetchJob *job, const char *path, const char *sum_url, GE
     }
 
   const char *p = sum_text;
+  /* The line for this archive, if the file lists more than one. */
+  for (const char *line = sum_text; line && *line;)
+    {
+      const char *end = strchr (line, '\n');
+      gsize len = end ? (gsize) (end - line) : strlen (line);
+      gchar *one = g_strndup (line, len);
+      gboolean names_it = g_str_has_suffix (g_strstrip (one), archive_name);
+      g_free (one);
+      if (names_it)
+        {
+          p = line;
+          break;
+        }
+      line = end ? end + 1 : NULL;
+    }
   while (*p && g_ascii_isspace (*p))
     p++;
   gsize hex_len = strspn (p, "0123456789abcdefABCDEF");
@@ -932,6 +979,8 @@ fetch_sync (GogProtonFetchJob *job, GError **error)
   gboolean ok = FALSE;
   gchar *tools_dir = proton_fetch_get_tools_dir ();
   gchar *install_dir = g_build_filename (tools_dir, rel->dir_name, NULL);
+  gchar *unpack_dir = NULL;
+  sweep_stale_downloads (tools_dir);
 
   /* Download next to where it will be extracted rather than into $TMPDIR:
    * the archive is several hundred MB, too big for a tmpfs /tmp. */
@@ -979,47 +1028,81 @@ fetch_sync (GogProtonFetchJob *job, GError **error)
       goto out;
     }
 
-  if (rel->sha512_url)
+  /* Never install a build that can't be checked: GE-Proton publishes a
+   * checksum with every release, so a missing one means something is off. */
+  if (!rel->sha512_url)
     {
-      job_progress (job, -1, "Checking that the download is intact…");
-      if (!verify_sha512 (job, tmp_path, rel->sha512_url, error))
-        goto out;
-      job_log (job, "Checksum matches (SHA-512).");
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                   "GE-Proton %s has no published checksum, so the download can't be checked. "
+                   "It was not installed.", rel->tag);
+      goto out;
     }
-  else
-    job_log (job, "This release has no published checksum, so the download was not verified.");
+  job_progress (job, -1, "Checking that the download is intact…");
+  gchar *archive_name = g_strconcat (rel->dir_name, ".tar.gz", NULL);
+  gboolean verified = verify_sha512 (job, tmp_path, rel->sha512_url, archive_name, error);
+  g_free (archive_name);
+  if (!verified)
+    goto out;
+  job_log (job, "Checksum matches (SHA-512).");
 
   gchar *extract_msg = g_strdup_printf ("Extracting %s…", rel->tag);
   job_progress (job, -1, extract_msg);
   g_free (extract_msg);
-  gchar *tar_argv[] = { "tar", "-xf", tmp_path, "-C", tools_dir, NULL };
+  /* Unpack into a folder of its own and move only the expected build into
+   * place, so an archive with other top-level folders can't overwrite
+   * another build, and a half-unpacked one never looks installed. */
+  unpack_dir = g_build_filename (tools_dir, ".gog-ge-proton-unpack-XXXXXX", NULL);
+  if (!g_mkdtemp (unpack_dir))
+    {
+      int saved_errno = errno;
+      g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (saved_errno),
+                   "Could not create a folder to unpack into in %s: %s", tools_dir,
+                   g_strerror (saved_errno));
+      g_clear_pointer (&unpack_dir, g_free);
+      goto out;
+    }
+  gchar *tar_argv[] = { "tar", "-xf", tmp_path, "-C", unpack_dir, NULL };
   gchar *tar_output = NULL;
   gboolean extracted = run_capture (job, tar_argv, &tar_output, error);
   if (tar_output && *tar_output)
     job_log (job, tar_output);
   g_free (tar_output);
   if (!extracted)
-    {
-      /* A half-unpacked build may already hold its "proton" script, and
-       * would then pass for installed. */
-      remove_tree (install_dir, NULL);
-      goto out;
-    }
+    goto out;
 
-  gchar *proton_bin = g_build_filename (install_dir, "proton", NULL);
+  gchar *unpacked = g_build_filename (unpack_dir, rel->dir_name, NULL);
+  gchar *proton_bin = g_build_filename (unpacked, "proton", NULL);
   gboolean found = g_file_test (proton_bin, G_FILE_TEST_IS_REGULAR);
   g_free (proton_bin);
   if (!found)
     {
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                   "The %s archive did not unpack to %s as expected", rel->tag, install_dir);
+                   "The %s archive did not unpack to %s as expected", rel->tag, rel->dir_name);
+      g_free (unpacked);
       goto out;
     }
+  /* A broken leftover from an earlier attempt makes way. */
+  if (g_file_test (install_dir, G_FILE_TEST_EXISTS))
+    remove_tree (install_dir, NULL);
+  if (g_rename (unpacked, install_dir) != 0)
+    {
+      int saved_errno = errno;
+      g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (saved_errno),
+                   "Could not move %s into place: %s", rel->dir_name, g_strerror (saved_errno));
+      g_free (unpacked);
+      goto out;
+    }
+  g_free (unpacked);
 
   ok = TRUE;
   job_finished (job, TRUE, rel->tag);
 
 out:
+  if (unpack_dir)
+    {
+      remove_tree (unpack_dir, NULL);
+      g_free (unpack_dir);
+    }
   if (tmp_path)
     g_remove (tmp_path);
   g_free (tmp_path);

@@ -117,7 +117,7 @@ on_unused_measured (GObject *source, GAsyncResult *res, gpointer user_data)
   (void) source;
   GArray *sizes = proton_fetch_measure_finish (res, NULL);
   if (!sizes)
-    return; /* cancelled: the dialog is gone */
+    return; /* cancelled: the dialog is gone, or the cleanup began */
   FetchCtx *ctx = user_data;
   g_clear_object (&ctx->measuring);
   guint64 total = 0;
@@ -179,6 +179,10 @@ on_cleanup_clicked (GtkButton *button, gpointer user_data)
   /* Removing takes a moment; keep ctx alive until it is done. */
   gog_dialog_window_set_can_close (ctx->window, FALSE);
   gtk_label_set_text (ctx->cleanup_label, "Removing older versions…");
+  /* A size measurement still running would land after this and put back
+   * the "take up X" text for versions that are gone. */
+  if (ctx->measuring)
+    g_cancellable_cancel (ctx->measuring);
   proton_fetch_remove_async ((const char *const *) ctx->unused, NULL, on_cleanup_finished, ctx);
 }
 

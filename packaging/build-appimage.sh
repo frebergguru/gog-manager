@@ -44,15 +44,19 @@ fetch() {
   local url="$1" dest="$2"
   [ -f "$dest" ] && return 0
   log "Downloading $(basename "$dest")"
+  # Into a .part file first: a download cut off half-way must not leave a
+  # truncated tool that the "already there" check above would reuse.
+  rm -f "$dest.part"
   if command -v wget >/dev/null 2>&1; then
-    wget -q --show-progress -O "$dest" "$url"
+    wget -q --show-progress -O "$dest.part" "$url"
   elif command -v curl >/dev/null 2>&1; then
-    curl -fL# -o "$dest" "$url"
+    curl -fL# -o "$dest.part" "$url"
   else
     echo "error: need wget or curl to download packaging tools" >&2
     exit 1
   fi
-  chmod +x "$dest"
+  chmod +x "$dest.part"
+  mv "$dest.part" "$dest"
 }
 
 # --- 1. Compile and stage into AppDir ------------------------------------------

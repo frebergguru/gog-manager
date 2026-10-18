@@ -24,6 +24,12 @@ G_BEGIN_DECLS
  * + error covers "could not even start it", not the game's own exit code. */
 gboolean gog_launch_game (GogGame *game, GError **error);
 
+/* A launch whose Wine/Proton prefix has to be (re)built first returns TRUE
+ * straight away and finishes on a thread; if it then fails, func gets the
+ * message on the main thread. One handler at a time; NULL removes it. */
+typedef void (*GogLaunchFailedFunc) (const char *message, gpointer user_data);
+void gog_launch_set_failed_func (GogLaunchFailedFunc func, gpointer user_data);
+
 /* Opens winecfg / regedit against a game's existing Wine or Proton prefix.
  * Returns FALSE with error set for natively-installed or not-yet-installed
  * games, or (winecfg only) when the runner is Proton. */

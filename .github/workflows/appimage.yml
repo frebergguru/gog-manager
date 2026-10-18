@@ -17,9 +17,10 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Needed for `gh release create` to attach assets.
+# Read-only by default: the build runs downloaded packaging tools, so it
+# gets no write token. Only the release job below may write.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: appimage-${{ github.ref }}
@@ -60,15 +61,23 @@ jobs:
             gog-manager-x86_64.AppImage.sha256
           if-no-files-found: error
 
+  release:
+    # Publishing needs write access; it runs only for v* tags and only
+    # downloads the AppImage the build job made.
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: gog-manager-x86_64-AppImage
+
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # The container runs as root while the checkout is owned by another
-          # uid, so git (which gh shells out to) rejects the repo. Mark it safe
-          # and target the repo explicitly so gh doesn't rely on git at all.
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           assets="gog-manager-x86_64.AppImage gog-manager-x86_64.AppImage.sha256"
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" $assets --clobber --repo "$GITHUB_REPOSITORY"

@@ -279,6 +279,9 @@ test_proton_names_sort_newest_first (void)
   g_assert_cmpint (proton_fetch_compare_newest_first ("GE-Proton11-9-x86_64", "GE-Proton10-1"), <, 0);
   g_assert_cmpint (proton_fetch_compare_newest_first ("GE-Proton10-1", "GE-Proton9-27"), <, 0);
   g_assert_cmpint (proton_fetch_compare_newest_first ("GE-Proton9-27", "GE-Proton11-9-x86_64"), >, 0);
+  /* Other builds never count as the newest GE-Proton. */
+  g_assert_cmpint (proton_fetch_compare_newest_first ("Proton-9.0", "GE-Proton9-27"), >, 0);
+  g_assert_cmpint (proton_fetch_compare_newest_first ("GE-Proton9-27", "wine-ge-8-26"), <, 0);
 }
 
 static void

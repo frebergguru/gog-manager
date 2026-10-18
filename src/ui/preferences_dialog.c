@@ -33,6 +33,8 @@ typedef struct
   AdwActionRow *manage_proton_row;
   GtkWidget *manage_proton_button;
   GtkDropDown *default_runner_dropdown;
+  GogRunnerInfo *picked;      /* default runner the user chose here, or NULL */
+  gboolean refreshing;        /* the dropdown is being rebuilt, not picked from */
   GPtrArray *runners;
 
   gchar *pending_library_path;
@@ -41,13 +43,14 @@ typedef struct
 static void
 save_and_close (PrefsCtx *ctx)
 {
-  guint idx = gtk_drop_down_get_selected (ctx->default_runner_dropdown);
-  if (ctx->runners && idx != GTK_INVALID_LIST_POSITION && idx < ctx->runners->len)
+  /* Only a runner picked here: the dropdown shows the first runner when
+   * the saved one isn't found (e.g. an unmounted custom runner), and that
+   * must not overwrite the setting. */
+  if (ctx->picked)
     {
-      GogRunnerInfo *r = g_ptr_array_index (ctx->runners, idx);
-      ctx->config->default_runner_kind = r->kind;
+      ctx->config->default_runner_kind = ctx->picked->kind;
       g_free (ctx->config->default_runner_path);
-      ctx->config->default_runner_path = g_strdup (r->bin_path);
+      ctx->config->default_runner_path = g_strdup (ctx->picked->bin_path);
     }
 
   if (ctx->pending_library_path)
@@ -126,6 +129,9 @@ refresh_runner_dropdown (PrefsCtx *ctx)
     g_ptr_array_unref (ctx->runners);
   ctx->runners = runner_discover_all (ctx->config);
 
+  /* Keep showing what was picked here, not yet saved, over the saved one. */
+  GogRunnerKind want_kind = ctx->picked ? ctx->picked->kind : ctx->config->default_runner_kind;
+  const char *want_path = ctx->picked ? ctx->picked->bin_path : ctx->config->default_runner_path;
   GtkStringList *list = gtk_string_list_new (NULL);
   guint select_idx = 0;
   for (guint i = 0; i < ctx->runners->len; i++)
@@ -134,17 +140,33 @@ refresh_runner_dropdown (PrefsCtx *ctx)
       gchar *label = g_strdup_printf ("%s (%s)", r->name,
                                        r->kind == GOG_RUNNER_PROTON ? "Proton" : "Wine");
       gtk_string_list_append (list, label);
-      if (r->kind == ctx->config->default_runner_kind &&
-          g_strcmp0 (r->bin_path, ctx->config->default_runner_path) == 0)
+      if (r->kind == want_kind && g_strcmp0 (r->bin_path, want_path) == 0)
         select_idx = i;
       g_free (label);
     }
+  ctx->refreshing = TRUE;
   gtk_drop_down_set_model (ctx->default_runner_dropdown, G_LIST_MODEL (list));
   gtk_drop_down_set_selected (ctx->default_runner_dropdown, select_idx);
+  ctx->refreshing = FALSE;
   g_object_unref (list);
 
   gtk_widget_set_visible (GTK_WIDGET (ctx->runner_row), ctx->runners->len > 0);
   gtk_widget_set_visible (GTK_WIDGET (ctx->no_runners_row), ctx->runners->len == 0);
+}
+
+static void
+on_default_runner_selected (GtkDropDown *dropdown, GParamSpec *pspec, gpointer user_data)
+{
+  (void) pspec;
+  PrefsCtx *ctx = user_data;
+  if (ctx->refreshing)
+    return;
+  guint idx = gtk_drop_down_get_selected (dropdown);
+  if (!ctx->runners || idx == GTK_INVALID_LIST_POSITION || idx >= ctx->runners->len)
+    return;
+  GogRunnerInfo *r = g_ptr_array_index (ctx->runners, idx);
+  gog_runner_info_free (ctx->picked);
+  ctx->picked = gog_runner_info_new (r->kind, r->name, r->bin_path);
 }
 
 static void
@@ -432,6 +454,7 @@ on_window_destroy (GtkWidget *window, gpointer user_data)
   g_free (ctx->latest_dir);
   if (ctx->runners)
     g_ptr_array_unref (ctx->runners);
+  gog_runner_info_free (ctx->picked);
   g_free (ctx->pending_library_path);
   g_free (ctx);
 }
@@ -501,6 +524,8 @@ gog_show_preferences_dialog (GtkWindow *parent, GogConfig *config, GogLibrary *l
   gtk_accessible_update_property (GTK_ACCESSIBLE (ctx->default_runner_dropdown),
                                   GTK_ACCESSIBLE_PROPERTY_LABEL, "Default Runner", -1);
   adw_action_row_add_suffix (ctx->runner_row, GTK_WIDGET (ctx->default_runner_dropdown));
+  g_signal_connect (ctx->default_runner_dropdown, "notify::selected",
+                    G_CALLBACK (on_default_runner_selected), ctx);
   adw_preferences_group_add (install_group, GTK_WIDGET (ctx->runner_row));
 
   ctx->no_runners_row = ADW_ACTION_ROW (adw_action_row_new ());

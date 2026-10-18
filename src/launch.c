@@ -181,6 +181,26 @@ typedef struct
   GogCommand *cmd;
 } PrefixLaunch;
 
+static GogLaunchFailedFunc failed_func;
+static gpointer failed_data;
+
+void
+gog_launch_set_failed_func (GogLaunchFailedFunc func, gpointer user_data)
+{
+  failed_func = func;
+  failed_data = user_data;
+}
+
+/* On the main thread, where the handler is set and cleared. */
+static gboolean
+report_failed_idle (gpointer data)
+{
+  if (failed_func)
+    failed_func (data, failed_data);
+  g_free (data);
+  return G_SOURCE_REMOVE;
+}
+
 static gpointer
 prefix_launch_thread (gpointer data)
 {
@@ -188,7 +208,12 @@ prefix_launch_thread (gpointer data)
   GError *error = NULL;
   if (!runner_prepare_prefix (pl->runner, pl->install_dir, &error)
       || !spawn_detached (pl->cmd->argv, pl->cmd->envp, pl->install_dir, &error))
-    g_warning ("Could not launch from %s: %s", pl->install_dir, error ? error->message : "unknown error");
+    {
+      gchar *msg = g_strdup_printf ("Could not start the game: %s",
+                                    error ? error->message : "unknown error");
+      g_warning ("%s (%s)", msg, pl->install_dir);
+      g_idle_add (report_failed_idle, msg); /* takes msg */
+    }
   g_clear_error (&error);
   gog_command_free (pl->cmd);
   gog_runner_info_free (pl->runner);

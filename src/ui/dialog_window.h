@@ -22,7 +22,9 @@ void gog_dialog_window_set_can_close (GtkWindow *window, gboolean can_close);
 /* A confirmation in its own movable window, the counterpart of
  * AdwAlertDialog. Add responses in order (the last one sits rightmost),
  * then present it; callback gets the chosen response id once, after which
- * the window is gone. Closing it counts as the close response. */
+ * the window is gone. Closing it (Esc, the title bar) counts as the close
+ * response. When it goes with its parent window instead, callback is not
+ * called: the parent's data it would use may already be freed. */
 typedef struct _GogAlert GogAlert;
 typedef void (*GogAlertFunc) (const char *response, gpointer user_data);
 
