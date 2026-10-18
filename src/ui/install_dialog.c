@@ -89,6 +89,24 @@ on_job_log_line (GogInstallJob *job, const gchar *line, gpointer user_data)
   append_log_line (user_data, line);
 }
 
+/* A rescan during the install replaced the library's game objects, so
+ * ctx->game may no longer be the one the library shows. Give the current
+ * object for the same game (same id and folder) the new install record. */
+static void
+sync_rescanned_copy (InstallCtx *ctx)
+{
+  GListModel *model = gog_library_get_model (ctx->library);
+  guint n = g_list_model_get_n_items (model);
+  for (guint i = 0; i < n; i++)
+    {
+      GogGame *g = g_list_model_get_item (model, i);
+      if (g != ctx->game && gog_game_get_id (g) == gog_game_get_id (ctx->game) &&
+          g_strcmp0 (gog_game_get_folder_path (g), gog_game_get_folder_path (ctx->game)) == 0)
+        gog_state_apply_to_game (ctx->state, g);
+      g_object_unref (g);
+    }
+}
+
 static void
 on_job_finished (GogInstallJob *job, gboolean success, const gchar *error_message, gpointer user_data)
 {
@@ -118,6 +136,7 @@ on_job_finished (GogInstallJob *job, gboolean success, const gchar *error_messag
         }
       gog_game_set_installed (ctx->game, TRUE);
       gog_state_update_from_game (ctx->state, ctx->game);
+      sync_rescanned_copy (ctx);
       GError *save_err = NULL;
       if (!gog_state_save (ctx->state, &save_err))
         {
