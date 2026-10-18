@@ -213,7 +213,8 @@ test_gog_sync_parse_status (void)
       "HTTP ERROR: 404 (https://www.gog.com/account/gameDetails/1207664643.json)\n"
       "OK cyberpunk_2077 setup_cyberpunk_2077.exe 1234\n"
       "ND cyberpunk_2077_goodies cp77_pl_ key_visual_graphics.zip\n"
-      "FS fallout_4 setup_fallout_4_(portuguese_brazilian_64bit)_(66700)-4.bin 1174016000\n"
+      "FS fallout_4 setup_fallout_4_(portuguese_brazilian_64bit)_(66700)-4.bin 1174016000 "
+      "0123456789abcdef0123456789abcdef\n"
       "ND fallout_4 setup_fallout_4_(german_64bit)_(66700).exe\n"
       "ND new_game setup_new_game_1.0_(1).exe\n"
       "ND new_game new_game_manual.zip\n";
@@ -233,7 +234,52 @@ test_gog_sync_parse_status (void)
   g_assert_cmpstr (c->gamename, ==, "new_game");
   g_assert_cmpint (c->kind, ==, GOG_SYNC_NEW_GAME);
   g_assert_cmpuint (c->n_files, ==, 2);
+
+  /* Sizes and hashes are not part of the name; spaces are. */
+  GogSyncFile *dlc = g_ptr_array_index (a->files, 0);
+  g_assert_cmpstr (dlc->gamename, ==, "cyberpunk_2077_goodies");
+  g_assert_cmpstr (dlc->filename, ==, "cp77_pl_ key_visual_graphics.zip");
+  g_assert_cmpint (dlc->part, ==, GOG_SYNC_PART_DLC);
+  GogSyncFile *fs = g_ptr_array_index (b->files, 0);
+  g_assert_cmpstr (fs->filename, ==, "setup_fallout_4_(portuguese_brazilian_64bit)_(66700)-4.bin");
+  g_assert_cmpint (fs->part, ==, GOG_SYNC_PART_GAME);
+
+  /* --list j: what each file is, its language and size. */
+  const char *details =
+      "Getting game names 4 / 4\n"
+      "[\n"
+      "{ \"gamename\": \"fallout_4\", \"title\": \"Fallout 4\",\n"
+      "  \"installers\": [\n"
+      "    { \"gamename\": \"fallout_4\", \"language\": 2, \"size\": \"5000\", \"type\": 1,\n"
+      "      \"path\": \"/fallout_4/setup_fallout_4_(german_64bit)_(66700).exe\" },\n"
+      "    { \"gamename\": \"fallout_4\", \"language\": 1, \"size\": \"7\", \"type\": 1,\n"
+      "      \"path\": \"/fallout_4/setup_fallout_4.exe\" } ],\n"
+      "  \"dlcs\": [] },\n"
+      "{ \"gamename\": \"new_game\", \"title\": \"New Game\",\n"
+      "  \"installers\": [], \"extras\": [\n"
+      "    { \"gamename\": \"new_game\", \"language\": 1, \"size\": \"300\", \"type\": 2,\n"
+      "      \"name\": \"Manual\", \"path\": \"/new_game/new_game_manual.zip\" } ],\n"
+      "  \"dlcs\": [ { \"gamename\": \"new_game_dlc\", \"title\": \"Big DLC\",\n"
+      "    \"installers\": [ { \"gamename\": \"new_game_dlc\", \"language\": 65536,\n"
+      "      \"size\": \"9\", \"type\": 16, \"path\": \"/new_game_dlc/setup_dlc.exe\" } ] } ] }\n"
+      "]\n";
+  gog_sync_apply_details (items, details);
+  g_assert_cmpuint (b->languages_offered, ==, 3);
+  GogSyncFile *german = g_ptr_array_index (b->files, 1);
+  g_assert_cmpuint (german->languages, ==, 2);
+  g_assert_cmpuint (german->size, ==, 5000);
+  g_assert_false (gog_sync_file_wanted (german, 1));
+  g_assert_true (gog_sync_file_wanted (german, 0));
+  g_assert_cmpuint (c->languages_offered, ==, 65536);
+  GogSyncFile *manual = g_ptr_array_index (c->files, 1);
+  g_assert_cmpint (manual->part, ==, GOG_SYNC_PART_EXTRA);
+  g_assert_cmpstr (manual->label, ==, "Manual");
+  g_assert_true (gog_sync_file_wanted (manual, 2)); /* extras have no language */
   g_ptr_array_unref (items);
+
+  gchar *langs = gog_sync_describe_languages (1 | 65536);
+  g_assert_cmpstr (langs, ==, "English, Norwegian");
+  g_free (langs);
 
   gchar *pretty = gog_sync_pretty_name ("broken_sword_4");
   g_assert_cmpstr (pretty, ==, "Broken Sword 4");

@@ -7,9 +7,11 @@ A native GTK4 / libadwaita application for Linux that turns a folder of GOG
 manage — including Windows-only titles, which it runs transparently through
 Wine or Proton.
 
-It never talks to your GOG account or downloads games itself. You point it at
-a directory of installers you already own (the `.exe`/`.bin` files and their
-`extras/`), and it does the rest locally.
+You point it at a directory of installers you already own (the `.exe`/`.bin`
+files and their `extras/`), and it does the rest locally. GOG Manager never
+logs in to GOG itself: to check for new games and updates and download them, it
+runs [lgogdownloader](https://github.com/Sude-/lgogdownloader), which holds
+your GOG login.
 
 ---
 
@@ -19,8 +21,18 @@ a directory of installers you already own (the `.exe`/`.bin` files and their
   game), reads each product's `product_*.json` metadata, and presents titles,
   logos, descriptions, and sizes in an Adwaita grid.
 - **Search, filter, and sort** — live title search; filter by OS
-  (Windows / Linux / macOS), by language, and by install status; sort by
-  title (A–Z / Z–A), installed-first, or size.
+  (Windows / Linux / macOS), by language, by games with DLC or extras, and by
+  status (installed, not installed, new version on GOG); sort by title
+  (A–Z / Z–A), installed-first, or size.
+- **New games and updates from GOG** — through
+  [lgogdownloader](https://github.com/Sude-/lgogdownloader), lists the games
+  you own that are not downloaded yet and the ones with a new version. Each
+  game opens into separate **Game**, **DLC** and **Extras** groups, with names
+  and sizes, so you can pick exactly what to download, and you can choose which
+  **languages** to download per game (remembered). The download shows the
+  **total progress** and a progress bar for **each file** being downloaded, and
+  you choose how many files download **at the same time** (1–8). Once
+  everything has downloaded, old versions are deleted.
 - **One-click install** — installs Linux-native games directly, and drives
   Windows installers unattended through Wine or Proton, laying down a portable
   `c:\game` prefix that keeps game files outside the Wine prefix.
@@ -56,6 +68,11 @@ a directory of installers you already own (the `.exe`/`.bin` files and their
 
 - `curl` and `tar` — used by the GE-Proton fetcher
 - `unzip` — used when extracting certain installers
+- [lgogdownloader](https://github.com/Sude-/lgogdownloader) — only needed to
+  check GOG for new games and updates and download them. Install it from your
+  distribution's packages and run `lgogdownloader --login` once. GOG Manager
+  checks whether it is installed and, if it isn't, says how to get it instead
+  of offering the check.
 - **Wine** and/or **Proton** — only needed to install and run Windows games
 
 See [Compiling.md](Compiling.md) for exact package names and build steps.
@@ -137,7 +154,14 @@ copy:
 |------|---------|
 | `<app dir>/gog-manager.cfg` | Library path (if set), install root, and configured runners |
 | `<app dir>/gog-manager-state.json` | Per-game install state (keyed by product id) |
+| `<app dir>/gog-manager-updates.json` | The last GOG check: what each game has to download |
+| `<app dir>/gog-manager-download.json` | Download choices: files at the same time, and each game's languages |
 | `$XDG_DATA_HOME/gog-manager/proton/<tag>/` | Downloaded GE-Proton builds |
+
+The GOG check and downloads use lgogdownloader's own settings in
+`~/.config/lgogdownloader/config.cfg` (platforms and so on); the library folder
+should be lgogdownloader's download directory, with one `<gamename>` folder per
+game.
 
 `<app dir>` is the directory containing the binary — for an AppImage, the folder
 the `.AppImage` file sits in — so both the config and your install state travel
@@ -158,12 +182,14 @@ src/
 ├── installer_engine.{c,h} Install/uninstall jobs (async, with progress)
 ├── launch.{c,h}           Launching installed games
 ├── proton_fetch.{c,h}     GE-Proton downloader
+├── gog_sync.{c,h}         GOG checks and downloads through lgogdownloader
 ├── json_util.{c,h}        json-c helpers
 ├── text_util.{c,h}        String helpers
 ├── resources/             GResource: CSS and icons
 └── ui/                    GTK widgets (main window, dialogs, detail view)
 
-tests/                     Unit tests (json-util, runner command building)
+tests/                     Unit tests (json-util, runner command building,
+                           library scanning, lgogdownloader output parsing)
 ```
 
 ---
@@ -173,6 +199,20 @@ tests/                     Unit tests (json-util, runner command building)
 ```sh
 meson test -C build
 ```
+
+---
+
+## Credits
+
+- [lgogdownloader](https://github.com/Sude-/lgogdownloader) by Sude- and
+  contributors does the GOG side: login, checks and downloads. GOG Manager runs
+  it as a separate program, and `src/gog_sync.c` borrows from it: its table of
+  languages and their bit values, and its file type values, come from
+  lgogdownloader's `include/globalconstants.h`, and the parsing follows the
+  output formats in its source. lgogdownloader is released under the
+  [WTFPL](https://github.com/Sude-/lgogdownloader/blob/master/COPYING).
+- [GE-Proton](https://github.com/GloriousEggroll/proton-ge-custom) by
+  GloriousEggroll, which the GE-Proton fetcher downloads.
 
 ---
 

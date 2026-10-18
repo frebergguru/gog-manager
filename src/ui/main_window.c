@@ -126,7 +126,7 @@ load_gog_updates (GogMainWindow *self)
   for (guint i = 0; i < items->len; i++)
     {
       GogSyncItem *item = g_ptr_array_index (items, i);
-      if (item->kind == GOG_SYNC_UPDATE)
+      if (item->kind == GOG_SYNC_UPDATE && gog_sync_item_has_wanted_files (item))
         g_hash_table_add (set, g_strdup (item->gamename));
     }
   g_ptr_array_unref (items);

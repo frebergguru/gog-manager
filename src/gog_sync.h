@@ -20,14 +20,67 @@ typedef enum
   GOG_SYNC_UPDATE,   /* folder exists, but files are missing or differ */
 } GogSyncKind;
 
+/* What a file belongs to, so the dialog can offer each group on its own. */
+typedef enum
+{
+  GOG_SYNC_PART_GAME  = 1 << 0, /* the game's installers and language packs */
+  GOG_SYNC_PART_DLC   = 1 << 1, /* DLC installers and language packs */
+  GOG_SYNC_PART_EXTRA = 1 << 2, /* extras (manuals, soundtracks...), the game's and its DLC's */
+} GogSyncPart;
+
+#define GOG_SYNC_PART_ALL (GOG_SYNC_PART_GAME | GOG_SYNC_PART_DLC | GOG_SYNC_PART_EXTRA)
+
+typedef struct
+{
+  gchar *gamename;  /* as --status prints it: the game's, or the DLC's */
+  gchar *filename;
+  gchar *label;     /* GOG's name for it ("Soundtrack (MP3)"), may be NULL */
+  gchar *dlc_title; /* the DLC it belongs to, NULL for the game's own */
+  GogSyncPart part;
+  guint languages;  /* lgogdownloader language bits; 0 if unknown (always wanted) */
+  guint64 size;     /* bytes, 0 if unknown */
+} GogSyncFile;
+
 typedef struct
 {
   gchar *gamename; /* lgogdownloader's name, also the library folder name */
   GogSyncKind kind;
   guint n_files;   /* files missing or differing */
+  GPtrArray *files; /* GogSyncFile*, the files counted in n_files */
+  guint languages_offered; /* union of the languages of all the game's installers */
 } GogSyncItem;
 
 void gog_sync_item_free (GogSyncItem *item);
+
+/* lgogdownloader's languages; entry i is language bit 1 << i. */
+typedef struct
+{
+  const char *code; /* for --language */
+  const char *name;
+} GogSyncLanguage;
+
+const GogSyncLanguage *gog_sync_get_languages (guint *n_languages);
+
+/* "English, Norwegian"; "All languages" for 0. Transfer full. */
+gchar *gog_sync_describe_languages (guint languages);
+
+/* TRUE if file is downloaded with languages chosen (0 = all): extras are
+ * not language-specific, and files of unknown language always count. */
+gboolean gog_sync_file_wanted (const GogSyncFile *file, guint languages);
+
+/* The languages chosen for item, as far as it has them (0 = all). */
+guint gog_sync_item_languages (GogSyncItem *item);
+
+/* TRUE if item has a file in the languages chosen for it (an item saved
+ * before files were listed always has). */
+gboolean gog_sync_item_has_wanted_files (GogSyncItem *item);
+
+/* Download choices remembered between runs: how many files download at
+ * the same time (1-8), and each game's languages (0 = all). */
+guint gog_sync_get_threads (void);
+void  gog_sync_set_threads (guint threads);
+guint gog_sync_get_game_languages (const char *gamename);
+void  gog_sync_set_game_languages (const char *gamename, guint languages);
 
 /* TRUE if lgogdownloader is on PATH. */
 gboolean gog_sync_is_available (void);
@@ -42,6 +95,12 @@ gboolean gog_sync_is_available (void);
  * is NEW_GAME when library_dir has no folder named after it. Element type: GogSyncItem*, transfer full, sorted by name. */
 GPtrArray *gog_sync_parse_status (const char *output, const char *library_dir,
                                   const char *const *base_names);
+
+/* Fills in each pending file's part, language, size and label, and each
+ * item's languages_offered, from `lgogdownloader --list j` output (other
+ * lines before the JSON are skipped). Files not found keep part GAME (DLC
+ * if their gamename is not the item's), language 0 and size 0. */
+void gog_sync_apply_details (GPtrArray *items, const char *list_output);
 
 /* Turns a game name into a readable title for games not in the library yet
  * ("broken_sword_4" -> "Broken Sword 4"). Transfer full. */
@@ -60,13 +119,26 @@ G_DECLARE_FINAL_TYPE (GogSyncJob, gog_sync_job, GOG, SYNC_JOB, GObject)
  * (also saved with gog_sync_save_results()). */
 GogSyncJob *gog_sync_job_new_check (const char *library_dir);
 
-/* Downloads gamenames with the same options the library was made with,
- * including --check-orphans --delete-orphans, which deletes the old
- * versions once the new files are in. */
-GogSyncJob *gog_sync_job_new_download (const char *library_dir, const char *const *gamenames);
+typedef struct
+{
+  const char *gamename;
+  GogSyncPart parts;  /* what to download */
+  guint languages;    /* 0 = all */
+} GogSyncRequest;
+
+/* Downloads what requests ask for with the options the library was made
+ * with, threads files at a time. When every download succeeded,
+ * --check-orphans --delete-orphans runs over those games with every
+ * language and part, which deletes the old versions (and only them). */
+GogSyncJob *gog_sync_job_new_download (const char *library_dir, const GogSyncRequest *requests,
+                                       guint n_requests, guint threads);
 
 /* Signals (all emitted on the main-loop thread):
  *   "progress" (gdouble fraction, gchar *message) — fraction -1 when unknown.
+ *     While downloading, the fraction is of all the bytes to download.
+ *   "file-progress" (gint slot, gchar *filename, gdouble fraction, gchar *detail)
+ *     — one download thread's file; filename NULL when the slot is idle.
+ *     detail is lgogdownloader's "12.3/100.0MB @ 2.1MB/s ETA: 40s".
  *   "log-line" (gchar *line)
  *   "finished" (gboolean success, gchar *error_message) — NULL on success. */
 void gog_sync_job_start  (GogSyncJob *self);

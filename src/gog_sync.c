@@ -10,8 +10,31 @@
 
 #define LGOG "lgogdownloader"
 #define RESULTS_FILE "gog-manager-updates.json"
+#define SETTINGS_FILE "gog-manager-download.json"
+#define MAX_SLOTS 16 /* download threads tracked; the setting allows 8 */
 
 /* ---- items ---- */
+
+static void
+file_free (GogSyncFile *file)
+{
+  if (!file)
+    return;
+  g_free (file->gamename);
+  g_free (file->filename);
+  g_free (file->label);
+  g_free (file->dlc_title);
+  g_free (file);
+}
+
+static GogSyncItem *
+item_new (const char *gamename)
+{
+  GogSyncItem *item = g_new0 (GogSyncItem, 1);
+  item->gamename = g_strdup (gamename);
+  item->files = g_ptr_array_new_with_free_func ((GDestroyNotify) file_free);
+  return item;
+}
 
 void
 gog_sync_item_free (GogSyncItem *item)
@@ -19,6 +42,7 @@ gog_sync_item_free (GogSyncItem *item)
   if (!item)
     return;
   g_free (item->gamename);
+  g_ptr_array_unref (item->files);
   g_free (item);
 }
 
@@ -53,6 +77,179 @@ gog_sync_pretty_name (const char *gamename)
   return out;
 }
 
+/* ---- languages ---- */
+
+/* Borrowed from lgogdownloader (include/globalconstants.h, WTFPL): its
+ * languages in their bit order, as --list j reports them. */
+static const GogSyncLanguage languages[] = {
+  { "en", "English" },    { "de", "German" },     { "fr", "French" },
+  { "pl", "Polish" },     { "ru", "Russian" },    { "cn", "Chinese" },
+  { "cz", "Czech" },      { "es", "Spanish" },    { "hu", "Hungarian" },
+  { "it", "Italian" },    { "jp", "Japanese" },   { "tr", "Turkish" },
+  { "pt", "Portuguese" }, { "ko", "Korean" },     { "nl", "Dutch" },
+  { "sv", "Swedish" },    { "no", "Norwegian" },  { "da", "Danish" },
+  { "fi", "Finnish" },    { "br", "Brazilian Portuguese" },
+  { "sk", "Slovak" },     { "bl", "Bulgarian" },  { "uk", "Ukrainian" },
+  { "es_mx", "Spanish (Latin American)" },        { "ar", "Arabic" },
+  { "ro", "Romanian" },   { "he", "Hebrew" },     { "th", "Thai" },
+};
+
+const GogSyncLanguage *
+gog_sync_get_languages (guint *n_languages)
+{
+  *n_languages = G_N_ELEMENTS (languages);
+  return languages;
+}
+
+static gchar *
+languages_join (guint mask, gboolean names, const char *sep)
+{
+  GString *out = g_string_new (NULL);
+  for (guint i = 0; i < G_N_ELEMENTS (languages); i++)
+    if (mask & (1u << i))
+      g_string_append_printf (out, "%s%s", out->len ? sep : "",
+                              names ? languages[i].name : languages[i].code);
+  return g_string_free (out, FALSE);
+}
+
+gchar *
+gog_sync_describe_languages (guint mask)
+{
+  return mask ? languages_join (mask, TRUE, ", ") : g_strdup ("All languages");
+}
+
+/* The --language value: "en+no", or "all". */
+static gchar *
+languages_arg (guint mask)
+{
+  return mask ? languages_join (mask, FALSE, "+") : g_strdup ("all");
+}
+
+static guint
+languages_from_arg (const char *arg)
+{
+  guint mask = 0;
+  gchar **codes = g_strsplit (arg ? arg : "", "+", -1);
+  for (gchar **c = codes; *c; c++)
+    for (guint i = 0; i < G_N_ELEMENTS (languages); i++)
+      if (g_strcmp0 (*c, languages[i].code) == 0)
+        mask |= 1u << i;
+  g_strfreev (codes);
+  return mask;
+}
+
+gboolean
+gog_sync_file_wanted (const GogSyncFile *file, guint mask)
+{
+  return mask == 0 || file->part == GOG_SYNC_PART_EXTRA || file->languages == 0 ||
+         (file->languages & mask) != 0;
+}
+
+/* ---- remembered download choices ---- */
+
+static json_object *
+load_settings (void)
+{
+  gchar *path = gog_config_app_file (SETTINGS_FILE);
+  json_object *root = ju_load_file (path, NULL);
+  g_free (path);
+  if (!root || !json_object_is_type (root, json_type_object))
+    {
+      if (root)
+        json_object_put (root);
+      root = json_object_new_object ();
+    }
+  return root;
+}
+
+static void
+save_settings (json_object *root)
+{
+  gchar *path = gog_config_app_file (SETTINGS_FILE);
+  GError *error = NULL;
+  if (!g_file_set_contents (path, json_object_to_json_string_ext (root, JSON_C_TO_STRING_PRETTY),
+                            -1, &error))
+    {
+      g_warning ("Could not save GOG download settings: %s", error->message);
+      g_clear_error (&error);
+    }
+  g_free (path);
+}
+
+guint
+gog_sync_get_threads (void)
+{
+  json_object *root = load_settings ();
+  gint64 threads = ju_get_int64 (root, "threads", 3);
+  json_object_put (root);
+  return (guint) CLAMP (threads, 1, 8);
+}
+
+void
+gog_sync_set_threads (guint threads)
+{
+  json_object *root = load_settings ();
+  json_object_object_add (root, "threads", json_object_new_int64 (CLAMP (threads, 1, 8)));
+  save_settings (root);
+  json_object_put (root);
+}
+
+guint
+gog_sync_get_game_languages (const char *gamename)
+{
+  json_object *root = load_settings ();
+  guint mask = languages_from_arg (ju_get_string (ju_get_obj (root, "languages"), gamename, NULL));
+  json_object_put (root);
+  return mask;
+}
+
+void
+gog_sync_set_game_languages (const char *gamename, guint mask)
+{
+  json_object *root = load_settings ();
+  json_object *langs = ju_get_obj (root, "languages");
+  if (!langs)
+    {
+      langs = json_object_new_object ();
+      json_object_object_add (root, "languages", langs);
+    }
+  if (mask)
+    {
+      gchar *arg = languages_arg (mask);
+      json_object_object_add (langs, gamename, json_object_new_string (arg));
+      g_free (arg);
+    }
+  else
+    json_object_object_del (langs, gamename);
+  save_settings (root);
+  json_object_put (root);
+}
+
+guint
+gog_sync_item_languages (GogSyncItem *item)
+{
+  guint offered = item->languages_offered;
+  /* With one language there is nothing to choose, and a remembered
+   * language the game no longer has would hide everything. */
+  if ((offered & (offered - 1)) == 0)
+    return 0;
+  return gog_sync_get_game_languages (item->gamename) & offered;
+}
+
+gboolean
+gog_sync_item_has_wanted_files (GogSyncItem *item)
+{
+  if (item->files->len == 0)
+    return TRUE;
+  guint langs = gog_sync_item_languages (item);
+  for (guint f = 0; f < item->files->len; f++)
+    if (gog_sync_file_wanted (g_ptr_array_index (item->files, f), langs))
+      return TRUE;
+  return FALSE;
+}
+
+/* ---- the check's results ---- */
+
 static gboolean
 game_folder_exists (const char *library_dir, const char *gamename)
 {
@@ -68,6 +265,46 @@ compare_items (gconstpointer a, gconstpointer b)
   const GogSyncItem *ia = *(const GogSyncItem *const *) a;
   const GogSyncItem *ib = *(const GogSyncItem *const *) b;
   return g_strcmp0 (ia->gamename, ib->gamename);
+}
+
+static gboolean
+is_all (const char *s, gboolean (*pred) (gchar), gsize min_len)
+{
+  gsize n = 0;
+  for (; *s; s++, n++)
+    if (!pred (*s))
+      return FALSE;
+  return n >= min_len;
+}
+
+static gboolean
+is_digit (gchar c)
+{
+  return g_ascii_isdigit (c);
+}
+
+static gboolean
+is_xdigit (gchar c)
+{
+  return g_ascii_isxdigit (c);
+}
+
+/* "<file>[ <size>[ <hash>]]" -> "<file>"; only ND lines have no size. */
+static gchar *
+status_filename (const char *code, const char *rest)
+{
+  gchar *name = g_strdup (rest);
+  if (g_strcmp0 (code, "ND") == 0)
+    return name;
+  gchar *space = strrchr (name, ' ');
+  if (space && is_all (space + 1, is_xdigit, 32) && strlen (space + 1) == 32)
+    {
+      *space = '\0';
+      space = strrchr (name, ' ');
+    }
+  if (space && is_all (space + 1, is_digit, 1))
+    *space = '\0';
+  return name;
 }
 
 GPtrArray *
@@ -95,21 +332,23 @@ gog_sync_parse_status (const char *output, const char *library_dir,
             }
           game = current_game; /* a DLC name counts under its game */
         }
-      gboolean wanted = g_strv_length (tok) == 3 &&
-                        (g_strcmp0 (tok[0], "ND") == 0 || g_strcmp0 (tok[0], "FS") == 0 ||
-                         g_strcmp0 (tok[0], "MD5") == 0);
+      gboolean wanted = is_status && g_strcmp0 (tok[0], "OK") != 0;
       if (wanted)
         {
           GogSyncItem *item = g_hash_table_lookup (by_name, game);
           if (!item)
             {
-              item = g_new0 (GogSyncItem, 1);
-              item->gamename = g_strdup (game);
+              item = item_new (game);
               item->kind = game_folder_exists (library_dir, game) ? GOG_SYNC_UPDATE
                                                                   : GOG_SYNC_NEW_GAME;
               g_ptr_array_add (items, item);
               g_hash_table_insert (by_name, item->gamename, item);
             }
+          GogSyncFile *file = g_new0 (GogSyncFile, 1);
+          file->gamename = g_strdup (tok[1]);
+          file->filename = status_filename (tok[0], tok[2]);
+          file->part = g_strcmp0 (tok[1], game) == 0 ? GOG_SYNC_PART_GAME : GOG_SYNC_PART_DLC;
+          g_ptr_array_add (item->files, file);
           item->n_files++;
         }
       g_strfreev (tok);
@@ -120,6 +359,116 @@ gog_sync_parse_status (const char *output, const char *library_dir,
   g_free (current_game);
   g_ptr_array_sort (items, compare_items);
   return items;
+}
+
+typedef struct
+{
+  GogSyncPart part;
+  guint languages;
+  guint64 size;
+  const char *label;
+  const char *dlc_title;
+} FileDetails;
+
+static void
+add_details (GHashTable *table, json_object *product, gboolean is_dlc, guint *offered)
+{
+  static const char *const lists[] = { "installers", "extras", "patches", "languagepacks" };
+  for (guint l = 0; l < G_N_ELEMENTS (lists); l++)
+    {
+      json_object *arr = ju_get_array (product, lists[l]);
+      size_t n = arr ? json_object_array_length (arr) : 0;
+      for (size_t i = 0; i < n; i++)
+        {
+          json_object *f = json_object_array_get_idx (arr, i);
+          const char *path = ju_get_string (f, "path", NULL);
+          const char *gamename = ju_get_string (f, "gamename", NULL);
+          if (!path || !gamename)
+            continue;
+          gint64 type = ju_get_int64 (f, "type", 0);
+          FileDetails *d = g_new0 (FileDetails, 1);
+          /* GFTYPE_*: base 1 2 4 8, DLC 16 32 64 128 */
+          d->part = (type & (2 | 32)) || l == 1 ? GOG_SYNC_PART_EXTRA
+                    : (type & (16 | 64 | 128)) || is_dlc ? GOG_SYNC_PART_DLC
+                                                         : GOG_SYNC_PART_GAME;
+          d->languages = (guint) ju_get_int64 (f, "language", 0);
+          const char *size = ju_get_string (f, "size", NULL);
+          d->size = size ? g_ascii_strtoull (size, NULL, 10) : (guint64) ju_get_int64 (f, "size", 0);
+          d->label = ju_get_string (f, "name", NULL);
+          d->dlc_title = is_dlc ? ju_get_string (product, "title", NULL) : NULL;
+          if (l == 0 || l == 3)
+            *offered |= d->languages;
+          const char *slash = strrchr (path, '/');
+          g_hash_table_insert (table, g_strdup_printf ("%s/%s", gamename, slash ? slash + 1 : path),
+                               d);
+        }
+    }
+}
+
+void
+gog_sync_apply_details (GPtrArray *items, const char *list_output)
+{
+  /* The JSON starts at the first line opening an array. */
+  const char *start = list_output;
+  while (start && *start != '[')
+    {
+      start = strchr (start, '\n');
+      if (start)
+        start++;
+    }
+  if (!start)
+    return;
+  json_tokener *tokener = json_tokener_new ();
+  json_object *root = json_tokener_parse_ex (tokener, start, (int) strlen (start));
+  json_tokener_free (tokener);
+  if (!root || !json_object_is_type (root, json_type_array))
+    {
+      if (root)
+        json_object_put (root);
+      return;
+    }
+
+  GHashTable *offered = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+  GHashTable *table = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_free);
+  for (size_t i = 0; i < json_object_array_length (root); i++)
+    {
+      json_object *game = json_object_array_get_idx (root, i);
+      const char *gamename = ju_get_string (game, "gamename", NULL);
+      if (!gamename)
+        continue;
+      guint langs = 0;
+      add_details (table, game, FALSE, &langs);
+      json_object *dlcs = ju_get_array (game, "dlcs");
+      for (size_t d = 0; dlcs && d < json_object_array_length (dlcs); d++)
+        add_details (table, json_object_array_get_idx (dlcs, d), TRUE, &langs);
+      g_hash_table_insert (offered, g_strdup (gamename), GUINT_TO_POINTER (langs));
+    }
+
+  for (guint i = 0; items && i < items->len; i++)
+    {
+      GogSyncItem *item = g_ptr_array_index (items, i);
+      item->languages_offered |= GPOINTER_TO_UINT (g_hash_table_lookup (offered, item->gamename));
+      for (guint f = 0; f < item->files->len; f++)
+        {
+          GogSyncFile *file = g_ptr_array_index (item->files, f);
+          gchar *key = g_strdup_printf ("%s/%s", file->gamename, file->filename);
+          FileDetails *d = g_hash_table_lookup (table, key);
+          g_free (key);
+          if (!d)
+            continue;
+          file->part = d->part;
+          file->languages = d->languages;
+          file->size = d->size;
+          g_free (file->label);
+          file->label = g_strdup (d->label);
+          g_free (file->dlc_title);
+          file->dlc_title = g_strdup (d->dlc_title);
+        }
+    }
+  /* The table's strings point into root. */
+  g_hash_table_unref (table);
+  g_hash_table_unref (offered);
+  json_object_put (root);
 }
 
 /* ---- remembered results ---- */
@@ -146,11 +495,30 @@ gog_sync_load_results (gint64 *out_checked_unix)
       const char *name = ju_get_string (rec, "gamename", NULL);
       if (!name)
         continue;
-      GogSyncItem *item = g_new0 (GogSyncItem, 1);
-      item->gamename = g_strdup (name);
+      GogSyncItem *item = item_new (name);
       item->kind = g_strcmp0 (ju_get_string (rec, "kind", ""), "new") == 0 ? GOG_SYNC_NEW_GAME
                                                                           : GOG_SYNC_UPDATE;
       item->n_files = (guint) ju_get_int64 (rec, "files", 0);
+      item->languages_offered = (guint) ju_get_int64 (rec, "languages", 0);
+      json_object *files = ju_get_array (rec, "file_list");
+      for (size_t f = 0; files && f < json_object_array_length (files); f++)
+        {
+          json_object *jf = json_object_array_get_idx (files, f);
+          const char *fname = ju_get_string (jf, "filename", NULL);
+          if (!fname)
+            continue;
+          GogSyncFile *file = g_new0 (GogSyncFile, 1);
+          file->gamename = g_strdup (ju_get_string (jf, "gamename", name));
+          file->filename = g_strdup (fname);
+          file->label = g_strdup (ju_get_string (jf, "label", NULL));
+          file->dlc_title = g_strdup (ju_get_string (jf, "dlc", NULL));
+          gint64 part = ju_get_int64 (jf, "part", GOG_SYNC_PART_GAME);
+          file->part = part == GOG_SYNC_PART_DLC || part == GOG_SYNC_PART_EXTRA ? (GogSyncPart) part
+                                                                                : GOG_SYNC_PART_GAME;
+          file->languages = (guint) ju_get_int64 (jf, "languages", 0);
+          file->size = (guint64) ju_get_int64 (jf, "size", 0);
+          g_ptr_array_add (item->files, file);
+        }
       g_ptr_array_add (items, item);
     }
   json_object_put (root);
@@ -172,6 +540,24 @@ gog_sync_save_results (GPtrArray *items)
                               json_object_new_string (item->kind == GOG_SYNC_NEW_GAME ? "new"
                                                                                        : "update"));
       json_object_object_add (rec, "files", json_object_new_int64 (item->n_files));
+      json_object_object_add (rec, "languages", json_object_new_int64 (item->languages_offered));
+      json_object *files = json_object_new_array ();
+      for (guint f = 0; f < item->files->len; f++)
+        {
+          GogSyncFile *file = g_ptr_array_index (item->files, f);
+          json_object *jf = json_object_new_object ();
+          json_object_object_add (jf, "gamename", json_object_new_string (file->gamename));
+          json_object_object_add (jf, "filename", json_object_new_string (file->filename));
+          if (file->label)
+            json_object_object_add (jf, "label", json_object_new_string (file->label));
+          if (file->dlc_title)
+            json_object_object_add (jf, "dlc", json_object_new_string (file->dlc_title));
+          json_object_object_add (jf, "part", json_object_new_int64 (file->part));
+          json_object_object_add (jf, "languages", json_object_new_int64 (file->languages));
+          json_object_object_add (jf, "size", json_object_new_int64 ((gint64) file->size));
+          json_object_array_add (files, jf);
+        }
+      json_object_object_add (rec, "file_list", files);
       json_object_array_add (arr, rec);
     }
   json_object_object_add (root, "items", arr);
@@ -202,7 +588,11 @@ struct _GogSyncJob
 
   JobKind kind;
   gchar *library_dir;
-  GStrv gamenames;    /* download only */
+  GArray *requests;   /* GogSyncRequest with owned gamenames; download only */
+  guint threads;
+  guint64 total_bytes; /* of the files the requests cover */
+  guint total_files;
+  GHashTable *sizes;  /* filename -> guint64* */
   GPtrArray *items;   /* check result */
 
   GThread *thread;
@@ -215,6 +605,7 @@ enum
 {
   SIG_PROGRESS,
   SIG_LOG_LINE,
+  SIG_FILE_PROGRESS,
   SIG_FINISHED,
   N_SIGNALS,
 };
@@ -231,7 +622,14 @@ gog_sync_job_finalize (GObject *object)
   if (self->thread)
     g_thread_unref (self->thread);
   g_free (self->library_dir);
-  g_strfreev (self->gamenames);
+  if (self->requests)
+    {
+      for (guint i = 0; i < self->requests->len; i++)
+        g_free ((gchar *) g_array_index (self->requests, GogSyncRequest, i).gamename);
+      g_array_unref (self->requests);
+    }
+  if (self->sizes)
+    g_hash_table_unref (self->sizes);
   if (self->items)
     g_ptr_array_unref (self->items);
   G_OBJECT_CLASS (gog_sync_job_parent_class)->finalize (object);
@@ -248,6 +646,10 @@ gog_sync_job_class_init (GogSyncJobClass *klass)
                                         G_TYPE_STRING);
   signals[SIG_LOG_LINE] = g_signal_new ("log-line", G_TYPE_FROM_CLASS (klass), G_SIGNAL_RUN_LAST,
                                         0, NULL, NULL, NULL, G_TYPE_NONE, 1, G_TYPE_STRING);
+  signals[SIG_FILE_PROGRESS] = g_signal_new ("file-progress", G_TYPE_FROM_CLASS (klass),
+                                             G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL, G_TYPE_NONE,
+                                             4, G_TYPE_INT, G_TYPE_STRING, G_TYPE_DOUBLE,
+                                             G_TYPE_STRING);
   signals[SIG_FINISHED] = g_signal_new ("finished", G_TYPE_FROM_CLASS (klass), G_SIGNAL_RUN_LAST,
                                         0, NULL, NULL, NULL, G_TYPE_NONE, 2, G_TYPE_BOOLEAN,
                                         G_TYPE_STRING);
@@ -269,12 +671,45 @@ gog_sync_job_new_check (const char *library_dir)
 }
 
 GogSyncJob *
-gog_sync_job_new_download (const char *library_dir, const char *const *gamenames)
+gog_sync_job_new_download (const char *library_dir, const GogSyncRequest *requests,
+                           guint n_requests, guint threads)
 {
   GogSyncJob *self = g_object_new (GOG_TYPE_SYNC_JOB, NULL);
   self->kind = JOB_DOWNLOAD;
   self->library_dir = g_strdup (library_dir);
-  self->gamenames = g_strdupv ((gchar **) gamenames);
+  self->threads = CLAMP (threads, 1, 8);
+  self->requests = g_array_new (FALSE, FALSE, sizeof (GogSyncRequest));
+  for (guint i = 0; i < n_requests; i++)
+    {
+      GogSyncRequest r = requests[i];
+      r.gamename = g_strdup (r.gamename);
+      g_array_append_val (self->requests, r);
+    }
+
+  /* What the overall progress is measured against. */
+  self->sizes = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_free);
+  GPtrArray *saved = gog_sync_load_results (NULL);
+  for (guint i = 0; i < saved->len; i++)
+    {
+      GogSyncItem *item = g_ptr_array_index (saved, i);
+      for (guint r = 0; r < n_requests; r++)
+        {
+          if (g_strcmp0 (requests[r].gamename, item->gamename) != 0)
+            continue;
+          for (guint f = 0; f < item->files->len; f++)
+            {
+              GogSyncFile *file = g_ptr_array_index (item->files, f);
+              if (!(file->part & requests[r].parts) ||
+                  !gog_sync_file_wanted (file, requests[r].languages))
+                continue;
+              self->total_bytes += file->size;
+              self->total_files++;
+              g_hash_table_insert (self->sizes, g_strdup (file->filename),
+                                   g_memdup2 (&file->size, sizeof file->size));
+            }
+        }
+    }
+  g_ptr_array_unref (saved);
   return self;
 }
 
@@ -293,7 +728,9 @@ typedef struct
   guint signal;
   double fraction;
   gboolean success;
+  gint slot;
   gchar *text;
+  gchar *detail;
 } SignalMsg;
 
 static gboolean
@@ -304,9 +741,13 @@ emit_idle (gpointer data)
     g_signal_emit (m->job, signals[SIG_PROGRESS], 0, m->fraction, m->text);
   else if (m->signal == SIG_LOG_LINE)
     g_signal_emit (m->job, signals[SIG_LOG_LINE], 0, m->text);
+  else if (m->signal == SIG_FILE_PROGRESS)
+    g_signal_emit (m->job, signals[SIG_FILE_PROGRESS], 0, m->slot, m->text, m->fraction,
+                   m->detail);
   else
     g_signal_emit (m->job, signals[SIG_FINISHED], 0, m->success, m->text);
   g_free (m->text);
+  g_free (m->detail);
   g_object_unref (m->job);
   g_free (m);
   return G_SOURCE_REMOVE;
@@ -321,6 +762,20 @@ queue_signal (GogSyncJob *job, guint signal, double fraction, gboolean success, 
   m->fraction = fraction;
   m->success = success;
   m->text = g_strdup (text);
+  g_idle_add (emit_idle, m);
+}
+
+static void
+job_file_progress (GogSyncJob *job, gint slot, const char *filename, double fraction,
+                   const char *detail)
+{
+  SignalMsg *m = g_new0 (SignalMsg, 1);
+  m->job = g_object_ref (job);
+  m->signal = SIG_FILE_PROGRESS;
+  m->slot = slot;
+  m->fraction = fraction;
+  m->text = g_strdup (filename);
+  m->detail = g_strdup (detail);
   g_idle_add (emit_idle, m);
 }
 
@@ -478,14 +933,94 @@ collect_line (GogSyncJob *job, const char *line, gboolean by_cr, gpointer data)
     }
 }
 
-/* lgogdownloader redraws its download display (per-thread "#0 <file>",
- * "45% ▕███▏ … ETA", "Total: …") with fresh lines, so those go to the
- * progress bar; the log keeps the lasting messages. */
+/* lgogdownloader redraws its download display with fresh lines: per
+ * thread "#0 <file>" (or "#0: Finished") and " 45% ▕███▏ 12.34/100.00MB
+ * @ 2.10MB/s ETA: 40s", then "Total: … | Remaining: …". Those go to the
+ * progress bars; the log keeps the lasting messages. */
 typedef struct
 {
-  gchar *current_file;
-  gint64 last_progress; /* monotonic µs; the display redraws far faster than needed */
+  gchar *file;
+  guint64 done;  /* bytes, from the progress line */
+  guint64 total;
+  gint64 last_emit;
+} Slot;
+
+typedef struct
+{
+  Slot slots[MAX_SLOTS];
+  gint current;           /* the slot the next progress line belongs to */
+  guint64 completed_bytes;
+  guint completed_files;
+  GHashTable *completed;  /* filenames done in this job */
+  gint64 last_overall;    /* monotonic µs; the display redraws far faster than needed */
 } DownloadState;
+
+static void
+set_slot (GogSyncJob *job, DownloadState *state, gint i, const char *file)
+{
+  Slot *slot = &state->slots[i];
+  if (g_strcmp0 (slot->file, file) == 0)
+    return;
+  g_free (slot->file);
+  slot->file = g_strdup (file);
+  slot->done = slot->total = 0;
+  slot->last_emit = 0;
+  job_file_progress (job, i, file, 0, NULL);
+}
+
+static void
+clear_slots (GogSyncJob *job, DownloadState *state)
+{
+  for (gint i = 0; i < MAX_SLOTS; i++)
+    if (state->slots[i].file)
+      set_slot (job, state, i, NULL);
+}
+
+/* "12.34/100.00MiB" -> bytes; the unit belongs to both numbers. */
+static gboolean
+parse_sizes (const char *s, guint64 *done, guint64 *total)
+{
+  /* Not sscanf: its %lf follows the locale, and lgogdownloader prints "12.34". */
+  char *end = NULL;
+  double d = g_ascii_strtod (s, &end);
+  if (!end || *end != '/')
+    return FALSE;
+  double t = g_ascii_strtod (end + 1, &end);
+  const char *unit = end;
+  double mult = 1;
+  const char *prefixes = "kMGT";
+  for (int k = 0; prefixes[k]; k++)
+    if (g_ascii_tolower (unit[0]) == g_ascii_tolower (prefixes[k]))
+      for (int j = 0; j <= k; j++)
+        mult *= strchr (unit, 'i') ? 1024 : 1000;
+  *done = (guint64) (d * mult);
+  *total = (guint64) (t * mult);
+  return TRUE;
+}
+
+static void
+emit_overall (GogSyncJob *job, DownloadState *state, gboolean force)
+{
+  gint64 now = g_get_monotonic_time ();
+  if (!force && now - state->last_overall < 200 * 1000)
+    return;
+  state->last_overall = now;
+  guint64 bytes = state->completed_bytes;
+  for (gint i = 0; i < MAX_SLOTS; i++)
+    if (state->slots[i].file)
+      bytes += state->slots[i].done;
+  guint64 total = MAX (job->total_bytes, bytes);
+  gchar *have = g_format_size (bytes);
+  gchar *of = g_format_size (total);
+  guint files_total = MAX (job->total_files, state->completed_files);
+  gchar *msg = g_strdup_printf ("%.0f%% — %s of %s, %u of %u files done",
+                                total ? 100.0 * bytes / total : 0, have, of,
+                                state->completed_files, files_total);
+  job_progress (job, total ? (double) bytes / total : -1, msg);
+  g_free (msg);
+  g_free (of);
+  g_free (have);
+}
 
 static void
 log_line (GogSyncJob *job, const char *line, gboolean by_cr, gpointer data)
@@ -506,11 +1041,15 @@ log_line (GogSyncJob *job, const char *line, gboolean by_cr, gpointer data)
     }
   if (line[0] == '#' && g_ascii_isdigit (line[1]))
     {
-      const char *space = strchr (line, ' ');
-      if (space)
+      char *end = NULL;
+      guint64 i = g_ascii_strtoull (line + 1, &end, 10);
+      if (i < MAX_SLOTS && end)
         {
-          g_free (state->current_file);
-          state->current_file = g_strdup (space + 1);
+          state->current = (gint) i;
+          if (*end == ':')
+            set_slot (job, state, (gint) i, NULL); /* "#0: Finished" */
+          else if (*end == ' ' && !g_hash_table_contains (state->completed, end + 1))
+            set_slot (job, state, (gint) i, end + 1);
         }
       return;
     }
@@ -520,19 +1059,33 @@ log_line (GogSyncJob *job, const char *line, gboolean by_cr, gpointer data)
       guint64 percent = g_ascii_strtoull (line, &end, 10);
       if (end && *end == '%')
         {
-          gint64 now = g_get_monotonic_time ();
-          if (now - state->last_progress < 100 * 1000)
+          Slot *slot = state->current >= 0 ? &state->slots[state->current] : NULL;
+          if (!slot || !slot->file)
             return;
-          state->last_progress = now;
-          gchar *msg = g_strdup_printf ("Downloading %s… %u%%",
-                                        state->current_file ? state->current_file : "",
-                                        (guint) MIN (percent, 100));
-          job_progress (job, MIN (percent, 100) / 100.0, msg);
-          g_free (msg);
+          /* The sizes follow the bar: the first "<digits>/" after the %. */
+          const char *detail = NULL;
+          for (const char *p = end + 1; *p && !detail; p++)
+            if (*p == '/' && p > end + 1 && g_ascii_isdigit (p[-1]))
+              {
+                const char *q = p;
+                while (q > end + 1 && (g_ascii_isdigit (q[-1]) || q[-1] == '.'))
+                  q--;
+                detail = q;
+              }
+          if (detail)
+            parse_sizes (detail, &slot->done, &slot->total);
+          gint64 now = g_get_monotonic_time ();
+          if (now - slot->last_emit >= 100 * 1000)
+            {
+              slot->last_emit = now;
+              job_file_progress (job, state->current, slot->file, MIN (percent, 100) / 100.0,
+                                 detail);
+            }
+          emit_overall (job, state, FALSE);
           return;
         }
     }
-  if (g_str_has_prefix (line, "Total:") || by_cr)
+  if (g_str_has_prefix (line, "Total:") || g_str_has_prefix (line, "Remaining:") || by_cr)
     return;
 
   const char *complete = strstr (line, "Download complete: ");
@@ -546,6 +1099,24 @@ log_line (GogSyncJob *job, const char *line, gboolean by_cr, gpointer data)
       gchar *out = g_strdup_printf ("Downloaded %s", msg);
       job_log (job, out);
       g_free (out);
+      /* "Download complete (<curl error>): file" is a failure and doesn't
+       * match the prefix, so this one is done. */
+      if (!g_hash_table_contains (state->completed, msg))
+        {
+          const guint64 *size = g_hash_table_lookup (job->sizes, msg);
+          guint64 bytes = size ? *size : 0;
+          for (gint i = 0; i < MAX_SLOTS; i++)
+            if (g_strcmp0 (state->slots[i].file, msg) == 0)
+              {
+                if (!size)
+                  bytes = state->slots[i].total;
+                set_slot (job, state, i, NULL);
+              }
+          state->completed_bytes += bytes;
+          state->completed_files++;
+          g_hash_table_add (state->completed, g_strdup (msg));
+          emit_overall (job, state, TRUE);
+        }
       g_free (msg);
     }
   else if (deleting)
@@ -578,6 +1149,21 @@ check_login (GogSyncJob *job, GError **error)
   return ok;
 }
 
+/* "^(a|b)$" for --game. Transfer full. */
+static gchar *
+names_regex (const char *const *names)
+{
+  GString *regex = g_string_new ("^(");
+  for (const char *const *name = names; *name; name++)
+    {
+      gchar *escaped = g_regex_escape_string (*name, -1);
+      g_string_append_printf (regex, "%s%s", name == names ? "" : "|", escaped);
+      g_free (escaped);
+    }
+  g_string_append (regex, ")$");
+  return g_string_free (regex, FALSE);
+}
+
 static gboolean
 check_sync (GogSyncJob *job, GError **error)
 {
@@ -601,15 +1187,69 @@ check_sync (GogSyncJob *job, GError **error)
   GString *out = g_string_new (NULL);
   gboolean ok = run_streaming (job, argv, collect_line, out, error);
   if (ok)
-    {
-      job->items = gog_sync_parse_status (out->str, job->library_dir,
-                                          (const char *const *) base_names);
-      gog_sync_save_results (job->items);
-    }
+    job->items = gog_sync_parse_status (out->str, job->library_dir,
+                                        (const char *const *) base_names);
   g_string_free (out, TRUE);
   g_strfreev (base_names);
+
+  if (ok && job->items->len > 0)
+    {
+      /* What each file is (game, DLC or extra), its language and size. */
+      job_progress (job, -1, "Getting details of the games to download…");
+      GStrvBuilder *names = g_strv_builder_new ();
+      for (guint i = 0; i < job->items->len; i++)
+        g_strv_builder_add (names, ((GogSyncItem *) g_ptr_array_index (job->items, i))->gamename);
+      GStrv strv = g_strv_builder_end (names);
+      g_strv_builder_unref (names);
+      gchar *regex = names_regex ((const char *const *) strv);
+      gchar *details_argv[] = { LGOG, "--list", "j", "--game", regex, NULL };
+      GString *details = g_string_new (NULL);
+      GError *details_error = NULL;
+      /* Without details the files still download; they just can't be told
+       * apart, so this isn't fatal. */
+      if (run_streaming (job, details_argv, collect_line, details, &details_error))
+        gog_sync_apply_details (job->items, details->str);
+      else if (job->cancelled)
+        {
+          g_propagate_error (error, details_error);
+          details_error = NULL;
+          ok = FALSE;
+        }
+      else
+        job_log (job, details_error->message);
+      g_clear_error (&details_error);
+      g_string_free (details, TRUE);
+      g_free (regex);
+      g_strfreev (strv);
+    }
+  if (ok)
+    gog_sync_save_results (job->items);
   return ok;
 }
+
+/* --include for parts. Patches stay excluded, as in the library. */
+static gchar *
+parts_include (GogSyncPart parts)
+{
+  GString *out = g_string_new (NULL);
+  if (parts & GOG_SYNC_PART_GAME)
+    g_string_append (out, "bi,bl,");
+  if (parts & GOG_SYNC_PART_DLC)
+    g_string_append (out, "di,dl,");
+  if (parts & GOG_SYNC_PART_EXTRA)
+    g_string_append (out, "be,de,");
+  if (out->len)
+    g_string_truncate (out, out->len - 1);
+  return g_string_free (out, FALSE);
+}
+
+/* Each set of choices (languages and parts) is one lgogdownloader run. */
+typedef struct
+{
+  guint languages;
+  GogSyncPart parts;
+  GPtrArray *names;
+} Batch;
 
 static gboolean
 download_sync (GogSyncJob *job, GError **error)
@@ -618,36 +1258,102 @@ download_sync (GogSyncJob *job, GError **error)
   if (!check_login (job, error))
     return FALSE;
 
-  GString *regex = g_string_new ("^(");
-  for (gchar **name = job->gamenames; *name; name++)
+  GArray *batches = g_array_new (FALSE, TRUE, sizeof (Batch));
+  GPtrArray *all_names = g_ptr_array_new ();
+  for (guint i = 0; i < job->requests->len; i++)
     {
-      gchar *escaped = g_regex_escape_string (*name, -1);
-      g_string_append_printf (regex, "%s%s", name == job->gamenames ? "" : "|", escaped);
-      g_free (escaped);
+      GogSyncRequest *r = &g_array_index (job->requests, GogSyncRequest, i);
+      if (!r->parts)
+        continue;
+      g_ptr_array_add (all_names, (gpointer) r->gamename);
+      Batch *batch = NULL;
+      for (guint b = 0; b < batches->len && !batch; b++)
+        {
+          Batch *candidate = &g_array_index (batches, Batch, b);
+          if (candidate->languages == r->languages && candidate->parts == r->parts)
+            batch = candidate;
+        }
+      if (!batch)
+        {
+          Batch fresh = { r->languages, r->parts, g_ptr_array_new () };
+          g_array_append_val (batches, fresh);
+          batch = &g_array_index (batches, Batch, batches->len - 1);
+        }
+      g_ptr_array_add (batch->names, (gpointer) r->gamename);
     }
-  g_string_append (regex, ")$");
+  g_ptr_array_add (all_names, NULL);
 
+  DownloadState state = { 0 };
+  state.current = -1;
+  state.completed = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+  gchar *threads = g_strdup_printf ("%u", job->threads);
+  gboolean ok = TRUE;
   job_progress (job, -1, "Starting the download…");
-  /* The options the library is downloaded with. --check-orphans
-   * --delete-orphans runs after the download and deletes files GOG no
-   * longer offers, i.e. the old versions. */
-  gchar *argv[] = { LGOG, "--download", "--threads", "3", "--exclude", "patches",
-                    "--check-orphans", "--delete-orphans", "--save-serials", "--save-icon",
-                    "--save-logo", "--save-product-json", "--directory", job->library_dir,
-                    "--game", regex->str, NULL };
-  DownloadState state = { NULL, 0 };
-  gboolean ok = run_streaming (job, argv, log_line, &state, error);
-  g_free (state.current_file);
-  g_string_free (regex, TRUE);
+  for (guint b = 0; ok && b < batches->len; b++)
+    {
+      Batch *batch = &g_array_index (batches, Batch, b);
+      g_ptr_array_add (batch->names, NULL);
+      gchar *regex = names_regex ((const char *const *) batch->names->pdata);
+      gchar *include = parts_include (batch->parts);
+      gchar *language = languages_arg (batch->languages);
+      /* The options the library is downloaded with. Old versions are
+       * deleted afterwards, in one pass over every language and part. */
+      gchar *argv[] = { LGOG, "--download", "--threads", threads, "--exclude", "patches",
+                        "--include", include, "--language", language, "--save-serials",
+                        "--save-icon", "--save-logo", "--save-product-json", "--directory",
+                        job->library_dir, "--game", regex, NULL };
+      ok = run_streaming (job, argv, log_line, &state, error);
+      clear_slots (job, &state);
+      g_free (language);
+      g_free (include);
+      g_free (regex);
+    }
+  if (ok && all_names->len > 1)
+    {
+      /* --check-orphans deletes files GOG no longer offers, i.e. the old
+       * versions. It runs with lgogdownloader's own settings (every
+       * language and part): with the download's narrower ones, the files
+       * left out would count as orphans too and be deleted. */
+      job_progress (job, -1, "Deleting old versions…");
+      gchar *regex = names_regex ((const char *const *) all_names->pdata);
+      gchar *argv[] = { LGOG, "--check-orphans", "--delete-orphans", "--exclude", "patches",
+                        "--directory", job->library_dir, "--game", regex, NULL };
+      ok = run_streaming (job, argv, log_line, &state, error);
+      g_free (regex);
+    }
+  g_free (threads);
+  g_hash_table_unref (state.completed);
+  for (gint i = 0; i < MAX_SLOTS; i++)
+    g_free (state.slots[i].file);
+  for (guint b = 0; b < batches->len; b++)
+    g_ptr_array_unref (g_array_index (batches, Batch, b).names);
+  g_array_unref (batches);
+  g_ptr_array_unref (all_names);
 
   if (ok)
     {
-      /* Those games are now up to date. */
+      /* What was asked for is now downloaded; files of other languages
+       * stay listed. */
       GPtrArray *saved = gog_sync_load_results (NULL);
       for (guint i = saved->len; i > 0; i--)
         {
           GogSyncItem *item = g_ptr_array_index (saved, i - 1);
-          if (g_strv_contains ((const char *const *) job->gamenames, item->gamename))
+          for (guint r = 0; r < job->requests->len; r++)
+            {
+              GogSyncRequest *req = &g_array_index (job->requests, GogSyncRequest, r);
+              if (g_strcmp0 (req->gamename, item->gamename) != 0)
+                continue;
+              for (guint f = item->files->len; f > 0; f--)
+                {
+                  GogSyncFile *file = g_ptr_array_index (item->files, f - 1);
+                  if ((file->part & req->parts) && gog_sync_file_wanted (file, req->languages))
+                    g_ptr_array_remove_index (item->files, f - 1);
+                }
+              /* Results saved before files were listed have none, so the
+               * whole game goes, as it did then. */
+              item->n_files = item->files->len;
+            }
+          if (item->n_files == 0)
             g_ptr_array_remove_index (saved, i - 1);
         }
       gog_sync_save_results (saved);

@@ -5,7 +5,40 @@
 #include "gog_sync_dialog.h"
 #include "../gog_sync.h"
 
+#define N_SLOTS 8 /* the most downloads at the same time */
+#define N_PARTS 3
+
+static const GogSyncPart parts[N_PARTS] = { GOG_SYNC_PART_GAME, GOG_SYNC_PART_DLC,
+                                            GOG_SYNC_PART_EXTRA };
+static const char *const part_titles[N_PARTS] = { "Game", "DLC", "Extras" };
+
+typedef struct _SyncCtx SyncCtx;
+
+/* One listed game: whether to download it, which of its parts, and in
+ * which languages. */
 typedef struct
+{
+  SyncCtx *ctx;
+  GogSyncItem *item;
+  guint languages; /* 0 = all */
+  AdwExpanderRow *row;
+  GtkCheckButton *check;
+  AdwActionRow *part_rows[N_PARTS];
+  GtkCheckButton *part_checks[N_PARTS];
+  AdwActionRow *language_row;
+  GtkCheckButton *all_languages;
+  GPtrArray *language_checks; /* GtkCheckButton*, each with its "bit" */
+  gboolean updating;
+} GameRow;
+
+typedef struct
+{
+  GtkWidget *box;
+  GtkLabel *name;
+  GtkProgressBar *bar;
+} SlotView;
+
+struct _SyncCtx
 {
   GtkWindow *window; /* a real window, so it can be resized */
   gchar *library_dir;
@@ -18,6 +51,9 @@ typedef struct
   GtkWidget *results_box;
   GtkWidget *progress_box;
   GtkProgressBar *progress_bar;
+  GtkWidget *files_heading;
+  SlotView slots[N_SLOTS];
+  AdwSpinRow *threads_row;
   GtkWidget *log_scroll;
   GtkTextView *log_view;
   GtkButton *check_button;
@@ -25,13 +61,13 @@ typedef struct
   GtkButton *download_button;
   GtkButton *cancel_button;
 
-  GPtrArray *items;  /* GogSyncItem*, what is listed */
-  GPtrArray *checks; /* GtkCheckButton*, in display order; each carries its "item" */
+  GPtrArray *items; /* GogSyncItem*, what is listed */
+  GPtrArray *games; /* GameRow*, in display order */
 
   GogSyncJob *job;
   gboolean busy;
   gboolean downloaded;
-} SyncCtx;
+};
 
 static void
 ctx_free (SyncCtx *ctx)
@@ -43,8 +79,8 @@ ctx_free (SyncCtx *ctx)
       gog_sync_job_cancel (ctx->job);
       g_clear_object (&ctx->job);
     }
+  g_ptr_array_unref (ctx->games);
   g_ptr_array_unref (ctx->items);
-  g_ptr_array_unref (ctx->checks);
   g_free (ctx->library_dir);
   g_free (ctx);
 }
@@ -96,12 +132,33 @@ title_for (SyncCtx *ctx, const char *gamename)
   return title ? title : gog_sync_pretty_name (gamename);
 }
 
+static void
+game_row_free (GameRow *game)
+{
+  g_ptr_array_unref (game->language_checks);
+  g_free (game);
+}
+
+static GogSyncPart
+chosen_parts (GameRow *game)
+{
+  GogSyncPart chosen = 0;
+  for (guint p = 0; p < N_PARTS; p++)
+    if (gtk_widget_get_visible (GTK_WIDGET (game->part_rows[p])) &&
+        gtk_check_button_get_active (game->part_checks[p]))
+      chosen |= parts[p];
+  return chosen;
+}
+
 static gboolean
 any_checked (SyncCtx *ctx)
 {
-  for (guint i = 0; i < ctx->checks->len; i++)
-    if (gtk_check_button_get_active (g_ptr_array_index (ctx->checks, i)))
-      return TRUE;
+  for (guint i = 0; i < ctx->games->len; i++)
+    {
+      GameRow *game = g_ptr_array_index (ctx->games, i);
+      if (gtk_check_button_get_active (game->check) && chosen_parts (game))
+        return TRUE;
+    }
   return FALSE;
 }
 
@@ -112,6 +169,7 @@ set_busy (SyncCtx *ctx, gboolean busy)
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->select_all_button), !busy && ctx->items->len > 0);
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->download_button), !busy && any_checked (ctx));
   gtk_widget_set_sensitive (ctx->results_box, !busy);
+  gtk_widget_set_sensitive (GTK_WIDGET (ctx->threads_row), !busy);
   gtk_widget_set_visible (GTK_WIDGET (ctx->cancel_button), busy);
   /* Closing mid-run would orphan the job; use Cancel instead (see
    * on_close_request). */
@@ -119,22 +177,289 @@ set_busy (SyncCtx *ctx, gboolean busy)
 }
 
 static void
-on_check_toggled (GtkCheckButton *check, gpointer user_data)
+update_download_button (SyncCtx *ctx)
 {
-  (void) check;
-  SyncCtx *ctx = user_data;
   if (!ctx->job)
     gtk_widget_set_sensitive (GTK_WIDGET (ctx->download_button), any_checked (ctx));
 }
 
 static void
-add_group (SyncCtx *ctx, GogSyncKind kind, const char *heading)
+on_check_toggled (GtkCheckButton *check, gpointer user_data)
+{
+  (void) check;
+  update_download_button (user_data);
+}
+
+/* "3 files, 1.2 GB" */
+static gchar *
+files_text (guint n, guint64 size)
+{
+  gchar *count = g_strdup_printf (n == 1 ? "%u file" : "%u files", n);
+  if (!size)
+    return count;
+  gchar *bytes = g_format_size (size);
+  gchar *out = g_strdup_printf ("%s, %s", count, bytes);
+  g_free (bytes);
+  g_free (count);
+  return out;
+}
+
+/* Adds name to a ", "-separated list once. */
+static void
+add_name (GString *names, GHashTable *seen, const char *name)
+{
+  if (!name || !g_hash_table_add (seen, (gpointer) name))
+    return;
+  g_string_append_printf (names, "%s%s", names->len ? ", " : "", name);
+}
+
+/* Counts and names per part, for the files the chosen languages take. */
+static void
+refresh_game (GameRow *game)
+{
+  guint total_n = 0;
+  guint64 total_size = 0;
+  GString *summary = g_string_new (NULL);
+  for (guint p = 0; p < N_PARTS; p++)
+    {
+      guint n = 0;
+      guint64 size = 0;
+      GString *names = g_string_new (NULL);
+      GHashTable *seen = g_hash_table_new (g_str_hash, g_str_equal);
+      for (guint f = 0; f < game->item->files->len; f++)
+        {
+          GogSyncFile *file = g_ptr_array_index (game->item->files, f);
+          if (file->part != parts[p] || !gog_sync_file_wanted (file, game->languages))
+            continue;
+          n++;
+          size += file->size;
+          if (parts[p] == GOG_SYNC_PART_DLC)
+            add_name (names, seen, file->dlc_title ? file->dlc_title : file->gamename);
+          else if (parts[p] == GOG_SYNC_PART_EXTRA)
+            add_name (names, seen, file->label ? file->label : file->filename);
+        }
+      gtk_widget_set_visible (GTK_WIDGET (game->part_rows[p]), n > 0);
+      if (n > 0)
+        {
+          gchar *count = files_text (n, size);
+          gchar *subtitle = names->len ? g_strdup_printf ("%s — %s", names->str, count)
+                                       : g_strdup (count);
+          adw_action_row_set_subtitle (game->part_rows[p], subtitle);
+          g_string_append_printf (summary, "%s%s: %u", summary->len ? " · " : "",
+                                  part_titles[p], n);
+          g_free (subtitle);
+          g_free (count);
+        }
+      total_n += n;
+      total_size += size;
+      g_hash_table_unref (seen);
+      g_string_free (names, TRUE);
+    }
+
+  gchar *subtitle;
+  if (game->item->files->len == 0) /* saved before files were listed */
+    subtitle = g_strdup_printf (game->item->n_files == 1 ? "%u file to download"
+                                                         : "%u files to download",
+                                game->item->n_files);
+  else if (total_n == 0)
+    subtitle = g_strdup ("Nothing to download in the chosen languages");
+  else
+    {
+      gchar *bytes = total_size ? g_format_size (total_size) : NULL;
+      subtitle = bytes ? g_strdup_printf ("%s — %s", summary->str, bytes) : g_strdup (summary->str);
+      g_free (bytes);
+    }
+  adw_expander_row_set_subtitle (game->row, subtitle);
+  g_free (subtitle);
+  g_string_free (summary, TRUE);
+
+  if (game->language_row)
+    {
+      gchar *langs = gog_sync_describe_languages (game->languages);
+      adw_action_row_set_subtitle (game->language_row, langs);
+      g_free (langs);
+    }
+  update_download_button (game->ctx);
+}
+
+static void
+on_part_toggled (GtkCheckButton *check, gpointer user_data)
+{
+  (void) check;
+  GameRow *game = user_data;
+  /* Choosing a part means wanting the game. */
+  if (gtk_check_button_get_active (check) && !gtk_check_button_get_active (game->check))
+    gtk_check_button_set_active (game->check, TRUE);
+  update_download_button (game->ctx);
+}
+
+static void
+on_language_toggled (GtkCheckButton *check, gpointer user_data)
+{
+  GameRow *game = user_data;
+  if (game->updating)
+    return;
+  game->updating = TRUE;
+  if (check == game->all_languages)
+    {
+      /* "All languages" clears the others; it can't be turned off on its own. */
+      gtk_check_button_set_active (check, TRUE);
+      for (guint i = 0; i < game->language_checks->len; i++)
+        gtk_check_button_set_active (g_ptr_array_index (game->language_checks, i), FALSE);
+      game->languages = 0;
+    }
+  else
+    {
+      game->languages = 0;
+      for (guint i = 0; i < game->language_checks->len; i++)
+        {
+          GtkCheckButton *c = g_ptr_array_index (game->language_checks, i);
+          if (gtk_check_button_get_active (c))
+            game->languages |= GPOINTER_TO_UINT (g_object_get_data (G_OBJECT (c), "bit"));
+        }
+      gtk_check_button_set_active (game->all_languages, game->languages == 0);
+    }
+  game->updating = FALSE;
+  gog_sync_set_game_languages (game->item->gamename, game->languages);
+  refresh_game (game);
+}
+
+static GtkCheckButton *
+language_check (GameRow *game, GtkWidget *box, const char *name, gboolean active)
+{
+  GtkWidget *check = gtk_check_button_new_with_label (name);
+  gtk_check_button_set_active (GTK_CHECK_BUTTON (check), active);
+  g_signal_connect (check, "toggled", G_CALLBACK (on_language_toggled), game);
+  gtk_box_append (GTK_BOX (box), check);
+  return GTK_CHECK_BUTTON (check);
+}
+
+/* A "Languages" row with a menu of the languages the game comes in. */
+static void
+add_language_row (GameRow *game, const char *title)
+{
+  guint n_langs;
+  const GogSyncLanguage *langs = gog_sync_get_languages (&n_langs);
+  guint offered = game->item->languages_offered;
+  if ((offered & (offered - 1)) == 0) /* one language, or not known */
+    return;
+
+  game->language_row = ADW_ACTION_ROW (adw_action_row_new ());
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (game->language_row), "Languages");
+
+  GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+  gtk_widget_set_margin_start (box, 6);
+  gtk_widget_set_margin_end (box, 6);
+  gtk_widget_set_margin_top (box, 6);
+  gtk_widget_set_margin_bottom (box, 6);
+  game->all_languages = language_check (game, box, "All languages", game->languages == 0);
+  for (guint i = 0; i < n_langs; i++)
+    if (offered & (1u << i))
+      {
+        GtkCheckButton *c = language_check (game, box, langs[i].name,
+                                            (game->languages & (1u << i)) != 0);
+        g_object_set_data (G_OBJECT (c), "bit", GUINT_TO_POINTER (1u << i));
+        g_ptr_array_add (game->language_checks, c);
+      }
+  GtkWidget *scroll = gtk_scrolled_window_new ();
+  gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll), GTK_POLICY_NEVER,
+                                  GTK_POLICY_AUTOMATIC);
+  gtk_scrolled_window_set_propagate_natural_height (GTK_SCROLLED_WINDOW (scroll), TRUE);
+  gtk_scrolled_window_set_max_content_height (GTK_SCROLLED_WINDOW (scroll), 360);
+  gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scroll), box);
+  GtkWidget *popover = gtk_popover_new ();
+  gtk_popover_set_child (GTK_POPOVER (popover), scroll);
+
+  GtkWidget *button = gtk_menu_button_new ();
+  gtk_menu_button_set_label (GTK_MENU_BUTTON (button), "Choose…");
+  gtk_menu_button_set_popover (GTK_MENU_BUTTON (button), popover);
+  gtk_widget_set_valign (button, GTK_ALIGN_CENTER);
+  gchar *label = g_strdup_printf ("Choose languages for %s", title);
+  gtk_accessible_update_property (GTK_ACCESSIBLE (button), GTK_ACCESSIBLE_PROPERTY_LABEL, label,
+                                  -1);
+  g_free (label);
+  adw_action_row_add_suffix (game->language_row, button);
+  adw_action_row_set_activatable_widget (game->language_row, button);
+  adw_expander_row_add_row (game->row, GTK_WIDGET (game->language_row));
+}
+
+static void
+add_game_row (SyncCtx *ctx, GtkWidget *list, GogSyncItem *item)
+{
+  GameRow *game = g_new0 (GameRow, 1);
+  game->ctx = ctx;
+  game->item = item;
+  game->languages = gog_sync_item_languages (item);
+  game->language_checks = g_ptr_array_new ();
+  g_ptr_array_add (ctx->games, game);
+
+  gchar *title = title_for (ctx, item->gamename);
+  game->row = ADW_EXPANDER_ROW (adw_expander_row_new ());
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (game->row), title);
+  adw_preferences_row_set_use_markup (ADW_PREFERENCES_ROW (game->row), FALSE);
+
+  GtkWidget *check = gtk_check_button_new ();
+  gtk_widget_set_valign (check, GTK_ALIGN_CENTER);
+  gchar *label = g_strdup_printf ("Download %s", title);
+  gtk_accessible_update_property (GTK_ACCESSIBLE (check), GTK_ACCESSIBLE_PROPERTY_LABEL, label,
+                                  -1);
+  g_free (label);
+  g_signal_connect (check, "toggled", G_CALLBACK (on_check_toggled), ctx);
+  adw_expander_row_add_prefix (game->row, check);
+  game->check = GTK_CHECK_BUTTON (check);
+
+  add_language_row (game, title);
+  for (guint p = 0; p < N_PARTS; p++)
+    {
+      AdwActionRow *row = ADW_ACTION_ROW (adw_action_row_new ());
+      adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row), part_titles[p]);
+      adw_preferences_row_set_use_markup (ADW_PREFERENCES_ROW (row), FALSE);
+      GtkWidget *part_check = gtk_check_button_new ();
+      gtk_check_button_set_active (GTK_CHECK_BUTTON (part_check), TRUE);
+      gtk_widget_set_valign (part_check, GTK_ALIGN_CENTER);
+      gchar *part_label = g_strdup_printf ("Download the %s of %s",
+                                           p == 0 ? "game files" : p == 1 ? "DLC" : "extras",
+                                           title);
+      gtk_accessible_update_property (GTK_ACCESSIBLE (part_check), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                      part_label, -1);
+      g_free (part_label);
+      g_signal_connect (part_check, "toggled", G_CALLBACK (on_part_toggled), game);
+      adw_action_row_add_prefix (row, part_check);
+      adw_action_row_set_activatable_widget (row, part_check);
+      game->part_rows[p] = row;
+      game->part_checks[p] = GTK_CHECK_BUTTON (part_check);
+      adw_expander_row_add_row (game->row, GTK_WIDGET (row));
+    }
+  refresh_game (game);
+  /* Nothing to open when the files are not known. */
+  adw_expander_row_set_enable_expansion (game->row, item->files->len > 0);
+  gtk_list_box_append (GTK_LIST_BOX (list), GTK_WIDGET (game->row));
+  g_free (title);
+}
+
+typedef enum
+{
+  GROUP_NEW,
+  GROUP_UPDATE,
+  GROUP_OTHER_LANGUAGES,
+} Group;
+
+static Group
+group_of (GogSyncItem *item)
+{
+  if (!gog_sync_item_has_wanted_files (item))
+    return GROUP_OTHER_LANGUAGES;
+  return item->kind == GOG_SYNC_NEW_GAME ? GROUP_NEW : GROUP_UPDATE;
+}
+
+static void
+add_group (SyncCtx *ctx, Group group, const char *heading, const char *description)
 {
   GtkWidget *list = NULL;
   for (guint i = 0; i < ctx->items->len; i++)
     {
       GogSyncItem *item = g_ptr_array_index (ctx->items, i);
-      if (item->kind != kind)
+      if (group_of (item) != group)
         continue;
       if (!list)
         {
@@ -142,6 +467,14 @@ add_group (SyncCtx *ctx, GogSyncKind kind, const char *heading)
           gtk_widget_add_css_class (label, "heading");
           gtk_label_set_xalign (GTK_LABEL (label), 0);
           gtk_box_append (GTK_BOX (ctx->results_box), label);
+          if (description)
+            {
+              GtkWidget *desc = gtk_label_new (description);
+              gtk_label_set_wrap (GTK_LABEL (desc), TRUE);
+              gtk_label_set_xalign (GTK_LABEL (desc), 0);
+              gtk_widget_add_css_class (desc, "dim-label");
+              gtk_box_append (GTK_BOX (ctx->results_box), desc);
+            }
           list = gtk_list_box_new ();
           gtk_list_box_set_selection_mode (GTK_LIST_BOX (list), GTK_SELECTION_NONE);
           gtk_widget_add_css_class (list, "boxed-list");
@@ -149,33 +482,7 @@ add_group (SyncCtx *ctx, GogSyncKind kind, const char *heading)
                                           heading, -1);
           gtk_box_append (GTK_BOX (ctx->results_box), list);
         }
-
-      gchar *title = title_for (ctx, item->gamename);
-      AdwActionRow *row = ADW_ACTION_ROW (adw_action_row_new ());
-      adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row), title);
-      adw_preferences_row_set_use_markup (ADW_PREFERENCES_ROW (row), FALSE);
-      gchar *subtitle = g_strdup_printf (item->n_files == 1 ? "%u file to download"
-                                                            : "%u files to download",
-                                         item->n_files);
-      adw_action_row_set_subtitle (row, subtitle);
-
-      GtkWidget *check = gtk_check_button_new ();
-      gtk_widget_set_valign (check, GTK_ALIGN_CENTER);
-      gchar *label = g_strdup_printf ("Select %s", title);
-      gtk_accessible_update_property (GTK_ACCESSIBLE (check), GTK_ACCESSIBLE_PROPERTY_LABEL,
-                                      label, -1);
-      /* The groups list items out of ctx->items order, so each check
-       * remembers its own item. */
-      g_object_set_data (G_OBJECT (check), "item", item);
-      g_signal_connect (check, "toggled", G_CALLBACK (on_check_toggled), ctx);
-      adw_action_row_add_prefix (row, check);
-      adw_action_row_set_activatable_widget (row, check);
-      g_ptr_array_add (ctx->checks, check);
-      gtk_list_box_append (GTK_LIST_BOX (list), GTK_WIDGET (row));
-
-      g_free (label);
-      g_free (subtitle);
-      g_free (title);
+      add_game_row (ctx, list, item);
     }
 }
 
@@ -183,24 +490,30 @@ add_group (SyncCtx *ctx, GogSyncKind kind, const char *heading)
 static void
 show_items (SyncCtx *ctx, GPtrArray *items, gint64 checked_unix)
 {
-  g_ptr_array_unref (ctx->items);
-  ctx->items = items;
-  g_ptr_array_set_size (ctx->checks, 0);
+  /* The rows point at the old items. */
   GtkWidget *child;
   while ((child = gtk_widget_get_first_child (ctx->results_box)))
     gtk_box_remove (GTK_BOX (ctx->results_box), child);
+  g_ptr_array_set_size (ctx->games, 0);
+  g_ptr_array_unref (ctx->items);
+  ctx->items = items;
 
-  guint n_new = 0, n_update = 0;
+  guint n_new = 0, n_update = 0, n_other = 0;
   for (guint i = 0; i < items->len; i++)
     {
-      GogSyncItem *item = g_ptr_array_index (items, i);
-      if (item->kind == GOG_SYNC_NEW_GAME)
+      Group group = group_of (g_ptr_array_index (items, i));
+      if (group == GROUP_NEW)
         n_new++;
-      else
+      else if (group == GROUP_UPDATE)
         n_update++;
+      else
+        n_other++;
     }
-  add_group (ctx, GOG_SYNC_NEW_GAME, "Not Downloaded Yet");
-  add_group (ctx, GOG_SYNC_UPDATE, "New Versions");
+  add_group (ctx, GROUP_NEW, "Not Downloaded Yet", NULL);
+  add_group (ctx, GROUP_UPDATE, "New Versions", NULL);
+  add_group (ctx, GROUP_OTHER_LANGUAGES, "Only in Languages You Left Out",
+             "These have new files only in languages you did not choose. Choose more "
+             "languages to download them.");
 
   gchar *when = NULL;
   if (checked_unix > 0)
@@ -213,16 +526,18 @@ show_items (SyncCtx *ctx, GPtrArray *items, gint64 checked_unix)
   if (!when)
     summary = g_strdup ("GOG has not been checked yet. Checking looks at every game you own "
                         "and takes a few minutes.");
-  else if (items->len == 0)
+  else if (n_new + n_update == 0)
     summary = g_strdup_printf ("Last checked %s: everything is downloaded and up to date.", when);
   else
     summary = g_strdup_printf ("Last checked %s: %u not downloaded yet, %u with a new version. "
-                               "Choose what to download; old versions are deleted afterwards.",
+                               "Choose what to download, and open a game to choose its "
+                               "languages, DLC and extras. Old versions are deleted afterwards.",
                                when, n_new, n_update);
   gtk_label_set_text (ctx->summary_label, summary);
   gtk_widget_set_visible (ctx->results_scroll, items->len > 0);
   g_free (summary);
   g_free (when);
+  (void) n_other;
 }
 
 static void
@@ -236,6 +551,41 @@ on_job_progress (GogSyncJob *job, gdouble fraction, const gchar *message, gpoint
     gtk_progress_bar_set_fraction (ctx->progress_bar, fraction);
   if (message)
     gtk_progress_bar_set_text (ctx->progress_bar, message);
+}
+
+static void
+hide_slots (SyncCtx *ctx)
+{
+  for (guint i = 0; i < N_SLOTS; i++)
+    gtk_widget_set_visible (ctx->slots[i].box, FALSE);
+  gtk_widget_set_visible (ctx->files_heading, FALSE);
+}
+
+static void
+on_job_file_progress (GogSyncJob *job, gint slot, const gchar *filename, gdouble fraction,
+                      const gchar *detail, gpointer user_data)
+{
+  (void) job;
+  SyncCtx *ctx = user_data;
+  if (slot < 0 || slot >= N_SLOTS)
+    return;
+  SlotView *view = &ctx->slots[slot];
+  gtk_widget_set_visible (view->box, filename != NULL);
+  if (filename)
+    {
+      gtk_label_set_text (view->name, filename);
+      gtk_progress_bar_set_fraction (view->bar, fraction);
+      gchar *text = detail ? g_strdup_printf ("%.0f%% — %s", fraction * 100, detail)
+                           : g_strdup_printf ("%.0f%%", fraction * 100);
+      gtk_progress_bar_set_text (view->bar, text);
+      gtk_accessible_update_property (GTK_ACCESSIBLE (view->bar), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                      filename, -1);
+      g_free (text);
+    }
+  gboolean any = FALSE;
+  for (guint i = 0; i < N_SLOTS; i++)
+    any = any || gtk_widget_get_visible (ctx->slots[i].box);
+  gtk_widget_set_visible (ctx->files_heading, any);
 }
 
 static void
@@ -294,6 +644,7 @@ on_download_finished (GogSyncJob *job, gboolean success, const gchar *error_mess
     }
   g_signal_handlers_disconnect_by_data (job, ctx);
   g_clear_object (&ctx->job);
+  hide_slots (ctx);
 
   gint64 checked = 0;
   GPtrArray *saved = gog_sync_load_results (&checked); /* sets checked first */
@@ -307,6 +658,8 @@ start_job (SyncCtx *ctx, GogSyncJob *job)
   ctx->job = job;
   g_signal_connect (job, "progress", G_CALLBACK (on_job_progress), ctx);
   g_signal_connect (job, "log-line", G_CALLBACK (on_job_log_line), ctx);
+  g_signal_connect (job, "file-progress", G_CALLBACK (on_job_file_progress), ctx);
+  hide_slots (ctx);
   gtk_text_buffer_set_text (gtk_text_view_get_buffer (ctx->log_view), "", -1);
   gtk_widget_set_visible (ctx->log_scroll, FALSE); /* until there is something to show */
   gtk_progress_bar_set_fraction (ctx->progress_bar, 0);
@@ -331,23 +684,27 @@ on_download_clicked (GtkButton *button, gpointer user_data)
 {
   (void) button;
   SyncCtx *ctx = user_data;
-  GStrvBuilder *builder = g_strv_builder_new ();
-  for (guint i = 0; i < ctx->checks->len; i++)
+  GArray *requests = g_array_new (FALSE, FALSE, sizeof (GogSyncRequest));
+  for (guint i = 0; i < ctx->games->len; i++)
     {
-      GtkCheckButton *check = g_ptr_array_index (ctx->checks, i);
-      GogSyncItem *item = g_object_get_data (G_OBJECT (check), "item");
-      if (gtk_check_button_get_active (check))
-        g_strv_builder_add (builder, item->gamename);
+      GameRow *game = g_ptr_array_index (ctx->games, i);
+      GogSyncRequest r = { game->item->gamename, chosen_parts (game), game->languages };
+      /* Results from before files were listed have no parts to choose. */
+      if (game->item->files->len == 0)
+        r.parts = GOG_SYNC_PART_ALL;
+      if (gtk_check_button_get_active (game->check) && r.parts)
+        g_array_append_val (requests, r);
     }
-  GStrv names = g_strv_builder_end (builder);
-  g_strv_builder_unref (builder);
-  if (names[0])
+  if (requests->len > 0)
     {
-      GogSyncJob *job = gog_sync_job_new_download (ctx->library_dir, (const char *const *) names);
+      guint threads = (guint) adw_spin_row_get_value (ctx->threads_row);
+      GogSyncJob *job = gog_sync_job_new_download (ctx->library_dir,
+                                                   (const GogSyncRequest *) requests->data,
+                                                   requests->len, threads);
       g_signal_connect (job, "finished", G_CALLBACK (on_download_finished), ctx);
       start_job (ctx, job);
     }
-  g_strfreev (names);
+  g_array_unref (requests);
 }
 
 static void
@@ -355,8 +712,16 @@ on_select_all_clicked (GtkButton *button, gpointer user_data)
 {
   (void) button;
   SyncCtx *ctx = user_data;
-  for (guint i = 0; i < ctx->checks->len; i++)
-    gtk_check_button_set_active (g_ptr_array_index (ctx->checks, i), TRUE);
+  for (guint i = 0; i < ctx->games->len; i++)
+    gtk_check_button_set_active (((GameRow *) g_ptr_array_index (ctx->games, i))->check, TRUE);
+}
+
+static void
+on_threads_changed (AdwSpinRow *row, GParamSpec *pspec, gpointer user_data)
+{
+  (void) pspec;
+  (void) user_data;
+  gog_sync_set_threads ((guint) adw_spin_row_get_value (row));
 }
 
 static void
@@ -401,7 +766,7 @@ gog_show_sync_dialog (GtkWindow *parent, const char *library_dir, GogLibrary *li
   ctx->on_done = on_done;
   ctx->user_data = user_data;
   ctx->items = g_ptr_array_new_with_free_func ((GDestroyNotify) gog_sync_item_free);
-  ctx->checks = g_ptr_array_new ();
+  ctx->games = g_ptr_array_new_with_free_func ((GDestroyNotify) game_row_free);
 
   GtkWindow *window = GTK_WINDOW (adw_window_new ());
   ctx->window = window;
@@ -446,10 +811,38 @@ gog_show_sync_dialog (GtkWindow *parent, const char *library_dir, GogLibrary *li
 
   ctx->progress_box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
   gtk_widget_set_visible (ctx->progress_box, FALSE);
+  GtkWidget *total_heading = gtk_label_new ("Total");
+  gtk_widget_add_css_class (total_heading, "heading");
+  gtk_label_set_xalign (GTK_LABEL (total_heading), 0);
+  gtk_box_append (GTK_BOX (ctx->progress_box), total_heading);
   ctx->progress_bar = GTK_PROGRESS_BAR (gtk_progress_bar_new ());
   gtk_progress_bar_set_show_text (ctx->progress_bar, TRUE);
   gtk_progress_bar_set_ellipsize (ctx->progress_bar, PANGO_ELLIPSIZE_MIDDLE);
+  gtk_accessible_update_property (GTK_ACCESSIBLE (ctx->progress_bar),
+                                  GTK_ACCESSIBLE_PROPERTY_LABEL, "Total progress", -1);
   gtk_box_append (GTK_BOX (ctx->progress_box), GTK_WIDGET (ctx->progress_bar));
+
+  ctx->files_heading = gtk_label_new ("Downloading Now");
+  gtk_widget_add_css_class (ctx->files_heading, "heading");
+  gtk_label_set_xalign (GTK_LABEL (ctx->files_heading), 0);
+  gtk_widget_set_margin_top (ctx->files_heading, 4);
+  gtk_box_append (GTK_BOX (ctx->progress_box), ctx->files_heading);
+  for (guint i = 0; i < N_SLOTS; i++)
+    {
+      SlotView *view = &ctx->slots[i];
+      view->box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+      view->name = GTK_LABEL (gtk_label_new (NULL));
+      gtk_label_set_xalign (view->name, 0);
+      gtk_label_set_ellipsize (view->name, PANGO_ELLIPSIZE_MIDDLE);
+      gtk_widget_add_css_class (GTK_WIDGET (view->name), "caption");
+      view->bar = GTK_PROGRESS_BAR (gtk_progress_bar_new ());
+      gtk_progress_bar_set_show_text (view->bar, TRUE);
+      gtk_progress_bar_set_ellipsize (view->bar, PANGO_ELLIPSIZE_END);
+      gtk_box_append (GTK_BOX (view->box), GTK_WIDGET (view->name));
+      gtk_box_append (GTK_BOX (view->box), GTK_WIDGET (view->bar));
+      gtk_box_append (GTK_BOX (ctx->progress_box), view->box);
+    }
+  hide_slots (ctx);
   GtkWidget *log_scroll = gtk_scrolled_window_new ();
   ctx->log_scroll = log_scroll;
   gtk_widget_set_size_request (log_scroll, -1, 140);
@@ -467,6 +860,17 @@ gog_show_sync_dialog (GtkWindow *parent, const char *library_dir, GogLibrary *li
   gtk_widget_add_css_class (log_scroll, "card");
   gtk_box_append (GTK_BOX (ctx->progress_box), log_scroll);
   gtk_box_append (GTK_BOX (outer), ctx->progress_box);
+
+  GtkWidget *settings_list = gtk_list_box_new ();
+  gtk_list_box_set_selection_mode (GTK_LIST_BOX (settings_list), GTK_SELECTION_NONE);
+  gtk_widget_add_css_class (settings_list, "boxed-list");
+  ctx->threads_row = ADW_SPIN_ROW (adw_spin_row_new_with_range (1, N_SLOTS, 1));
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (ctx->threads_row),
+                                 "Downloads at the same time");
+  adw_spin_row_set_value (ctx->threads_row, gog_sync_get_threads ());
+  g_signal_connect (ctx->threads_row, "notify::value", G_CALLBACK (on_threads_changed), ctx);
+  gtk_list_box_append (GTK_LIST_BOX (settings_list), GTK_WIDGET (ctx->threads_row));
+  gtk_box_append (GTK_BOX (outer), settings_list);
 
   GtkWidget *btn_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
   gtk_widget_set_halign (btn_box, GTK_ALIGN_END);
