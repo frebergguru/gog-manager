@@ -217,6 +217,11 @@ meson test -C build
   [WTFPL](https://github.com/Sude-/lgogdownloader/blob/master/COPYING).
 - [GE-Proton](https://github.com/GloriousEggroll/proton-ge-custom) by
   GloriousEggroll, which the GE-Proton fetcher downloads.
+- The symbolic icons in `src/resources/icons` come from the
+  [Adwaita icon theme](https://gitlab.gnome.org/GNOME/adwaita-icon-theme) by the
+  GNOME Project, released under CC-BY-SA-3.0 or LGPL-3.0-only (used here under
+  LGPL-3.0). They are built into the app so every button has its icon whatever
+  icon theme the desktop uses.
 
 ---
 

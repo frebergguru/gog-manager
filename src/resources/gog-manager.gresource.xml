@@ -2,5 +2,17 @@
 <gresources>
   <gresource prefix="/org/gogmanager/app">
     <file>style.css</file>
+    <file>icons/scalable/actions/applications-games-symbolic.svg</file>
+    <file>icons/scalable/actions/document-open-symbolic.svg</file>
+    <file>icons/scalable/actions/edit-copy-symbolic.svg</file>
+    <file>icons/scalable/actions/folder-download-symbolic.svg</file>
+    <file>icons/scalable/actions/folder-open-symbolic.svg</file>
+    <file>icons/scalable/actions/folder-symbolic.svg</file>
+    <file>icons/scalable/actions/go-previous-symbolic.svg</file>
+    <file>icons/scalable/actions/help-about-symbolic.svg</file>
+    <file>icons/scalable/actions/preferences-system-symbolic.svg</file>
+    <file>icons/scalable/actions/sidebar-show-symbolic.svg</file>
+    <file>icons/scalable/actions/software-update-available-symbolic.svg</file>
+    <file>icons/scalable/actions/view-refresh-symbolic.svg</file>
   </gresource>
 </gresources>
