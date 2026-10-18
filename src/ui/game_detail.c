@@ -206,20 +206,45 @@ on_uninstall_clicked (GtkButton *button, gpointer user_data)
 }
 
 static void
+on_open_path_finished (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+  GogGameDetail *self = user_data;
+  GError *error = NULL;
+  if (!gtk_file_launcher_launch_finish (GTK_FILE_LAUNCHER (source), res, &error) &&
+      !g_error_matches (error, GTK_DIALOG_ERROR, GTK_DIALOG_ERROR_DISMISSED))
+    {
+      gchar *name = g_file_get_basename (gtk_file_launcher_get_file (GTK_FILE_LAUNCHER (source)));
+      gchar *msg = g_strdup_printf ("Could not open %s: %s", name, error->message);
+      toast (self, msg);
+      g_free (msg);
+      g_free (name);
+    }
+  g_clear_error (&error);
+  g_object_unref (self);
+}
+
+/* Opens a folder in the file manager, or a file in its default app.
+ * GtkFileLauncher, not GtkUriLauncher: the desktop portal's OpenURI
+ * refuses file:// URIs, so a URI launcher silently did nothing. */
+static void
+open_path (GogGameDetail *self, const char *path)
+{
+  GFile *file = g_file_new_for_path (path);
+  GtkFileLauncher *launcher = gtk_file_launcher_new (file);
+  gtk_file_launcher_launch (launcher, self->parent_window, NULL, on_open_path_finished,
+                            g_object_ref (self));
+  g_object_unref (launcher);
+  g_object_unref (file);
+}
+
+static void
 on_reveal_clicked (GtkButton *button, gpointer user_data)
 {
   (void) button;
   GogGameDetail *self = user_data;
   const char *path = gog_game_get_install_path (self->game);
-  if (!path)
-    return;
-  GFile *file = g_file_new_for_path (path);
-  gchar *uri = g_file_get_uri (file);
-  GtkUriLauncher *launcher = gtk_uri_launcher_new (uri);
-  gtk_uri_launcher_launch (launcher, self->parent_window, NULL, NULL, NULL);
-  g_object_unref (launcher);
-  g_free (uri);
-  g_object_unref (file);
+  if (path)
+    open_path (self, path);
 }
 
 static void
@@ -234,23 +259,9 @@ on_winecfg_clicked (GtkButton *button, gpointer user_data)
 }
 
 static void
-extra_path_closure_notify (gpointer data, GClosure *closure)
+on_open_extra_clicked (GtkButton *button, gpointer user_data)
 {
-  (void) closure;
-  g_free (data);
-}
-
-static void
-open_extra_file (GtkWidget *button, const char *path)
-{
-  (void) button;
-  GFile *file = g_file_new_for_path (path);
-  gchar *uri = g_file_get_uri (file);
-  GtkUriLauncher *launcher = gtk_uri_launcher_new (uri);
-  gtk_uri_launcher_launch (launcher, NULL, NULL, NULL, NULL);
-  g_object_unref (launcher);
-  g_free (uri);
-  g_object_unref (file);
+  open_path (user_data, g_object_get_data (G_OBJECT (button), "gog-path"));
 }
 
 static void
@@ -471,8 +482,8 @@ build_extras (GogGameDetail *self)
                                       open_label, -1);
       g_free (open_label);
       gtk_widget_add_css_class (open_btn, "flat");
-      g_signal_connect_data (open_btn, "clicked", G_CALLBACK (open_extra_file),
-                              g_strdup (extra->file_path), extra_path_closure_notify, 0);
+      g_object_set_data_full (G_OBJECT (open_btn), "gog-path", g_strdup (extra->file_path), g_free);
+      g_signal_connect (open_btn, "clicked", G_CALLBACK (on_open_extra_clicked), self);
       adw_action_row_add_suffix (ADW_ACTION_ROW (row), open_btn);
       gtk_box_append (self->extras_box, row);
       g_free (subtitle);
