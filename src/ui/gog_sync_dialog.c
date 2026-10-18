@@ -694,19 +694,85 @@ on_check_finished (GogSyncJob *job, gboolean success, const gchar *error_message
 }
 
 static void
+on_failures_response (AdwAlertDialog *dialog, const char *response, gpointer user_data)
+{
+  (void) dialog;
+  SyncCtx *ctx = user_data;
+  GPtrArray *failures = g_object_get_data (G_OBJECT (dialog), "failures");
+  if (g_strcmp0 (response, "ignore") == 0)
+    {
+      gog_sync_ignore_files (failures);
+      gint64 checked = 0;
+      GPtrArray *saved = gog_sync_load_results (&checked); /* sets checked first */
+      show_items (ctx, saved, checked);
+      set_busy (ctx, FALSE);
+      append_log_line (ctx, failures->len == 1 ? "The file that failed is now ignored."
+                                               : "The files that failed are now ignored.");
+    }
+  else
+    append_log_line (ctx, "The files that failed stay in the list, to try again later.");
+}
+
+/* Lists the files that failed and why, and asks whether to keep them for
+ * later or ignore them. */
+static void
+ask_about_failures (SyncCtx *ctx, GPtrArray *failures)
+{
+  GString *body = g_string_new (NULL);
+  g_string_append (body, failures->len == 1 ? "This file could not be downloaded:\n\n"
+                                            : "These files could not be downloaded:\n\n");
+  for (guint i = 0; i < failures->len; i++)
+    {
+      GogSyncFailure *failure = g_ptr_array_index (failures, i);
+      gchar *title = title_for (ctx, failure->gamename);
+      g_string_append_printf (body, "• %s — %s: %s\n", title, failure->filename, failure->reason);
+      g_free (title);
+    }
+  g_string_append (body, "\nTheir games keep the old version until they are downloaded. Try "
+                         "again later, or ignore these files? Ignored files show up again when "
+                         "GOG puts out a new version of them.");
+
+  AdwDialog *dialog = adw_alert_dialog_new (failures->len == 1 ? "A File Could Not Be Downloaded"
+                                                               : "Some Files Could Not Be Downloaded",
+                                            body->str);
+  adw_alert_dialog_add_responses (ADW_ALERT_DIALOG (dialog), "ignore", "_Ignore",
+                                  "later", "_Try Again Later", NULL);
+  adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dialog), "later");
+  adw_alert_dialog_set_close_response (ADW_ALERT_DIALOG (dialog), "later");
+  g_object_set_data_full (G_OBJECT (dialog), "failures", g_ptr_array_ref (failures),
+                          (GDestroyNotify) g_ptr_array_unref);
+  g_signal_connect (dialog, "response", G_CALLBACK (on_failures_response), ctx);
+  /* No announce(): screen readers read an alert dialog as it opens, and
+   * announcing while it opens crashed GTK 4.22. */
+  adw_dialog_present (dialog, GTK_WIDGET (ctx->window));
+  g_string_free (body, TRUE);
+}
+
+static void
 on_download_finished (GogSyncJob *job, gboolean success, const gchar *error_message,
                       gpointer user_data)
 {
   SyncCtx *ctx = user_data;
   /* Even a failed or cancelled run may have fetched some games. */
   ctx->downloaded = TRUE;
-  const char *msg = success ? "Download finished. Old versions were deleted." : NULL;
-  if (success)
+  GPtrArray *failures = gog_sync_job_get_failures (job);
+  failures = failures && failures->len > 0 ? g_ptr_array_ref (failures) : NULL;
+  if (success && !failures)
     {
+      const char *msg = "Download finished. Old versions were deleted.";
       gtk_progress_bar_set_fraction (ctx->progress_bar, 1.0);
       gtk_progress_bar_set_text (ctx->progress_bar, "Download finished");
       append_log_line (ctx, msg);
       announce (ctx, msg);
+    }
+  else if (success)
+    {
+      gchar *msg = g_strdup_printf (failures->len == 1 ? "Download finished, but %u file failed."
+                                                       : "Download finished, but %u files failed.",
+                                    failures->len);
+      gtk_progress_bar_set_text (ctx->progress_bar, msg);
+      append_log_line (ctx, msg);
+      g_free (msg);
     }
   else
     {
@@ -722,6 +788,11 @@ on_download_finished (GogSyncJob *job, gboolean success, const gchar *error_mess
   GPtrArray *saved = gog_sync_load_results (&checked); /* sets checked first */
   show_items (ctx, saved, checked);
   set_busy (ctx, FALSE);
+  if (failures)
+    {
+      ask_about_failures (ctx, failures);
+      g_ptr_array_unref (failures);
+    }
 }
 
 static void

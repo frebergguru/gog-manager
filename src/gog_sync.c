@@ -145,6 +145,8 @@ gog_sync_file_wanted (const GogSyncFile *file, guint mask)
          (file->languages & mask) != 0;
 }
 
+static void save_results_checked (GPtrArray *items, gint64 checked_unix);
+
 /* ---- remembered download choices ---- */
 
 static json_object *
@@ -248,6 +250,83 @@ gog_sync_item_has_wanted_files (GogSyncItem *item)
   return FALSE;
 }
 
+void
+gog_sync_failure_free (GogSyncFailure *failure)
+{
+  if (!failure)
+    return;
+  g_free (failure->gamename);
+  g_free (failure->filename);
+  g_free (failure->reason);
+  g_free (failure);
+}
+
+static gboolean
+is_ignored (json_object *settings, const char *gamename, const char *filename)
+{
+  json_object *files = ju_get_array (ju_get_obj (settings, "ignored"), gamename);
+  for (size_t i = 0; files && i < json_object_array_length (files); i++)
+    if (g_strcmp0 (json_object_get_string (json_object_array_get_idx (files, i)), filename) == 0)
+      return TRUE;
+  return FALSE;
+}
+
+/* Drops ignored files, and games left with none. */
+static void
+remove_ignored (GPtrArray *items)
+{
+  json_object *settings = load_settings ();
+  for (guint i = items->len; i > 0; i--)
+    {
+      GogSyncItem *item = g_ptr_array_index (items, i - 1);
+      guint before = item->files->len;
+      for (guint f = item->files->len; f > 0; f--)
+        if (is_ignored (settings, item->gamename,
+                        ((GogSyncFile *) g_ptr_array_index (item->files, f - 1))->filename))
+          g_ptr_array_remove_index (item->files, f - 1);
+      if (item->files->len < before)
+        {
+          item->n_files = item->files->len;
+          if (item->n_files == 0)
+            g_ptr_array_remove_index (items, i - 1);
+        }
+    }
+  json_object_put (settings);
+}
+
+void
+gog_sync_ignore_files (GPtrArray *failures)
+{
+  json_object *settings = load_settings ();
+  json_object *ignored = ju_get_obj (settings, "ignored");
+  if (!ignored)
+    {
+      ignored = json_object_new_object ();
+      json_object_object_add (settings, "ignored", ignored);
+    }
+  for (guint i = 0; i < failures->len; i++)
+    {
+      GogSyncFailure *failure = g_ptr_array_index (failures, i);
+      if (is_ignored (settings, failure->gamename, failure->filename))
+        continue;
+      json_object *files = ju_get_array (ignored, failure->gamename);
+      if (!files)
+        {
+          files = json_object_new_array ();
+          json_object_object_add (ignored, failure->gamename, files);
+        }
+      json_object_array_add (files, json_object_new_string (failure->filename));
+    }
+  save_settings (settings);
+  json_object_put (settings);
+
+  gint64 checked = 0;
+  GPtrArray *saved = gog_sync_load_results (&checked);
+  remove_ignored (saved);
+  save_results_checked (saved, checked);
+  g_ptr_array_unref (saved);
+}
+
 /* ---- the check's results ---- */
 
 static gboolean
@@ -275,6 +354,16 @@ is_all (const char *s, gboolean (*pred) (gchar), gsize min_len)
     if (!pred (*s))
       return FALSE;
   return n >= min_len;
+}
+
+/* TRUE if s is one or more digits followed by end. */
+static gboolean
+is_all_digits_until (const char *s, char end)
+{
+  const char *p = s;
+  while (g_ascii_isdigit (*p))
+    p++;
+  return p > s && *p == end && p[1] == '\0';
 }
 
 static gboolean
@@ -599,6 +688,8 @@ struct _GogSyncJob
   guint64 total_bytes; /* of the files the requests cover */
   guint total_files;
   GHashTable *sizes;  /* filename -> guint64* */
+  GHashTable *file_games; /* filename -> the item's gamename */
+  GPtrArray *failures; /* GogSyncFailure*, after a download */
   GPtrArray *items;   /* check result */
   GStrv only_games;   /* check only these, NULL for all */
 
@@ -638,6 +729,10 @@ gog_sync_job_finalize (GObject *object)
     }
   if (self->sizes)
     g_hash_table_unref (self->sizes);
+  if (self->file_games)
+    g_hash_table_unref (self->file_games);
+  if (self->failures)
+    g_ptr_array_unref (self->failures);
   if (self->items)
     g_ptr_array_unref (self->items);
   G_OBJECT_CLASS (gog_sync_job_parent_class)->finalize (object);
@@ -704,6 +799,7 @@ gog_sync_job_new_download (const char *library_dir, const GogSyncRequest *reques
 
   /* What the overall progress is measured against. */
   self->sizes = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_free);
+  self->file_games = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_free);
   GPtrArray *saved = gog_sync_load_results (NULL);
   for (guint i = 0; i < saved->len; i++)
     {
@@ -722,6 +818,8 @@ gog_sync_job_new_download (const char *library_dir, const GogSyncRequest *reques
               self->total_files++;
               g_hash_table_insert (self->sizes, g_strdup (file->filename),
                                    g_memdup2 (&file->size, sizeof file->size));
+              g_hash_table_insert (self->file_games, g_strdup (file->filename),
+                                   g_strdup (item->gamename));
             }
         }
     }
@@ -733,6 +831,12 @@ GPtrArray *
 gog_sync_job_get_items (GogSyncJob *self)
 {
   return self->items;
+}
+
+GPtrArray *
+gog_sync_job_get_failures (GogSyncJob *self)
+{
+  return self->failures;
 }
 
 /* ---- marshalling signals back to the main thread (same pattern as
@@ -968,8 +1072,46 @@ typedef struct
   guint64 completed_bytes;
   guint completed_files;
   GHashTable *completed;  /* filenames done in this job */
+  GHashTable *failed;     /* filename -> why it failed */
   gint64 last_overall;    /* monotonic µs; the display redraws far faster than needed */
 } DownloadState;
+
+/* "HTTP response code said error (404)" -> "not found on GOG's server
+ * (HTTP 404)"; curl errors without a code are passed on as they are. */
+static gchar *
+failure_reason (const char *curl_error)
+{
+  gchar *text = g_strdup (curl_error);
+  guint code = 0;
+  gsize len = strlen (text);
+  if (len > 2 && text[len - 1] == ')')
+    {
+      gchar *open = strrchr (text, '(');
+      if (open && is_all_digits_until (open + 1, ')'))
+        {
+          code = (guint) g_ascii_strtoull (open + 1, NULL, 10);
+          while (open > text && open[-1] == ' ')
+            open--;
+          *open = '\0';
+        }
+    }
+  gchar *reason;
+  if (code == 404)
+    reason = g_strdup ("not found on GOG's server (HTTP 404)");
+  else if (code == 401 || code == 403)
+    reason = g_strdup_printf ("GOG refused access (HTTP %u); check the login with "
+                              "\"lgogdownloader --login\"", code);
+  else if (code == 429)
+    reason = g_strdup ("GOG asked for fewer requests (HTTP 429)");
+  else if (code >= 500 && code < 600)
+    reason = g_strdup_printf ("GOG's server had a problem (HTTP %u)", code);
+  else if (code)
+    reason = g_strdup_printf ("%s (HTTP %u)", text, code);
+  else
+    reason = g_strdup (*text ? text : "unknown error");
+  g_free (text);
+  return reason;
+}
 
 static void
 set_slot (GogSyncJob *job, DownloadState *state, gint i, const char *file)
@@ -1103,6 +1245,34 @@ log_line (GogSyncJob *job, const char *line, gboolean by_cr, gpointer data)
     }
   if (g_str_has_prefix (line, "Total:") || g_str_has_prefix (line, "Remaining:") || by_cr)
     return;
+
+  /* A failed file: "Download complete (<curl error>[ (<HTTP code>)]): <file>". */
+  const char *failed = strstr (line, "Download complete (");
+  if (failed)
+    {
+      const char *err = failed + strlen ("Download complete (");
+      const char *sep = strstr (err, "): ");
+      if (sep)
+        {
+          gchar *curl_error = g_strndup (err, sep - err);
+          const char *file = sep + 3;
+          gchar *reason = failure_reason (curl_error);
+          gchar *out = g_strdup_printf ("Could not download %s: %s", file, reason);
+          job_log (job, out);
+          g_free (out);
+          g_hash_table_replace (state->failed, g_strdup (file), reason);
+          for (gint i = 0; i < MAX_SLOTS; i++)
+            if (g_strcmp0 (state->slots[i].file, file) == 0)
+              set_slot (job, state, i, NULL);
+          g_free (curl_error);
+          return;
+        }
+    }
+  if (g_str_has_prefix (line, "Failed to open ") || g_str_has_prefix (line, "Failed to create "))
+    {
+      gchar *name = g_path_get_basename (strchr (line + strlen ("Failed to "), ' ') + 1);
+      g_hash_table_replace (state->failed, name, g_strdup ("it could not be saved in the library folder"));
+    }
 
   const char *complete = strstr (line, "Download complete: ");
   const char *deleting = g_str_has_prefix (line, "Deleting ") ? line + strlen ("Deleting ") : NULL;
@@ -1251,6 +1421,8 @@ check_sync (GogSyncJob *job, GError **error)
       g_free (regex);
       g_strfreev (strv);
     }
+  if (ok)
+    remove_ignored (job->items);
   gint64 checked = g_get_real_time () / G_USEC_PER_SEC;
   if (ok && job->only_games)
     {
@@ -1329,6 +1501,7 @@ download_sync (GogSyncJob *job, GError **error)
   DownloadState state = { 0 };
   state.current = -1;
   state.completed = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+  state.failed = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_free);
   gchar *threads = g_strdup_printf ("%u", job->threads);
   gboolean ok = TRUE;
   job_progress (job, -1, "Starting the download…");
@@ -1351,57 +1524,98 @@ download_sync (GogSyncJob *job, GError **error)
       g_free (include);
       g_free (regex);
     }
-  if (ok && all_names->len > 1)
+  /* What failed, and what never came: lgogdownloader skips some files
+   * without saying so (e.g. when GOG gives no download link). */
+  job->failures = g_ptr_array_new_with_free_func ((GDestroyNotify) gog_sync_failure_free);
+  GHashTable *failed_games = g_hash_table_new (g_str_hash, g_str_equal);
+  if (!job->cancelled)
     {
-      /* --check-orphans deletes files GOG no longer offers, i.e. the old
-       * versions. It runs with lgogdownloader's own settings (every
-       * language and part): with the download's narrower ones, the files
-       * left out would count as orphans too and be deleted. */
+      GHashTableIter iter;
+      gpointer key, value;
+      g_hash_table_iter_init (&iter, job->sizes);
+      while (g_hash_table_iter_next (&iter, &key, &value))
+        {
+          if (g_hash_table_contains (state.completed, key))
+            continue;
+          const char *reason = g_hash_table_lookup (state.failed, key);
+          if (!reason && !ok)
+            continue; /* the run stopped before it got there; the error says why */
+          GogSyncFailure *failure = g_new0 (GogSyncFailure, 1);
+          failure->gamename = g_strdup (g_hash_table_lookup (job->file_games, key));
+          failure->filename = g_strdup (key);
+          failure->reason = g_strdup (reason ? reason
+                                             : "lgogdownloader skipped it without saying why");
+          g_ptr_array_add (job->failures, failure);
+          g_hash_table_add (failed_games, failure->gamename);
+        }
+    }
+
+  /* --check-orphans deletes files GOG no longer offers, i.e. the old
+   * versions. It runs with lgogdownloader's own settings (every language
+   * and part): with the download's narrower ones, the files left out would
+   * count as orphans too and be deleted. A game with a failed file keeps
+   * its old version. */
+  GPtrArray *orphan_names = g_ptr_array_new ();
+  for (guint i = 0; ok && i + 1 < all_names->len; i++)
+    if (!g_hash_table_contains (failed_games, g_ptr_array_index (all_names, i)))
+      g_ptr_array_add (orphan_names, g_ptr_array_index (all_names, i));
+  g_ptr_array_add (orphan_names, NULL);
+  if (ok && orphan_names->len > 1)
+    {
       job_progress (job, -1, "Deleting old versions…");
-      gchar *regex = names_regex ((const char *const *) all_names->pdata);
+      gchar *regex = names_regex ((const char *const *) orphan_names->pdata);
       gchar *argv[] = { LGOG, "--check-orphans", "--delete-orphans", "--exclude", "patches",
                         "--directory", job->library_dir, "--game", regex, NULL };
       ok = run_streaming (job, argv, log_line, &state, error);
       g_free (regex);
     }
+  g_ptr_array_unref (orphan_names);
+
+  /* The files that came are off the list; failed ones and files of other
+   * languages stay. */
+  GPtrArray *saved = gog_sync_load_results (NULL);
+  for (guint i = saved->len; i > 0; i--)
+    {
+      GogSyncItem *item = g_ptr_array_index (saved, i - 1);
+      gboolean requested = FALSE;
+      for (guint r = 0; r < job->requests->len; r++)
+        requested = requested ||
+                    g_strcmp0 (g_array_index (job->requests, GogSyncRequest, r).gamename,
+                               item->gamename) == 0;
+      if (!requested)
+        continue;
+      if (item->files->len == 0)
+        {
+          /* Saved before files were listed: nothing to go by but success. */
+          if (ok && !g_hash_table_contains (failed_games, item->gamename))
+            g_ptr_array_remove_index (saved, i - 1);
+          continue;
+        }
+      for (guint f = item->files->len; f > 0; f--)
+        {
+          GogSyncFile *file = g_ptr_array_index (item->files, f - 1);
+          if (g_hash_table_contains (state.completed, file->filename))
+            g_ptr_array_remove_index (item->files, f - 1);
+        }
+      item->n_files = item->files->len;
+      if (item->n_files == 0)
+        g_ptr_array_remove_index (saved, i - 1);
+    }
+  gint64 checked = 0;
+  g_ptr_array_unref (gog_sync_load_results (&checked));
+  save_results_checked (saved, checked);
+  g_ptr_array_unref (saved);
+
+  g_hash_table_unref (failed_games);
   g_free (threads);
   g_hash_table_unref (state.completed);
+  g_hash_table_unref (state.failed);
   for (gint i = 0; i < MAX_SLOTS; i++)
     g_free (state.slots[i].file);
   for (guint b = 0; b < batches->len; b++)
     g_ptr_array_unref (g_array_index (batches, Batch, b).names);
   g_array_unref (batches);
   g_ptr_array_unref (all_names);
-
-  if (ok)
-    {
-      /* What was asked for is now downloaded; files of other languages
-       * stay listed. */
-      GPtrArray *saved = gog_sync_load_results (NULL);
-      for (guint i = saved->len; i > 0; i--)
-        {
-          GogSyncItem *item = g_ptr_array_index (saved, i - 1);
-          for (guint r = 0; r < job->requests->len; r++)
-            {
-              GogSyncRequest *req = &g_array_index (job->requests, GogSyncRequest, r);
-              if (g_strcmp0 (req->gamename, item->gamename) != 0)
-                continue;
-              for (guint f = item->files->len; f > 0; f--)
-                {
-                  GogSyncFile *file = g_ptr_array_index (item->files, f - 1);
-                  if ((file->part & req->parts) && gog_sync_file_wanted (file, req->languages))
-                    g_ptr_array_remove_index (item->files, f - 1);
-                }
-              /* Results saved before files were listed have none, so the
-               * whole game goes, as it did then. */
-              item->n_files = item->files->len;
-            }
-          if (item->n_files == 0)
-            g_ptr_array_remove_index (saved, i - 1);
-        }
-      gog_sync_save_results (saved);
-      g_ptr_array_unref (saved);
-    }
   return ok;
 }
 

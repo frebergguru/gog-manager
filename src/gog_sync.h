@@ -151,6 +151,25 @@ void gog_sync_job_cancel (GogSyncJob *self);
 /* After a successful check. Element type: GogSyncItem*, owned by the job. */
 GPtrArray *gog_sync_job_get_items (GogSyncJob *self);
 
+typedef struct
+{
+  gchar *gamename; /* the listed game it belongs to */
+  gchar *filename;
+  gchar *reason;   /* readable, e.g. "not found on GOG's server (HTTP 404)" */
+} GogSyncFailure;
+
+void gog_sync_failure_free (GogSyncFailure *failure);
+
+/* After a download: the files that failed (HTTP and network errors) or
+ * that lgogdownloader skipped. They stay in the saved results, and their
+ * games keep their old versions. Element type: GogSyncFailure*, owned by
+ * the job; empty after a cancel. */
+GPtrArray *gog_sync_job_get_failures (GogSyncJob *self);
+
+/* Stops listing these files (until a new version renames them) and takes
+ * them out of the saved results. */
+void gog_sync_ignore_files (GPtrArray *failures);
+
 G_END_DECLS
 
 #endif

@@ -33,7 +33,10 @@ your GOG login.
   **languages** to download per game (remembered). The download shows the
   **total progress** and a progress bar for **each file** being downloaded, and
   you choose how many files download **at the same time** (1–8). Once
-  everything has downloaded, old versions are deleted.
+  everything has downloaded, old versions are deleted. If a file fails (for
+  example HTTP 404 or 500, or a network error), it says which file and why,
+  keeps the game's old version, and asks whether to try again later or ignore
+  the file (until GOG puts out a new version of it).
 - **One-click install** — installs Linux-native games directly, and drives
   Windows installers unattended through Wine or Proton, laying down a portable
   `c:\game` prefix that keeps game files outside the Wine prefix.
