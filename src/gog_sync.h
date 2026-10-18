@@ -102,6 +102,10 @@ void     gog_sync_set_default_original (gboolean original);
 guint    gog_sync_get_default_languages (void);
 void     gog_sync_set_default_languages (guint languages);
 
+/* name with its version numbers blanked out, to tell an old version of a
+ * file from a new one ("setup_x_#_(#)-#bin"). Transfer full. */
+gchar *gog_sync_version_blind_name (const char *name);
+
 /* TRUE if lgogdownloader is on PATH. */
 gboolean gog_sync_is_available (void);
 

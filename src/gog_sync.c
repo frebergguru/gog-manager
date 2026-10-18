@@ -8,6 +8,8 @@
 #include "json_util.h"
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
+#include <glib/gstdio.h>
 
 #define LGOG "lgogdownloader"
 #define RESULTS_FILE "gog-manager-updates.json"
@@ -317,14 +319,23 @@ guint
 gog_sync_item_languages (GogSyncItem *item)
 {
   guint offered = item->languages_offered;
-  /* With one language there is nothing to choose, and a remembered
-   * language the game no longer has would hide everything. */
+  guint chosen = gog_sync_get_game_languages (item->gamename);
+  /* Not known what the game comes in (its details couldn't be fetched):
+   * go by the choice, or the default, as it stands. */
+  if (!offered)
+    return chosen == GOG_SYNC_LANGUAGES_DEFAULT
+               ? gog_sync_default_languages_for (item->gamename, 0)
+               : chosen;
+  /* With one language there is nothing to choose. */
   if ((offered & (offered - 1)) == 0)
     return 0;
-  guint chosen = gog_sync_get_game_languages (item->gamename);
   if (chosen == GOG_SYNC_LANGUAGES_DEFAULT)
     return gog_sync_default_languages_for (item->gamename, offered);
-  return chosen & offered;
+  if (chosen == 0)
+    return 0; /* "All languages" */
+  /* A chosen language the game no longer has: the default, not everything. */
+  return (chosen & offered) ? (chosen & offered)
+                            : gog_sync_default_languages_for (item->gamename, offered);
 }
 
 gboolean
@@ -1514,10 +1525,15 @@ check_sync (GogSyncJob *job, GError **error)
         {
           job_progress (job, -1, "Looking up the games' original languages…");
           GError *lookup_error = NULL;
-          if (!gog_original_lookup ((const char *const *) strv, &lookup_error))
+          if (!gog_original_lookup ((const char *const *) strv, &job->cancelled, &lookup_error))
             {
               job_log (job, lookup_error->message);
               g_clear_error (&lookup_error);
+            }
+          if (job->cancelled)
+            {
+              g_set_error (error, G_IO_ERROR, G_IO_ERROR_CANCELLED, "Cancelled");
+              ok = FALSE;
             }
         }
       g_strfreev (strv);
@@ -1557,6 +1573,93 @@ parts_include (GogSyncPart parts)
   if (out->len)
     g_string_truncate (out, out->len - 1);
   return g_string_free (out, FALSE);
+}
+
+/* A file name with its version numbers blanked out: every run of digits
+ * and dots that holds a digit becomes '#'. Two versions of the same file
+ * ("setup_x_1.2_(500)-1.bin", "setup_x_1.3_(512)-1.bin") then match, while
+ * other files (another language, the Mac package) don't. */
+gchar *
+gog_sync_version_blind_name (const char *name)
+{
+  GString *out = g_string_new (NULL);
+  for (const char *p = name; *p;)
+    {
+      const char *q = p;
+      gboolean digit = FALSE;
+      while (*q && (g_ascii_isdigit (*q) || *q == '.'))
+        digit |= g_ascii_isdigit (*q++);
+      if (q > p && digit)
+        {
+          g_string_append_c (out, '#');
+          p = q;
+        }
+      else if (q > p)
+        {
+          g_string_append_len (out, p, q - p);
+          p = q;
+        }
+      else
+        g_string_append_c (out, *p++);
+    }
+  return g_string_free (out, FALSE);
+}
+
+/* Deletes the old files listed by --check-orphans that a file downloaded
+ * in this run replaces: same folder, same name apart from the version. */
+static void
+delete_replaced_orphans (GogSyncJob *job, const char *listed, const char *const *games,
+                         GHashTable *completed)
+{
+  gchar **lines = g_strsplit (listed, "\n", -1);
+  for (gchar **l = lines; *l; l++)
+    {
+      const char *path = g_strstrip (*l);
+      if (!g_path_is_absolute (path) || !g_file_test (path, G_FILE_TEST_IS_REGULAR))
+        continue;
+      /* Only inside the folder of a game in this download. */
+      gboolean ours = FALSE;
+      for (const char *const *g = games; *g && !ours; g++)
+        {
+          gchar *folder = g_build_filename (job->library_dir, *g, "", NULL);
+          ours = g_str_has_prefix (path, folder);
+          g_free (folder);
+        }
+      if (!ours || strstr (path, "/../"))
+        continue;
+
+      gchar *dir = g_path_get_dirname (path);
+      gchar *name = g_path_get_basename (path);
+      gchar *blind = gog_sync_version_blind_name (name);
+      const char *replacement = NULL;
+      GHashTableIter iter;
+      gpointer key;
+      g_hash_table_iter_init (&iter, completed);
+      while (!replacement && g_hash_table_iter_next (&iter, &key, NULL))
+        {
+          if (g_strcmp0 (key, name) == 0)
+            continue;
+          gchar *other = gog_sync_version_blind_name (key);
+          gchar *sibling = g_build_filename (dir, key, NULL);
+          if (g_strcmp0 (other, blind) == 0 && g_file_test (sibling, G_FILE_TEST_IS_REGULAR))
+            replacement = key;
+          g_free (sibling);
+          g_free (other);
+        }
+      if (replacement)
+        {
+          gchar *msg = g_remove (path) == 0
+                           ? g_strdup_printf ("Deleted old version: %s", name)
+                           : g_strdup_printf ("Could not delete old version %s: %s", name,
+                                              g_strerror (errno));
+          job_log (job, msg);
+          g_free (msg);
+        }
+      g_free (blind);
+      g_free (name);
+      g_free (dir);
+    }
+  g_strfreev (lines);
 }
 
 /* Each set of choices (languages and parts) is one lgogdownloader run. */
@@ -1614,7 +1717,7 @@ download_sync (GogSyncJob *job, GError **error)
       gchar *include = parts_include (batch->parts);
       gchar *language = languages_arg (batch->languages);
       /* The options the library is downloaded with. Old versions are
-       * deleted afterwards, in one pass over every language and part. */
+       * deleted afterwards, only those a new download replaced. */
       gchar *argv[] = { LGOG, "--download", "--threads", threads, "--exclude", "patches",
                         "--include", include, "--language", language, "--save-serials",
                         "--save-icon", "--save-logo", "--save-product-json", "--directory",
@@ -1651,26 +1754,28 @@ download_sync (GogSyncJob *job, GError **error)
         }
     }
 
-  /* --check-orphans deletes files GOG no longer offers, i.e. the old
-   * versions. It runs with lgogdownloader's own settings (every language
-   * and part): with the download's narrower ones, the files left out would
-   * count as orphans too and be deleted. A game with a failed file keeps
-   * its old version. */
-  GPtrArray *orphan_names = g_ptr_array_new ();
-  for (guint i = 0; ok && i + 1 < all_names->len; i++)
-    if (!g_hash_table_contains (failed_games, g_ptr_array_index (all_names, i)))
-      g_ptr_array_add (orphan_names, g_ptr_array_index (all_names, i));
-  g_ptr_array_add (orphan_names, NULL);
-  if (ok && orphan_names->len > 1)
+  /* Old versions. lgogdownloader's --check-orphans lists every file in a
+   * game's folder that GOG no longer offers, always over every language
+   * and part, whatever was downloaded. Deleting all of them (as
+   * --delete-orphans does) would also take the old versions of the DLC,
+   * extras and languages left out of this download, with nothing to
+   * replace them, and an old version whose download just failed. So only
+   * the list is asked for, and an old file goes only when a file of the
+   * same kind came in this run, next to it. */
+  if (ok && !job->cancelled && g_hash_table_size (state.completed) > 0)
     {
       job_progress (job, -1, "Deleting old versions…");
-      gchar *regex = names_regex ((const char *const *) orphan_names->pdata);
-      gchar *argv[] = { LGOG, "--check-orphans", "--delete-orphans", "--exclude", "patches",
-                        "--directory", job->library_dir, "--game", regex, NULL };
-      ok = run_streaming (job, argv, log_line, &state, error);
+      gchar *regex = names_regex ((const char *const *) all_names->pdata);
+      gchar *argv[] = { LGOG, "--check-orphans", "--exclude", "patches", "--directory",
+                        job->library_dir, "--game", regex, NULL };
+      GString *listed = g_string_new (NULL);
+      ok = run_streaming (job, argv, collect_line, listed, error);
+      if (ok)
+        delete_replaced_orphans (job, listed->str, (const char *const *) all_names->pdata,
+                                 state.completed);
+      g_string_free (listed, TRUE);
       g_free (regex);
     }
-  g_ptr_array_unref (orphan_names);
 
   /* The files that came are off the list; failed ones and files of other
    * languages stay. */

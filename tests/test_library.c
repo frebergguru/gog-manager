@@ -357,6 +357,14 @@ test_default_download_languages (void)
   g_assert_cmpuint (gog_sync_item_languages (&item), ==, BIT_DE);
   gog_sync_set_game_languages ("among_the_sleep", GOG_SYNC_LANGUAGES_DEFAULT);
   g_assert_cmpuint (gog_sync_item_languages (&item), ==, BIT_NO);
+  /* Details missing: the choice still holds, it doesn't become "all". */
+  GogSyncItem unknown = { .gamename = (gchar *) "among_the_sleep", .languages_offered = 0 };
+  gog_sync_set_game_languages ("among_the_sleep", BIT_DE);
+  g_assert_cmpuint (gog_sync_item_languages (&unknown), ==, BIT_DE);
+  /* A chosen language the game no longer has: the default. */
+  gog_sync_set_game_languages ("among_the_sleep", BIT_FR);
+  g_assert_cmpuint (gog_sync_item_languages (&item), ==, BIT_NO);
+  gog_sync_set_game_languages ("among_the_sleep", GOG_SYNC_LANGUAGES_DEFAULT);
 
   gchar *settings = g_build_filename (tmp, "gog-manager-download.json", NULL);
   g_remove (settings);
@@ -369,6 +377,40 @@ test_default_download_languages (void)
   g_free (tmp);
 }
 
+/* Old versions are only deleted when a new file of the same kind replaced
+ * them: the same name apart from version numbers. */
+static void
+test_version_blind_names (void)
+{
+  static const char *const same[][2] = {
+    { "setup_postal_2_5100_(chinese_simplified)_(64474)-1.bin",
+      "setup_postal_2_5200_(chinese_simplified)_(65001)-1.bin" },
+    { "setup_fallout_4_1.10.163.0_(64bit)_(66700).exe", "setup_fallout_4_1.10.984.0_(64bit)_(70011).exe" },
+    { "alone_in_the_dark_2_deDE_1_0_31909.pkg", "alone_in_the_dark_2_deDE_1_1_32000.pkg" },
+  };
+  static const char *const different[][2] = {
+    { "setup_postal_2_5100_(chinese_simplified)_(64474)-1.bin", "setup_postal_2_5200_(65001)-1.bin" },
+    { "alone_in_the_dark_2_deDE_1_0_31909.pkg", "alone_in_the_dark_2_enUS_1_0_31909.pkg" },
+    { "setup_game_1.0_(100).exe", "game_1_0_100.pkg" },
+  };
+  for (guint i = 0; i < G_N_ELEMENTS (same); i++)
+    {
+      gchar *a = gog_sync_version_blind_name (same[i][0]);
+      gchar *b = gog_sync_version_blind_name (same[i][1]);
+      g_assert_cmpstr (a, ==, b);
+      g_free (a);
+      g_free (b);
+    }
+  for (guint i = 0; i < G_N_ELEMENTS (different); i++)
+    {
+      gchar *a = gog_sync_version_blind_name (different[i][0]);
+      gchar *b = gog_sync_version_blind_name (different[i][1]);
+      g_assert_cmpstr (a, !=, b);
+      g_free (a);
+      g_free (b);
+    }
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -379,5 +421,6 @@ main (int argc, char *argv[])
   g_test_add_func ("/library/all_languages_listed_once", test_all_languages_listed_once);
   g_test_add_func ("/gog_sync/parse_status", test_gog_sync_parse_status);
   g_test_add_func ("/gog_sync/default_download_languages", test_default_download_languages);
+  g_test_add_func ("/gog_sync/version_blind_names", test_version_blind_names);
   return g_test_run ();
 }

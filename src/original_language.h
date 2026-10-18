@@ -17,9 +17,11 @@ G_BEGIN_DECLS
  * next to the app in gog-manager-original-languages.json. */
 
 /* Looks up the games not in the cache yet, and those not found more than
- * a month ago. Blocking (runs curl): call it from a worker thread. A
- * failed lookup is reported in error and leaves the cache as it was. */
-gboolean gog_original_lookup (const char *const *gamenames, GError **error);
+ * a month ago. Blocking (runs curl): call it from a worker thread. It
+ * stops between queries once *cancelled is TRUE (cancelled may be NULL).
+ * A failed lookup is reported in error; what was found is kept. */
+gboolean gog_original_lookup (const char *const *gamenames, const volatile gboolean *cancelled,
+                              GError **error);
 
 /* lgogdownloader language bits of the game's original language(s), 0 if
  * not known. When source is not NULL it gets a short reason ("made in

@@ -209,7 +209,7 @@ lookup_batch (const char *const *names, guint n, json_object *cache, GError **er
   g_free (query);
 
   /* A plain, generic User-Agent: nothing that identifies the user. */
-  gchar *argv[] = { "curl", "-fsS", "--max-time", "90", "-A", "gog-manager",
+  gchar *argv[] = { "curl", "-fsS", "--max-time", "45", "-A", "gog-manager",
                     "-H", "Accept: application/sparql-results+json",
                     "--data-urlencode", data, SPARQL_URL, NULL };
   gchar *out = NULL;
@@ -309,7 +309,8 @@ lookup_batch (const char *const *names, guint n, json_object *cache, GError **er
 }
 
 gboolean
-gog_original_lookup (const char *const *gamenames, GError **error)
+gog_original_lookup (const char *const *gamenames, const volatile gboolean *cancelled,
+                     GError **error)
 {
   G_LOCK (cache);
   json_object *cache = load_cache ();
@@ -327,7 +328,7 @@ gog_original_lookup (const char *const *gamenames, GError **error)
       g_ptr_array_add (todo, (gpointer) *g);
     }
   gboolean ok = TRUE;
-  for (guint i = 0; ok && i < todo->len; i += BATCH)
+  for (guint i = 0; ok && i < todo->len && !(cancelled && *cancelled); i += BATCH)
     ok = lookup_batch ((const char *const *) todo->pdata + i, MIN (BATCH, todo->len - i), cache,
                        error);
   /* Whatever was looked up before a failure is kept. */
