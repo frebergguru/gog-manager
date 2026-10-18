@@ -134,6 +134,47 @@ test_wine_root_dir_proton_uses_pfx_subdir (void)
   g_free (wine_root2);
 }
 
+/* Proton dies on a missing STEAM_COMPAT_DATA_PATH, so the prefix dir must
+ * be created for it -- including under an install dir that does not exist. */
+static void
+test_proton_prefix_dir_is_created (void)
+{
+  gchar *tmp = g_dir_make_tmp ("gog-prefix-test-XXXXXX", NULL);
+  g_assert_nonnull (tmp);
+  gchar *install = g_build_filename (tmp, "Some Game", NULL);
+  gchar *prefix = runner_prefix_dir_for_install (GOG_RUNNER_PROTON, install);
+
+  g_assert_false (runner_prefix_is_bootstrapped (GOG_RUNNER_PROTON, install));
+  GError *error = NULL;
+  g_assert_true (runner_ensure_prefix_dir (GOG_RUNNER_PROTON, install, &error));
+  g_assert_no_error (error);
+  g_assert_true (g_file_test (prefix, G_FILE_TEST_IS_DIR));
+  /* idempotent */
+  g_assert_true (runner_ensure_prefix_dir (GOG_RUNNER_PROTON, install, &error));
+  g_assert_no_error (error);
+  /* An empty prefix dir is not a set-up prefix yet. */
+  g_assert_false (runner_prefix_is_bootstrapped (GOG_RUNNER_PROTON, install));
+
+  gchar *c_drive = g_build_filename (prefix, "pfx", "dosdevices", "c:", NULL);
+  g_assert_cmpint (g_mkdir_with_parents (c_drive, 0755), ==, 0);
+  g_assert_true (runner_prefix_is_bootstrapped (GOG_RUNNER_PROTON, install));
+
+  g_rmdir (c_drive);
+  gchar *dosdevices = g_path_get_dirname (c_drive);
+  gchar *pfx = g_path_get_dirname (dosdevices);
+  g_rmdir (dosdevices);
+  g_rmdir (pfx);
+  g_rmdir (prefix);
+  g_rmdir (install);
+  g_rmdir (tmp);
+  g_free (pfx);
+  g_free (dosdevices);
+  g_free (c_drive);
+  g_free (prefix);
+  g_free (install);
+  g_free (tmp);
+}
+
 /* Wine makes dosdevices/c: a symlink to ../drive_c, so c:/game must resolve
  * back to the install dir through that link, not through the lexical path. */
 static void
@@ -270,6 +311,7 @@ main (int argc, char *argv[])
   g_test_add_func ("/runner/wine_launch_command", test_wine_launch_command);
   g_test_add_func ("/runner/wine_launch_windows_arguments", test_wine_launch_windows_arguments);
   g_test_add_func ("/runner/wine_root_dir", test_wine_root_dir_proton_uses_pfx_subdir);
+  g_test_add_func ("/runner/proton_prefix_dir", test_proton_prefix_dir_is_created);
   g_test_add_func ("/runner/link_c_game", test_link_c_game_resolves_to_install_dir);
   g_test_add_func ("/proton/names_sort_newest_first", test_proton_names_sort_newest_first);
   g_test_add_func ("/proton/list_and_remove", test_proton_list_and_remove);

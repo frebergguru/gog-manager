@@ -217,8 +217,12 @@ runner_link_c_game (const char *wine_root, const char *install_dir, GError **err
 
   gboolean ok = (symlink (relative, game_link) == 0);
   if (!ok)
-    g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (errno),
-                 "Could not symlink %s -> %s", game_link, relative);
+    {
+      int saved_errno = errno;
+      g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (saved_errno),
+                   "Could not symlink %s -> %s: %s", game_link, relative,
+                   g_strerror (saved_errno));
+    }
 
   g_free (relative);
   g_free (game_link);
@@ -355,6 +359,70 @@ runner_build_bootstrap_command (GogRunnerInfo *runner, const char *install_dir)
   cmd->argv = (gchar **) g_ptr_array_free (argv, FALSE);
   cmd->envp = envp;
   return cmd;
+}
+
+gboolean
+runner_ensure_prefix_dir (GogRunnerKind kind, const char *install_dir, GError **error)
+{
+  gchar *prefix = runner_prefix_dir_for_install (kind, install_dir);
+  gboolean ok = (g_mkdir_with_parents (prefix, 0755) == 0);
+  if (!ok)
+    {
+      int saved_errno = errno;
+      g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (saved_errno),
+                   "Could not create prefix directory %s: %s", prefix, g_strerror (saved_errno));
+    }
+  g_free (prefix);
+  return ok;
+}
+
+gboolean
+runner_prefix_is_bootstrapped (GogRunnerKind kind, const char *install_dir)
+{
+  gchar *wine_root = runner_wine_root_dir (kind, install_dir);
+  gchar *c_drive = g_build_filename (wine_root, "dosdevices", "c:", NULL);
+  gboolean ok = g_file_test (c_drive, G_FILE_TEST_IS_DIR);
+  g_free (c_drive);
+  g_free (wine_root);
+  return ok;
+}
+
+gboolean
+runner_prepare_prefix (GogRunnerInfo *runner, const char *install_dir, GError **error)
+{
+  if (!runner_ensure_prefix_dir (runner->kind, install_dir, error))
+    return FALSE;
+
+  if (!runner_prefix_is_bootstrapped (runner->kind, install_dir))
+    {
+      GogCommand *boot = runner_build_bootstrap_command (runner, install_dir);
+      gint status = 0;
+      GError *spawn_err = NULL;
+      if (!g_spawn_sync (install_dir, boot->argv, boot->envp,
+                         G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL,
+                         NULL, NULL, NULL, NULL, &status, &spawn_err))
+        {
+          g_propagate_error (error, spawn_err);
+          gog_command_free (boot);
+          return FALSE;
+        }
+      gog_command_free (boot);
+      /* A non-zero exit is not fatal by itself (wineboot often complains);
+       * what matters is whether the skeleton now exists. */
+      if (!runner_prefix_is_bootstrapped (runner->kind, install_dir))
+        {
+          gchar *prefix = runner_prefix_dir_for_install (runner->kind, install_dir);
+          g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                       "Wine/Proton could not set up the prefix in %s", prefix);
+          g_free (prefix);
+          return FALSE;
+        }
+    }
+
+  gchar *wine_root = runner_wine_root_dir (runner->kind, install_dir);
+  gboolean ok = runner_link_c_game (wine_root, install_dir, error);
+  g_free (wine_root);
+  return ok;
 }
 
 GogCommand *

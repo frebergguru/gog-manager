@@ -62,6 +62,22 @@ gboolean runner_link_c_game (const char *wine_root, const char *install_dir, GEr
  * calling runner_link_c_game(), when initializing a fresh prefix. */
 GogCommand *runner_build_bootstrap_command (GogRunnerInfo *runner, const char *install_dir);
 
+/* Creates the prefix directory itself. Proton never creates
+ * STEAM_COMPAT_DATA_PATH: it opens "<prefix>/pfx.lock" first thing and
+ * dies with ENOENT when the directory is missing. Call before running
+ * anything against a prefix that may not exist yet. */
+gboolean runner_ensure_prefix_dir (GogRunnerKind kind, const char *install_dir, GError **error);
+
+/* TRUE once Wine/Proton has built the prefix skeleton (dosdevices/c:),
+ * i.e. runner_link_c_game() can work without a bootstrap first. */
+gboolean runner_prefix_is_bootstrapped (GogRunnerKind kind, const char *install_dir);
+
+/* Makes a prefix usable for launching: creates its directory, runs the
+ * bootstrap command (blocking) if the skeleton is missing, then makes sure
+ * c:\game points at install_dir. Can take many seconds on a fresh Proton
+ * prefix, so call it off the main thread unless already bootstrapped. */
+gboolean runner_prepare_prefix (GogRunnerInfo *runner, const char *install_dir, GError **error);
+
 /* Builds `wine <installer> /DIR=c:\game /LANG=... [silent switches]` (or
  * the Proton equivalent), with WINEPREFIX / STEAM_COMPAT_* set in envp.
  * When silent is FALSE, the unattended switches are omitted so the

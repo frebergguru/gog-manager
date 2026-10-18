@@ -174,6 +174,54 @@ spawn_detached (gchar **argv, gchar **envp, const char *cwd, GError **error)
                          NULL, NULL, NULL, error);
 }
 
+typedef struct
+{
+  GogRunnerInfo *runner;
+  gchar *install_dir;
+  GogCommand *cmd;
+} PrefixLaunch;
+
+static gpointer
+prefix_launch_thread (gpointer data)
+{
+  PrefixLaunch *pl = data;
+  GError *error = NULL;
+  if (!runner_prepare_prefix (pl->runner, pl->install_dir, &error)
+      || !spawn_detached (pl->cmd->argv, pl->cmd->envp, pl->install_dir, &error))
+    g_warning ("Could not launch from %s: %s", pl->install_dir, error ? error->message : "unknown error");
+  g_clear_error (&error);
+  gog_command_free (pl->cmd);
+  gog_runner_info_free (pl->runner);
+  g_free (pl->install_dir);
+  g_free (pl);
+  return NULL;
+}
+
+/* Spawns a Wine/Proton command whose paths go through c:\game. A prefix
+ * that is missing or was never set up (deleted, copied from elsewhere, an
+ * install that failed half way) is rebuilt first, on a thread, because a
+ * fresh Proton bootstrap takes many seconds. Takes ownership of cmd. */
+static gboolean
+spawn_in_prefix (GogRunnerInfo *runner, const char *install_dir, GogCommand *cmd, GError **error)
+{
+  if (runner_prefix_is_bootstrapped (runner->kind, install_dir))
+    {
+      gchar *wine_root = runner_wine_root_dir (runner->kind, install_dir);
+      gboolean ok = runner_link_c_game (wine_root, install_dir, error)
+                    && spawn_detached (cmd->argv, cmd->envp, install_dir, error);
+      g_free (wine_root);
+      gog_command_free (cmd);
+      return ok;
+    }
+
+  PrefixLaunch *pl = g_new0 (PrefixLaunch, 1);
+  pl->runner = gog_runner_info_new (runner->kind, runner->name, runner->bin_path);
+  pl->install_dir = g_strdup (install_dir);
+  pl->cmd = cmd;
+  g_thread_unref (g_thread_new ("gog-prefix-launch", prefix_launch_thread, pl));
+  return TRUE;
+}
+
 /* A runner view of the game's recorded runner. Borrows the game's strings;
  * nothing to free. */
 static GogRunnerInfo
@@ -297,8 +345,7 @@ gog_launch_game (GogGame *game, GError **error)
           GogRunnerInfo runner = runner_from_game (game);
           GogCommand *cmd = runner_build_launch_command (&runner, install_dir, task->path,
                                                            task->working_dir, task->arguments);
-          ok = spawn_detached (cmd->argv, cmd->envp, install_dir, error);
-          gog_command_free (cmd);
+          ok = spawn_in_prefix (&runner, install_dir, cmd, error);
         }
       play_task_free (task);
       return ok;
@@ -335,8 +382,7 @@ gog_launch_game (GogGame *game, GError **error)
 
   GogRunnerInfo runner = runner_from_game (game);
   GogCommand *cmd = runner_build_launch_command (&runner, install_dir, exe, NULL, NULL);
-  gboolean ok = spawn_detached (cmd->argv, cmd->envp, install_dir, error);
-  gog_command_free (cmd);
+  gboolean ok = spawn_in_prefix (&runner, install_dir, cmd, error);
   g_free (exe);
   return ok;
 }

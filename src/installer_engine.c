@@ -481,6 +481,9 @@ install_windows_sync (GogInstallJob *job, GError **error)
       return FALSE;
     }
 
+  if (!runner_ensure_prefix_dir (job->runner->kind, job->install_dir, error))
+    return FALSE;
+
   job_progress (job, -1, "Preparing Wine/Proton prefix…");
   GogCommand *boot = runner_build_bootstrap_command (job->runner, job->install_dir);
   GError *boot_err = NULL;
