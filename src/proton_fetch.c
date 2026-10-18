@@ -10,8 +10,20 @@
 #include <unistd.h>
 #include <errno.h>
 
+/* The release list rather than /releases/latest: "latest" is whatever the
+ * maintainer last flagged, so we pick the newest published release ourselves. */
 #define RELEASES_API_URL \
-  "https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases/latest"
+  "https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases?per_page=30"
+
+/* Since GE-Proton10 the archives are per-architecture
+ * ("GE-Proton11-9-x86_64.tar.gz"); older releases ship "<tag>.tar.gz". */
+#if defined(__x86_64__)
+#define ASSET_ARCH "x86_64"
+#elif defined(__aarch64__)
+#define ASSET_ARCH "aarch64"
+#else
+#define ASSET_ARCH NULL
+#endif
 
 struct _GogProtonFetchJob
 {
@@ -261,48 +273,123 @@ poll_thread_func (gpointer data)
 /* ---- worker thread ---- */
 
 static gboolean
+is_safe_dir_name (const char *name)
+{
+  return name && *name && !strchr (name, '/') && g_strcmp0 (name, ".") != 0 &&
+         g_strcmp0 (name, "..") != 0;
+}
+
+/* Returns the asset in @release that we can run on this machine, or NULL. */
+static json_object *
+find_release_asset (json_object *release)
+{
+  const char *tag = ju_get_string (release, "tag_name", NULL);
+  json_object *assets = ju_get_array (release, "assets");
+  if (!tag || !assets)
+    return NULL;
+
+  gchar *arch_name = ASSET_ARCH ? g_strdup_printf ("%s-%s.tar.gz", tag, ASSET_ARCH) : NULL;
+  gchar *plain_name = g_strdup_printf ("%s.tar.gz", tag);
+  json_object *arch_asset = NULL, *plain_asset = NULL;
+
+  size_t n = json_object_array_length (assets);
+  for (size_t i = 0; i < n; i++)
+    {
+      json_object *asset = json_object_array_get_idx (assets, i);
+      const char *name = ju_get_string (asset, "name", "");
+      if (!ju_get_string (asset, "browser_download_url", NULL))
+        continue;
+      if (arch_name && g_strcmp0 (name, arch_name) == 0)
+        arch_asset = asset;
+      else if (g_strcmp0 (name, plain_name) == 0)
+        plain_asset = asset;
+    }
+
+  g_free (arch_name);
+  g_free (plain_name);
+  return arch_asset ? arch_asset : plain_asset;
+}
+
+static gboolean
 fetch_sync (GogProtonFetchJob *job, GError **error)
 {
   job_progress (job, -1, "Checking for the latest GE-Proton release…");
 
-  gchar *api_argv[] = { "curl", "-fsSL", RELEASES_API_URL, NULL };
+  gchar *api_argv[] = { "curl", "-fsSL", "-H", "Accept: application/vnd.github+json",
+                        "-H", "Cache-Control: no-cache", RELEASES_API_URL, NULL };
   gchar *api_output = NULL;
   if (!run_capture (job, api_argv, &api_output, error))
     return FALSE;
 
   json_object *root = json_tokener_parse (api_output);
   g_free (api_output);
-  if (!root)
+  if (!root || !json_object_is_type (root, json_type_array))
     {
+      if (root)
+        json_object_put (root);
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                   "Could not parse GitHub's response for the latest GE-Proton release");
+                   "Could not parse GitHub's list of GE-Proton releases");
       return FALSE;
     }
 
-  const char *tag = ju_get_string (root, "tag_name", NULL);
-  if (!tag)
+  /* Newest published, non-draft, non-prerelease release that has a
+   * download for this architecture. ISO 8601 timestamps compare as strings. */
+  json_object *best_release = NULL, *best_asset = NULL;
+  const char *best_published = NULL;
+  size_t n_releases = json_object_array_length (root);
+  for (size_t i = 0; i < n_releases; i++)
+    {
+      json_object *release = json_object_array_get_idx (root, i);
+      if (ju_get_bool (release, "draft", FALSE) || ju_get_bool (release, "prerelease", FALSE))
+        continue;
+      const char *published = ju_get_string (release, "published_at", "");
+      if (best_published && g_strcmp0 (published, best_published) <= 0)
+        continue;
+      json_object *asset = find_release_asset (release);
+      if (!asset)
+        continue;
+      best_release = release;
+      best_asset = asset;
+      best_published = published;
+    }
+
+  if (!best_release)
     {
       json_object_put (root);
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                   "GitHub's response did not include a release tag");
+                   "Could not find a GE-Proton release with a download for this computer");
       return FALSE;
     }
-  /* The tag becomes a directory name under the tools dir. */
-  if (!*tag || strchr (tag, '/') || g_strcmp0 (tag, ".") == 0 || g_strcmp0 (tag, "..") == 0)
+
+  const char *tag = ju_get_string (best_release, "tag_name", NULL);
+  const char *asset_name = ju_get_string (best_asset, "name", "");
+  /* The archive unpacks into a directory named after itself, which then
+   * sits under the tools dir. */
+  gchar *dir_name = g_strndup (asset_name, strlen (asset_name) - strlen (".tar.gz"));
+  if (!is_safe_dir_name (tag) || !is_safe_dir_name (dir_name))
     {
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                   "GitHub returned an unexpected release tag: %s", tag);
+                   "GitHub returned an unexpected release name: %s", asset_name);
+      g_free (dir_name);
       json_object_put (root);
       return FALSE;
     }
   gchar *tag_dup = g_strdup (tag);
+  gchar *log_line = g_strdup_printf ("Newest GE-Proton release: %s", tag_dup);
+  job_log (job, log_line);
+  g_free (log_line);
 
   gchar *tools_dir = proton_fetch_get_tools_dir ();
-  gchar *install_dir = g_build_filename (tools_dir, tag_dup, NULL);
+  gchar *install_dir = g_build_filename (tools_dir, dir_name, NULL);
   gchar *proton_bin = g_build_filename (install_dir, "proton", NULL);
-  if (g_file_test (proton_bin, G_FILE_TEST_IS_REGULAR))
+  /* Releases fetched before the per-architecture archives live in <tag>/. */
+  gchar *legacy_bin = g_build_filename (tools_dir, tag_dup, "proton", NULL);
+  g_free (dir_name);
+  if (g_file_test (proton_bin, G_FILE_TEST_IS_REGULAR) ||
+      g_file_test (legacy_bin, G_FILE_TEST_IS_REGULAR))
     {
       job_log (job, "Already up to date.");
+      g_free (legacy_bin);
       g_free (proton_bin);
       g_free (install_dir);
       g_free (tools_dir);
@@ -311,43 +398,13 @@ fetch_sync (GogProtonFetchJob *job, GError **error)
       g_free (tag_dup);
       return TRUE;
     }
+  g_free (legacy_bin);
   g_free (proton_bin);
 
-  gchar *want_asset_name = g_strdup_printf ("%s.tar.gz", tag_dup);
-  const char *download_url = NULL;
-  guint64 total_size = 0;
-
-  json_object *assets = ju_get_array (root, "assets");
-  if (assets)
-    {
-      size_t n = json_object_array_length (assets);
-      for (size_t i = 0; i < n; i++)
-        {
-          json_object *asset = json_object_array_get_idx (assets, i);
-          const char *name = ju_get_string (asset, "name", "");
-          if (g_strcmp0 (name, want_asset_name) == 0)
-            {
-              download_url = ju_get_string (asset, "browser_download_url", NULL);
-              total_size = (guint64) ju_get_int64 (asset, "size", 0);
-              break;
-            }
-        }
-    }
-
-  if (!download_url)
-    {
-      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                   "Could not find a %s download in the %s release", want_asset_name, tag_dup);
-      g_free (want_asset_name);
-      g_free (install_dir);
-      g_free (tools_dir);
-      g_free (tag_dup);
-      json_object_put (root);
-      return FALSE;
-    }
+  const char *download_url = ju_get_string (best_asset, "browser_download_url", NULL);
+  guint64 total_size = (guint64) ju_get_int64 (best_asset, "size", 0);
 
   gchar *download_url_dup = g_strdup (download_url);
-  g_free (want_asset_name);
   json_object_put (root);
 
   /* Download next to where it will be extracted rather than into $TMPDIR:
@@ -421,6 +478,19 @@ fetch_sync (GogProtonFetchJob *job, GError **error)
 
   g_remove (tmp_path);
   g_free (tmp_path);
+
+  if (ok)
+    {
+      proton_bin = g_build_filename (install_dir, "proton", NULL);
+      if (!g_file_test (proton_bin, G_FILE_TEST_IS_REGULAR))
+        {
+          ok = FALSE;
+          g_set_error (&tar_error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                       "The %s archive did not unpack to %s as expected", tag_dup, install_dir);
+          g_rmdir (install_dir); /* only succeeds if we left it empty */
+        }
+      g_free (proton_bin);
+    }
   g_free (install_dir);
   g_free (tools_dir);
 
