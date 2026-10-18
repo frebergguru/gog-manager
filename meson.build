@@ -33,6 +33,7 @@ common_sources = [
   'src/config.c',
   'src/runner.c',
   'src/proton_fetch.c',
+  'src/gog_sync.c',
   'src/installer_engine.c',
   'src/launch.c',
 ]
@@ -43,6 +44,7 @@ ui_sources = [
   'src/ui/install_dialog.c',
   'src/ui/proton_fetch_dialog.c',
   'src/ui/proton_manage_dialog.c',
+  'src/ui/gog_sync_dialog.c',
   'src/ui/preferences_dialog.c',
 ]
 
@@ -61,6 +63,7 @@ install_data('packaging/org.gogmanager.app.svg',
 
 test_deps = [gtk_dep, adw_dep, gio_dep, json_dep]
 test_support_sources = ['src/json_util.c', 'src/text_util.c', 'src/runner.c', 'src/proton_fetch.c',
+                         'src/gog_sync.c',
                          'src/config.c', 'src/game.c']
 
 test_json_exe = executable('test-json-util',

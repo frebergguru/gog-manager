@@ -7,6 +7,8 @@
 #include "preferences_dialog.h"
 #include "../library.h"
 #include "../config.h"
+#include "gog_sync_dialog.h"
+#include "../gog_sync.h"
 #include <string.h>
 
 struct _GogMainWindow
@@ -16,6 +18,7 @@ struct _GogMainWindow
   GogLibrary *library;
   GogConfig *config;
   GogState *state;
+  GHashTable *gog_updates; /* gamenames with a new version on GOG (last check) */
 
   GtkStack *root_stack; /* "empty" | "loading" | "browse" */
   AdwStatusPage *empty_page;
@@ -60,6 +63,7 @@ G_DEFINE_FINAL_TYPE (GogMainWindow, gog_main_window, ADW_TYPE_APPLICATION_WINDOW
 
 typedef struct
 {
+  GogMainWindow *window;
   GtkPicture *cover;
   GtkLabel *title;
   GtkLabel *badges;
@@ -68,6 +72,49 @@ typedef struct
 
 static void start_scan (GogMainWindow *self);
 
+/* Whether the last GOG check found a new version of game. The library
+ * folder of a game is named after its lgogdownloader game name. */
+static gboolean
+has_gog_update (GogMainWindow *self, GogGame *game)
+{
+  const char *folder = gog_game_get_folder_path (game);
+  if (!self->gog_updates || !folder)
+    return FALSE;
+  gchar *name = g_path_get_basename (folder);
+  gboolean found = g_hash_table_contains (self->gog_updates, name);
+  g_free (name);
+  return found;
+}
+
+/* Reloads the saved check results. Returns TRUE if the set changed. */
+static gboolean
+load_gog_updates (GogMainWindow *self)
+{
+  GHashTable *set = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+  GPtrArray *items = gog_sync_load_results (NULL);
+  for (guint i = 0; i < items->len; i++)
+    {
+      GogSyncItem *item = g_ptr_array_index (items, i);
+      if (item->kind == GOG_SYNC_UPDATE)
+        g_hash_table_add (set, g_strdup (item->gamename));
+    }
+  g_ptr_array_unref (items);
+
+  gboolean changed = !self->gog_updates || g_hash_table_size (set) != g_hash_table_size (self->gog_updates);
+  if (!changed)
+    {
+      GHashTableIter iter;
+      gpointer key;
+      g_hash_table_iter_init (&iter, set);
+      while (!changed && g_hash_table_iter_next (&iter, &key, NULL))
+        changed = !g_hash_table_contains (self->gog_updates, key);
+    }
+  if (self->gog_updates)
+    g_hash_table_unref (self->gog_updates);
+  self->gog_updates = set;
+  return changed;
+}
+
 /* ---------------- filter / sort ---------------- */
 
 static gboolean
@@ -75,6 +122,10 @@ filter_func (gpointer item, gpointer user_data)
 {
   GogGame *game = GOG_GAME (item);
   GogMainWindow *self = user_data;
+
+  /* DLC is listed on its game's page, not as a card of its own. */
+  if (gog_game_get_base_game (game))
+    return FALSE;
 
   const char *search = gtk_editable_get_text (GTK_EDITABLE (self->search_entry));
   if (search && *search)
@@ -128,6 +179,8 @@ filter_func (gpointer item, gpointer user_data)
   if (status_idx == 1 && !gog_game_get_installed (game))
     return FALSE;
   if (status_idx == 2 && gog_game_get_installed (game))
+    return FALSE;
+  if (status_idx == 3 && !has_gog_update (self, game))
     return FALSE;
 
   return TRUE;
@@ -196,7 +249,16 @@ static void
 update_count_label (GogMainWindow *self)
 {
   guint shown = g_list_model_get_n_items (G_LIST_MODEL (self->filter_model));
-  guint total = g_list_model_get_n_items (gog_library_get_model (self->library));
+  GListModel *model = gog_library_get_model (self->library);
+  guint n = g_list_model_get_n_items (model);
+  guint total = 0;
+  for (guint i = 0; i < n; i++)
+    {
+      GogGame *g = g_list_model_get_item (model, i);
+      if (!gog_game_get_base_game (g))
+        total++;
+      g_object_unref (g);
+    }
   gchar *text = g_strdup_printf ("%u / %u games", shown, total);
   gtk_label_set_label (self->count_label, text);
   g_free (text);
@@ -269,7 +331,9 @@ update_card (CardWidgets *cw, GogGame *game)
   if (gog_game_get_supports_os (game, GOG_OS_MAC))
     g_string_append (badges, "Mac ");
   if (gog_game_get_installed (game))
-    g_string_append (badges, "· Installed");
+    g_string_append (badges, "· Installed ");
+  if (has_gog_update (cw->window, game))
+    g_string_append (badges, "· Update on GOG");
   gtk_label_set_label (cw->badges, badges->str);
   g_string_free (badges, TRUE);
 
@@ -320,7 +384,6 @@ static void
 on_factory_setup (GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointer user_data)
 {
   (void) factory;
-  (void) user_data;
 
   GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
   gtk_widget_add_css_class (box, "gog-card");
@@ -356,6 +419,7 @@ on_factory_setup (GtkSignalListItemFactory *factory, GtkListItem *list_item, gpo
   gtk_list_item_set_child (list_item, box);
 
   CardWidgets *cw = g_new0 (CardWidgets, 1);
+  cw->window = user_data;
   cw->cover = GTK_PICTURE (cover);
   cw->title = GTK_LABEL (title);
   cw->badges = GTK_LABEL (badges);
@@ -600,6 +664,25 @@ on_preferences_clicked (GtkButton *button, gpointer user_data)
 }
 
 static void
+on_gog_sync_done (gboolean downloaded, gpointer user_data)
+{
+  GogMainWindow *self = user_data;
+  gboolean changed = load_gog_updates (self);
+  if (downloaded || changed)
+    start_scan (self); /* new files, or new "Update on GOG" marks on the cards */
+}
+
+static void
+on_gog_sync_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  GogMainWindow *self = user_data;
+  gchar *library_dir = gog_config_effective_library_path (self->config);
+  gog_show_sync_dialog (GTK_WINDOW (self), library_dir, self->library, on_gog_sync_done, self);
+  g_free (library_dir);
+}
+
+static void
 on_about_clicked (GtkButton *button, gpointer user_data)
 {
   (void) button;
@@ -697,7 +780,8 @@ build_sidebar (GogMainWindow *self)
   gtk_widget_set_halign (status_heading, GTK_ALIGN_START);
   gtk_box_append (GTK_BOX (box), status_heading);
   GtkStringList *status_list = gtk_string_list_new ((const char *[]) { "All games", "Installed",
-                                                                        "Not installed", NULL });
+                                                                        "Not installed",
+                                                                        "New version on GOG", NULL });
   self->status_dropdown = GTK_DROP_DOWN (gtk_drop_down_new (G_LIST_MODEL (status_list), NULL));
   set_accessible_label (GTK_WIDGET (self->status_dropdown), "Status");
   gtk_box_append (GTK_BOX (box), GTK_WIDGET (self->status_dropdown));
@@ -749,6 +833,12 @@ build_header_bar (GogMainWindow *self)
   g_signal_connect (rescan_btn, "clicked", G_CALLBACK (on_rescan_clicked), self);
   adw_header_bar_pack_end (ADW_HEADER_BAR (header), rescan_btn);
 
+  GtkWidget *sync_btn = gtk_button_new_from_icon_name ("software-update-available-symbolic");
+  gtk_widget_set_tooltip_text (sync_btn, "New Games and Updates on GOG");
+  set_accessible_label (sync_btn, "New Games and Updates on GOG");
+  g_signal_connect (sync_btn, "clicked", G_CALLBACK (on_gog_sync_clicked), self);
+  adw_header_bar_pack_end (ADW_HEADER_BAR (header), sync_btn);
+
   GtkWidget *about_btn = gtk_button_new_from_icon_name ("help-about-symbolic");
   gtk_widget_set_tooltip_text (about_btn, "About");
   set_accessible_label (about_btn, "About");
@@ -772,6 +862,7 @@ gog_main_window_dispose (GObject *object)
     g_cancellable_cancel (self->scan_cancellable);
   if (self->library)
     g_signal_handlers_disconnect_by_data (self->library, self);
+  g_clear_pointer (&self->gog_updates, g_hash_table_unref);
   G_OBJECT_CLASS (gog_main_window_parent_class)->dispose (object);
 }
 
@@ -807,6 +898,7 @@ gog_main_window_new (GtkApplication *app)
   self->library = gog_library_new ();
   self->config = gog_config_load ();
   self->state = gog_state_load ();
+  load_gog_updates (self);
   g_signal_connect (self->library, "scan-progress", G_CALLBACK (on_scan_progress), self);
 
   gtk_window_set_title (GTK_WINDOW (self), "GOG Library Manager");

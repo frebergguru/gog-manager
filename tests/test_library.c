@@ -5,6 +5,7 @@
 #include <glib.h>
 #include <glib/gstdio.h>
 #include "../src/library.h"
+#include "../src/gog_sync.h"
 
 static void
 on_scan_done (GObject *source, GAsyncResult *res, gpointer user_data)
@@ -195,6 +196,57 @@ test_all_languages_listed_once (void)
   g_free (root);
 }
 
+/* Lines as lgogdownloader --status --size-only prints them: ND lines have
+ * no size, file names may contain spaces, errors are mixed in, and a game's
+ * DLC lines follow the game's own. */
+static void
+test_gog_sync_parse_status (void)
+{
+  gchar *root = g_dir_make_tmp ("gog-library-test-XXXXXX", NULL);
+  gchar *have = g_build_filename (root, "fallout_4", NULL);
+  gchar *cyberpunk = g_build_filename (root, "cyberpunk_2077", NULL);
+  g_assert_cmpint (g_mkdir (have, 0755), ==, 0);
+  g_assert_cmpint (g_mkdir (cyberpunk, 0755), ==, 0);
+
+  const char *output =
+      "OK broken_sword_4 setup_broken_sword_4_(24519).exe 832336\n"
+      "HTTP ERROR: 404 (https://www.gog.com/account/gameDetails/1207664643.json)\n"
+      "OK cyberpunk_2077 setup_cyberpunk_2077.exe 1234\n"
+      "ND cyberpunk_2077_goodies cp77_pl_ key_visual_graphics.zip\n"
+      "FS fallout_4 setup_fallout_4_(portuguese_brazilian_64bit)_(66700)-4.bin 1174016000\n"
+      "ND fallout_4 setup_fallout_4_(german_64bit)_(66700).exe\n"
+      "ND new_game setup_new_game_1.0_(1).exe\n"
+      "ND new_game new_game_manual.zip\n";
+  const char *base_names[] = { "broken_sword_4", "cyberpunk_2077", "fallout_4", "new_game", NULL };
+  GPtrArray *items = gog_sync_parse_status (output, root, base_names);
+  g_assert_cmpuint (items->len, ==, 3);
+
+  GogSyncItem *a = g_ptr_array_index (items, 0);
+  g_assert_cmpstr (a->gamename, ==, "cyberpunk_2077"); /* the DLC's game */
+  g_assert_cmpint (a->kind, ==, GOG_SYNC_UPDATE);
+  g_assert_cmpuint (a->n_files, ==, 1);
+  GogSyncItem *b = g_ptr_array_index (items, 1);
+  g_assert_cmpstr (b->gamename, ==, "fallout_4");
+  g_assert_cmpint (b->kind, ==, GOG_SYNC_UPDATE);
+  g_assert_cmpuint (b->n_files, ==, 2);
+  GogSyncItem *c = g_ptr_array_index (items, 2);
+  g_assert_cmpstr (c->gamename, ==, "new_game");
+  g_assert_cmpint (c->kind, ==, GOG_SYNC_NEW_GAME);
+  g_assert_cmpuint (c->n_files, ==, 2);
+  g_ptr_array_unref (items);
+
+  gchar *pretty = gog_sync_pretty_name ("broken_sword_4");
+  g_assert_cmpstr (pretty, ==, "Broken Sword 4");
+  g_free (pretty);
+
+  g_rmdir (have);
+  g_rmdir (cyberpunk);
+  g_rmdir (root);
+  g_free (cyberpunk);
+  g_free (have);
+  g_free (root);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -203,5 +255,6 @@ main (int argc, char *argv[])
   g_test_add_func ("/library/language_from_installer_name", test_language_from_installer_name);
   g_test_add_func ("/library/scan_detects_installer_languages", test_scan_detects_installer_languages);
   g_test_add_func ("/library/all_languages_listed_once", test_all_languages_listed_once);
+  g_test_add_func ("/gog_sync/parse_status", test_gog_sync_parse_status);
   return g_test_run ();
 }

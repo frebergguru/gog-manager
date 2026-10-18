@@ -638,6 +638,30 @@ scan_thread_func (GTask *task, gpointer source_object, gpointer task_data,
       if (game)
         g_ptr_array_add (data->games, game);
 
+      /* lgogdownloader keeps DLC inside its game: "<game>/dlc/<dlc>/". */
+      gchar *dlc_root = g_build_filename (path, "dlc", NULL);
+      GDir *dd = g_dir_open (dlc_root, 0, NULL);
+      if (dd)
+        {
+          const char *dlc_name;
+          while ((dlc_name = g_dir_read_name (dd)))
+            {
+              gchar *dlc_path = g_build_filename (dlc_root, dlc_name, NULL);
+              GogGame *dlc = g_file_test (dlc_path, G_FILE_TEST_IS_DIR) ? parse_game_dir (dlc_path)
+                                                                         : NULL;
+              if (dlc)
+                {
+                  /* Its product file doesn't name the game; the folder does. */
+                  if (game)
+                    gog_game_set_base_game (dlc, game);
+                  g_ptr_array_add (data->games, dlc);
+                }
+              g_free (dlc_path);
+            }
+          g_dir_close (dd);
+        }
+      g_free (dlc_root);
+
       double fraction = (double) (i + 1) / (double) MAX (entries->len, 1);
       gchar *msg = g_strdup_printf ("Scanning… %u / %u", i + 1, entries->len);
       report_progress (self, fraction, msg);

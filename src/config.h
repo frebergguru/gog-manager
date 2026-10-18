@@ -24,6 +24,10 @@ typedef struct
  * fails to parse -- first-run and corrupt-file are handled the same way by
  * the caller (prompt for a library path). */
 GogConfig *gog_config_load (void);
+
+/* A file next to the app's own config and state (the AppImage's folder, or
+ * the executable's). Transfer full. */
+gchar *gog_config_app_file (const char *name);
 gboolean   gog_config_save (GogConfig *config, GError **error);
 void       gog_config_free (GogConfig *config);
 

@@ -57,6 +57,15 @@ state_file (void)
   return path;
 }
 
+gchar *
+gog_config_app_file (const char *name)
+{
+  gchar *dir = app_dir ();
+  gchar *path = g_build_filename (dir, name, NULL);
+  g_free (dir);
+  return path;
+}
+
 GogConfig *
 gog_config_load (void)
 {
