@@ -4,9 +4,11 @@
 
 #include <glib.h>
 #include <glib/gstdio.h>
+#include <unistd.h>
 #include "../src/library.h"
 #include "../src/gog_sync.h"
 #include "../src/original_language.h"
+#include "../src/installer_engine.h"
 
 static void
 on_scan_done (GObject *source, GAsyncResult *res, gpointer user_data)
@@ -411,6 +413,73 @@ test_version_blind_names (void)
     }
 }
 
+static GogGame *
+installed_game (const char *installers, const char *install_path)
+{
+  GogGame *game = gog_game_new ();
+  gog_game_set_folder_path (game, installers);
+  gog_game_set_install_path (game, install_path);
+  gog_game_set_installed (game, TRUE);
+  return game;
+}
+
+/* Uninstall deletes the game folder, and never a folder that holds other
+ * things: home, the installers' folder, a mount point. A symlinked game
+ * folder is removed through its target. */
+static void
+test_uninstall_protects_folders (void)
+{
+  gchar *tmp = g_dir_make_tmp ("gog-uninstall-XXXXXX", NULL);
+  gchar *installers = g_build_filename (tmp, "installers", NULL);
+  gchar *game_dir = g_build_filename (tmp, "games", "foo", NULL);
+  gchar *game_file = g_build_filename (game_dir, "foo.exe", NULL);
+  gchar *setup = g_build_filename (installers, "setup_foo.exe", NULL);
+  g_assert_cmpint (g_mkdir_with_parents (installers, 0755), ==, 0);
+  g_assert_cmpint (g_mkdir_with_parents (game_dir, 0755), ==, 0);
+  g_assert_true (g_file_set_contents (game_file, "x", -1, NULL));
+  g_assert_true (g_file_set_contents (setup, "x", -1, NULL));
+
+  GError *error = NULL;
+  /* Refused: home, the installers' folder, a folder holding it. */
+  const char *refused[] = { g_get_home_dir (), installers, tmp, "/" };
+  for (guint i = 0; i < G_N_ELEMENTS (refused); i++)
+    {
+      GogGame *game = installed_game (installers, refused[i]);
+      g_assert_false (gog_uninstall_game (game, &error));
+      g_assert_error (error, G_FILE_ERROR, G_FILE_ERROR_PERM);
+      g_clear_error (&error);
+      g_assert_true (gog_game_get_installed (game));
+      g_object_unref (game);
+    }
+  g_assert_true (g_file_test (setup, G_FILE_TEST_EXISTS));
+
+  /* A symlink to the game folder: the folder and the link go. */
+  gchar *link = g_build_filename (tmp, "foo-link", NULL);
+  g_assert_cmpint (symlink (game_dir, link), ==, 0);
+  GogGame *game = installed_game (installers, link);
+  g_assert_true (gog_uninstall_game (game, &error));
+  g_assert_no_error (error);
+  g_assert_false (gog_game_get_installed (game));
+  g_assert_false (g_file_test (game_dir, G_FILE_TEST_EXISTS));
+  g_assert_false (g_file_test (link, G_FILE_TEST_EXISTS) ||
+                  g_file_test (link, G_FILE_TEST_IS_SYMLINK));
+  g_assert_true (g_file_test (setup, G_FILE_TEST_EXISTS));
+  g_object_unref (game);
+
+  g_remove (setup);
+  g_rmdir (installers);
+  gchar *games = g_build_filename (tmp, "games", NULL);
+  g_rmdir (games);
+  g_rmdir (tmp);
+  g_free (games);
+  g_free (link);
+  g_free (setup);
+  g_free (game_file);
+  g_free (game_dir);
+  g_free (installers);
+  g_free (tmp);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -422,5 +491,6 @@ main (int argc, char *argv[])
   g_test_add_func ("/gog_sync/parse_status", test_gog_sync_parse_status);
   g_test_add_func ("/gog_sync/default_download_languages", test_default_download_languages);
   g_test_add_func ("/gog_sync/version_blind_names", test_version_blind_names);
+  g_test_add_func ("/install/uninstall_protects_folders", test_uninstall_protects_folders);
   return g_test_run ();
 }

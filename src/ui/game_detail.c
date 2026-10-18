@@ -90,10 +90,16 @@ on_install_done (GogGame *game, gboolean success, gpointer user_data)
 {
   GogGameDetail *self = user_data;
   (void) game;
-  if (success)
-    toast (self, "Installed successfully");
-  refresh (self);
-  emit_changed (self);
+  /* The install window can close because the main window is going away;
+   * then this page is being torn down too. */
+  if (!gtk_widget_in_destruction (GTK_WIDGET (self)))
+    {
+      if (success)
+        toast (self, "Installed successfully");
+      refresh (self);
+      emit_changed (self);
+    }
+  g_object_unref (self); /* taken in on_install_clicked */
 }
 
 static void
@@ -105,7 +111,7 @@ on_install_clicked (GtkButton *button, gpointer user_data)
   if (!target)
     target = self->game;
   gog_show_install_dialog (self->parent_window, target, installer, self->config, self->library,
-                            self->state, on_install_done, self);
+                            self->state, on_install_done, g_object_ref (self));
 }
 
 static void
@@ -521,6 +527,11 @@ build_dlc (GogGameDetail *self)
               GtkWidget *btn = gtk_button_new_with_label ("Install");
               gtk_widget_set_valign (btn, GTK_ALIGN_CENTER);
               gtk_widget_add_css_class (btn, "suggested-action");
+              /* Every DLC row has an "Install" button; say which DLC. */
+              gchar *btn_label = g_strdup_printf ("Install %s", gog_game_get_title (g));
+              gtk_accessible_update_property (GTK_ACCESSIBLE (btn), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                              btn_label, -1);
+              g_free (btn_label);
               g_object_set_data (G_OBJECT (btn), "installer", info);
               /* DLC installs target this game's own record (g), not self->game. */
               g_object_set_data_full (G_OBJECT (btn), "dlc-game", g_object_ref (g), g_object_unref);

@@ -6,6 +6,7 @@
 #include <glib/gstdio.h>
 #include <string.h>
 #include <errno.h>
+#include <stdlib.h>
 #include <signal.h>
 #include <unistd.h>
 #include <stdio.h>
@@ -417,7 +418,8 @@ move_path (const char *src, const char *dst, GError **error)
         {
           if (g_rmdir (src) != 0)
             {
-              g_warning ("Failed to remove directory %s: %s", src, g_strerror (errno));
+              g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (errno),
+                           "Could not remove %s after moving it: %s", src, g_strerror (errno));
               ok = FALSE;
             }
         }
@@ -541,6 +543,14 @@ extract_linux_sync (GogInstallJob *job, GError **error)
   else
     ok = move_path (source, job->install_dir, error);
   g_free (source);
+  /* When the whole temp dir was moved in, it brought its 0700 mode. */
+  if (ok)
+    g_chmod (job->install_dir, 0755);
+  if (ok && job->cancelled)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_CANCELLED, "Cancelled");
+      ok = FALSE;
+    }
 
   gchar *postinst = g_build_filename (job->install_dir, "support", "postinst.sh", NULL);
   if (ok && g_file_test (postinst, G_FILE_TEST_IS_REGULAR))
@@ -559,6 +569,12 @@ extract_linux_sync (GogInstallJob *job, GError **error)
               job_log (job, post_err->message);
               g_clear_error (&post_err);
             }
+        }
+      /* Cancel stopped the script: the install isn't finished. */
+      if (job->cancelled)
+        {
+          g_set_error (error, G_IO_ERROR, G_IO_ERROR_CANCELLED, "Cancelled");
+          ok = FALSE;
         }
     }
   g_free (postinst);
@@ -586,6 +602,7 @@ typedef struct
   goffset log_pos;
   GString *partial;         /* log text after the last newline */
   guint64 expected;         /* installer + its .bin parts, 0 if unknown */
+  guint64 baseline;         /* already in the install dir (DLC, reinstall) */
   volatile gint stop;
   GThread *thread;
 } InstallWatch;
@@ -720,7 +737,8 @@ install_watch_thread (gpointer data)
         break;
 
       gboolean log_moved = watch_read_log (w);
-      guint64 written = dir_size_without_prefix (w->job->install_dir, TRUE);
+      guint64 size = dir_size_without_prefix (w->job->install_dir, TRUE);
+      guint64 written = size > w->baseline ? size - w->baseline : 0;
       gint64 now = g_get_monotonic_time ();
       if (log_moved || written != last_written)
         {
@@ -774,12 +792,14 @@ install_watch_start (GogInstallJob *job)
   gchar *wine_root = runner_wine_root_dir (job->runner->kind, job->install_dir);
   w->log_path = g_build_filename (wine_root, "drive_c", "install.log", NULL);
   g_free (wine_root);
-  /* Leftovers from an earlier attempt in this prefix are not news. */
-  GStatBuf st;
-  if (g_stat (w->log_path, &st) == 0)
-    w->log_pos = st.st_size;
+  /* A log left by an earlier run would be overwritten from the start, and
+   * whatever the new run wrote before the first look would be missed:
+   * start without one. */
+  g_remove (w->log_path);
   w->partial = g_string_new (NULL);
   w->expected = installer_set_size (job->installer->file_path);
+  /* A DLC goes into its game's folder: count only what this install adds. */
+  w->baseline = dir_size_without_prefix (job->install_dir, TRUE);
   w->thread = g_thread_new ("gog-install-watch", install_watch_thread, w);
   return w;
 }
@@ -884,6 +904,9 @@ install_windows_sync (GogInstallJob *job, GError **error)
 
   job_log (job, "Silent install failed, retrying with the installer's own window…");
   g_clear_error (&silent_err);
+  /* The retry writes its own log from the start. */
+  install_watch_stop (watch);
+  watch = install_watch_start (job);
 
   GogCommand *interactive = runner_build_install_command (job->runner, job->installer->file_path,
                                                             job->install_dir,
@@ -951,6 +974,47 @@ gog_install_job_resume (GogInstallJob *self)
   g_mutex_unlock (&self->proc_mutex);
 }
 
+/* TRUE for folders an uninstall must never delete, whatever the install
+ * record says: /, the home folder and anything holding it, the standard
+ * user folders (Downloads, Documents...), a mount point, and the folder
+ * with the game's own installers (or one holding it). real is resolved. */
+static gboolean
+is_protected_dir (const char *real, GogGame *game)
+{
+  gchar *real_slash = g_strconcat (real, G_DIR_SEPARATOR_S, NULL);
+  gboolean protected = g_strcmp0 (real, "/") == 0;
+
+  GPtrArray *keep = g_ptr_array_new_with_free_func (g_free);
+  g_ptr_array_add (keep, g_canonicalize_filename (g_get_home_dir (), NULL));
+  for (int d = 0; d < G_USER_N_DIRECTORIES; d++)
+    {
+      const char *dir = g_get_user_special_dir (d);
+      if (dir)
+        g_ptr_array_add (keep, g_canonicalize_filename (dir, NULL));
+    }
+  const char *installers = gog_game_get_folder_path (game);
+  if (installers && *installers)
+    g_ptr_array_add (keep, g_canonicalize_filename (installers, NULL));
+  for (guint i = 0; i < keep->len && !protected; i++)
+    {
+      const char *k = g_ptr_array_index (keep, i);
+      /* The folder itself, or one it lies inside. */
+      protected = g_strcmp0 (real, k) == 0 || g_str_has_prefix (k, real_slash);
+    }
+  g_ptr_array_unref (keep);
+
+  /* A mount point: the top of a drive is no game's folder. */
+  if (!protected)
+    {
+      gchar *parent = g_path_get_dirname (real);
+      GStatBuf a, b;
+      protected = g_stat (real, &a) == 0 && g_stat (parent, &b) == 0 && a.st_dev != b.st_dev;
+      g_free (parent);
+    }
+  g_free (real_slash);
+  return protected;
+}
+
 gboolean
 gog_uninstall_game (GogGame *game, GError **error)
 {
@@ -967,33 +1031,33 @@ gog_uninstall_game (GogGame *game, GError **error)
   GogGame *base = gog_game_get_base_game (game);
   gboolean shares_base_dir = base && g_strcmp0 (gog_game_get_install_path (base), path) == 0;
 
-  /* The path comes from the state file; never let a corrupt or hand-edited
-   * record turn uninstall into "delete my home directory". */
-  gchar *canonical = g_canonicalize_filename (path, NULL);
-  gchar *home = g_canonicalize_filename (g_get_home_dir (), NULL);
-  gchar *canonical_slash = g_strconcat (canonical, G_DIR_SEPARATOR_S, NULL);
-  /* Nor a folder the home directory is inside, such as /home. */
-  gboolean dangerous = !g_path_is_absolute (path) || g_strcmp0 (canonical, "/") == 0 ||
-                       g_strcmp0 (canonical, home) == 0 || g_str_has_prefix (home, canonical_slash);
-  g_free (canonical_slash);
-  g_free (home);
-  g_free (canonical);
-  if (!shares_base_dir && dangerous)
+  /* The path comes from the state file, or a folder the user picked; judge
+   * it by where it really is (a symlinked game folder is its target). */
+  char *resolved = realpath (path, NULL);
+  gchar *real = resolved ? g_strdup (resolved) : g_canonicalize_filename (path, NULL);
+  free (resolved);
+  if (!shares_base_dir && (!g_path_is_absolute (path) || is_protected_dir (real, game)))
     {
       g_set_error (error, G_FILE_ERROR, G_FILE_ERROR_PERM,
                    "Refusing to delete %s: not a game install directory", path);
+      g_free (real);
       return FALSE;
     }
 
-  if (!shares_base_dir && g_file_test (path, G_FILE_TEST_IS_DIR))
+  if (!shares_base_dir && g_file_test (real, G_FILE_TEST_IS_DIR))
     {
-      if (!remove_dir_recursive (path))
+      if (!remove_dir_recursive (real))
         {
           g_set_error (error, G_FILE_ERROR, G_FILE_ERROR_FAILED,
-                       "Could not fully remove %s", path);
+                       "Could not fully remove %s", real);
+          g_free (real);
           return FALSE;
         }
+      /* The link itself, when the game folder was one. */
+      if (g_file_test (path, G_FILE_TEST_IS_SYMLINK))
+        g_remove (path);
     }
+  g_free (real);
 
   gog_game_set_installed (game, FALSE);
   gog_game_set_install_path (game, NULL);

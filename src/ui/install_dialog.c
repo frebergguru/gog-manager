@@ -35,7 +35,9 @@ typedef struct
   GtkButton *cancel_button;
 
   GogInstallJob *job;
+  gboolean finished;          /* the job has reported back */
   gboolean succeeded;
+  GCancellable *choosing;     /* the folder picker, if open */
 } InstallCtx;
 
 static void
@@ -45,8 +47,20 @@ ctx_free (InstallCtx *ctx)
     g_ptr_array_unref (ctx->runners);
   gog_runner_info_free (ctx->chosen_runner);
   g_free (ctx->install_dir);
+  if (ctx->choosing)
+    {
+      g_cancellable_cancel (ctx->choosing);
+      g_clear_object (&ctx->choosing);
+    }
+  if (ctx->window)
+    g_object_set_data (G_OBJECT (ctx->window), "install-ctx", NULL);
   if (ctx->job)
     {
+      /* The window can go without Cancel (e.g. the main window closed
+       * under it): stop the install rather than leave Wine running, or a
+       * paused install waiting forever. */
+      if (!ctx->finished)
+        gog_install_job_cancel (ctx->job);
       /* The job's queued idles may still fire after the dialog is gone. */
       g_signal_handlers_disconnect_by_data (ctx->job, ctx);
       g_clear_object (&ctx->job);
@@ -139,7 +153,8 @@ static void
 on_fonts_response (const char *response, gpointer user_data)
 {
   InstallCtx *ctx = user_data;
-  if (!ctx->job)
+  /* The install can finish while the question is still open. */
+  if (!ctx->job || ctx->finished)
     return;
   if (g_strcmp0 (response, "cancel") == 0)
     gog_install_job_cancel (ctx->job);
@@ -198,6 +213,19 @@ sync_rescanned_copy (InstallCtx *ctx)
     }
 }
 
+/* Tells screen readers how the install ended; the bar alone doesn't. */
+static void
+announce (InstallCtx *ctx, const char *message)
+{
+#if GTK_CHECK_VERSION(4, 14, 0)
+  gtk_accessible_announce (GTK_ACCESSIBLE (ctx->window), message,
+                           GTK_ACCESSIBLE_ANNOUNCEMENT_PRIORITY_MEDIUM);
+#else
+  (void) ctx;
+  (void) message;
+#endif
+}
+
 static void
 on_job_finished (GogInstallJob *job, gboolean success, const gchar *error_message, gpointer user_data)
 {
@@ -205,6 +233,7 @@ on_job_finished (GogInstallJob *job, gboolean success, const gchar *error_messag
   (void) job;
 
   ctx->succeeded = success;
+  ctx->finished = TRUE;
 
   if (success)
     {
@@ -238,11 +267,16 @@ on_job_finished (GogInstallJob *job, gboolean success, const gchar *error_messag
       gtk_progress_bar_set_fraction (ctx->progress_bar, 1.0);
       gtk_progress_bar_set_text (ctx->progress_bar, "Installed");
       append_log_line (ctx, "Install finished successfully.");
+      announce (ctx, "Install finished successfully.");
     }
   else
     {
       gtk_progress_bar_set_text (ctx->progress_bar, "Failed");
       append_log_line (ctx, error_message ? error_message : "Install failed.");
+      gchar *said = g_strdup_printf ("Install failed: %s",
+                                     error_message ? error_message : "unknown error");
+      announce (ctx, said);
+      g_free (said);
     }
 
   gtk_button_set_label (ctx->action_button, "Close");
@@ -312,13 +346,16 @@ populate_runner_dropdown (InstallCtx *ctx)
     gtk_widget_set_sensitive (GTK_WIDGET (ctx->action_button), ctx->runners->len > 0);
 }
 
+/* user_data is the install window, reffed: the download window can close
+ * after it (both go when the main window does), so look ctx up again. */
 static void
 on_proton_fetch_done (gboolean success, const char *result, gpointer user_data)
 {
-  InstallCtx *ctx = user_data;
   (void) result;
-  if (success)
+  InstallCtx *ctx = g_object_get_data (G_OBJECT (user_data), "install-ctx");
+  if (ctx && success)
     populate_runner_dropdown (ctx);
+  g_object_unref (user_data);
 }
 
 static void
@@ -327,22 +364,52 @@ on_get_proton_clicked (GtkButton *button, gpointer user_data)
   (void) button;
   InstallCtx *ctx = user_data;
   gog_show_proton_fetch_dialog (ctx->window, ctx->config, ctx->library, on_proton_fetch_done,
-                                ctx);
+                                g_object_ref (ctx->window));
+}
+
+/* TRUE if path is a folder with anything in it. */
+static gboolean
+dir_has_entries (const char *path)
+{
+  GDir *d = g_dir_open (path, 0, NULL);
+  if (!d)
+    return FALSE;
+  gboolean any = g_dir_read_name (d) != NULL;
+  g_dir_close (d);
+  return any;
 }
 
 static void
 on_choose_dir_response (GObject *source, GAsyncResult *res, gpointer user_data)
 {
-  InstallCtx *ctx = user_data;
-  GtkFileDialog *dialog = GTK_FILE_DIALOG (source);
-  GFile *folder = gtk_file_dialog_select_folder_finish (dialog, res, NULL);
-  if (folder)
+  GError *error = NULL;
+  GFile *folder = gtk_file_dialog_select_folder_finish (GTK_FILE_DIALOG (source), res, &error);
+  /* Cancelled because the install window closed: ctx is gone. */
+  if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
     {
-      g_free (ctx->install_dir);
-      ctx->install_dir = g_file_get_path (folder);
-      gtk_label_set_label (ctx->install_dir_label, ctx->install_dir);
-      g_object_unref (folder);
+      g_error_free (error);
+      return;
     }
+  g_clear_error (&error);
+  InstallCtx *ctx = user_data;
+  g_clear_object (&ctx->choosing);
+  if (!folder)
+    return;
+  gchar *path = g_file_get_path (folder);
+  g_object_unref (folder);
+  if (!path)
+    return;
+  /* A folder that already holds other things gets the game in a folder of
+   * its own, so uninstalling it later can't take those things along. */
+  if (dir_has_entries (path) && g_strcmp0 (path, ctx->install_dir) != 0)
+    {
+      gchar *sub = g_build_filename (path, gog_game_get_slug (ctx->game), NULL);
+      g_free (path);
+      path = sub;
+    }
+  g_free (ctx->install_dir);
+  ctx->install_dir = path;
+  gtk_label_set_label (ctx->install_dir_label, ctx->install_dir);
 }
 
 static void
@@ -352,7 +419,11 @@ on_choose_dir_clicked (GtkButton *button, gpointer user_data)
   InstallCtx *ctx = user_data;
   GtkFileDialog *dialog = gtk_file_dialog_new ();
   gtk_file_dialog_set_title (dialog, "Choose Install Directory");
-  gtk_file_dialog_select_folder (dialog, ctx->window, NULL, on_choose_dir_response, ctx);
+  if (ctx->choosing)
+    g_cancellable_cancel (ctx->choosing);
+  g_clear_object (&ctx->choosing);
+  ctx->choosing = g_cancellable_new ();
+  gtk_file_dialog_select_folder (dialog, ctx->window, ctx->choosing, on_choose_dir_response, ctx);
   g_object_unref (dialog);
 }
 
@@ -452,6 +523,7 @@ gog_show_install_dialog (GtkWindow *parent, GogGame *game, GogInstallerInfo *ins
                                      gog_game_get_runner_kind (base) == GOG_RUNNER_PROTON);
 
   ctx->window = gog_dialog_window_new (parent, "Install", 560, -1, 360, 240);
+  g_object_set_data (G_OBJECT (ctx->window), "install-ctx", ctx);
 
   GtkWidget *toolbar_view = adw_toolbar_view_new ();
   GtkWidget *header = adw_header_bar_new ();
@@ -531,6 +603,8 @@ gog_show_install_dialog (GtkWindow *parent, GogGame *game, GogInstallerInfo *ins
   gtk_widget_set_visible (ctx->progress_box, FALSE);
 
   ctx->progress_bar = GTK_PROGRESS_BAR (gtk_progress_bar_new ());
+  gtk_accessible_update_property (GTK_ACCESSIBLE (ctx->progress_bar),
+                                  GTK_ACCESSIBLE_PROPERTY_LABEL, "Install progress", -1);
   gtk_progress_bar_set_show_text (ctx->progress_bar, TRUE);
   gtk_box_append (GTK_BOX (ctx->progress_box), GTK_WIDGET (ctx->progress_bar));
 
@@ -541,6 +615,8 @@ gog_show_install_dialog (GtkWindow *parent, GogGame *game, GogInstallerInfo *ins
   gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (log_scroll), GTK_POLICY_NEVER,
                                    GTK_POLICY_AUTOMATIC);
   ctx->log_view = GTK_TEXT_VIEW (gtk_text_view_new ());
+  gtk_accessible_update_property (GTK_ACCESSIBLE (ctx->log_view), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                  "Install log", -1);
   gtk_text_view_set_editable (ctx->log_view, FALSE);
   gtk_text_view_set_monospace (ctx->log_view, TRUE);
   /* Long lines (installer paths, the FreeType fix commands) wrap rather
