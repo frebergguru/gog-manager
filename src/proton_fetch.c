@@ -9,6 +9,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <sys/stat.h>
 
 /* The release list rather than /releases/latest: "latest" is whatever the
  * maintainer last flagged, so we pick the newest published release ourselves. */
@@ -53,6 +54,160 @@ proton_fetch_get_tools_dir (void)
   gchar *dir = g_build_filename (g_get_user_data_dir (), "gog-manager", "proton", NULL);
   g_mkdir_with_parents (dir, 0755);
   return dir;
+}
+
+static gboolean
+is_safe_dir_name (const char *name)
+{
+  return name && *name && !strchr (name, '/') && g_strcmp0 (name, ".") != 0 &&
+         g_strcmp0 (name, "..") != 0;
+}
+
+gint
+proton_fetch_compare_newest_first (gconstpointer a, gconstpointer b)
+{
+  gchar *key_a = g_utf8_collate_key_for_filename (a, -1);
+  gchar *key_b = g_utf8_collate_key_for_filename (b, -1);
+  gint result = strcmp (key_b, key_a);
+  g_free (key_a);
+  g_free (key_b);
+  return result;
+}
+
+static gint
+compare_newest_first_indirect (gconstpointer a, gconstpointer b)
+{
+  return proton_fetch_compare_newest_first (*(const gchar *const *) a, *(const gchar *const *) b);
+}
+
+GPtrArray *
+proton_fetch_list_installed (void)
+{
+  GPtrArray *out = g_ptr_array_new_with_free_func (g_free);
+  gchar *tools_dir = proton_fetch_get_tools_dir ();
+  GDir *d = g_dir_open (tools_dir, 0, NULL);
+  if (d)
+    {
+      const char *name;
+      while ((name = g_dir_read_name (d)))
+        {
+          gchar *proton_bin = g_build_filename (tools_dir, name, "proton", NULL);
+          if (g_file_test (proton_bin, G_FILE_TEST_IS_REGULAR))
+            g_ptr_array_add (out, g_strdup (name));
+          g_free (proton_bin);
+        }
+      g_dir_close (d);
+    }
+  g_free (tools_dir);
+  g_ptr_array_sort (out, compare_newest_first_indirect);
+  return out;
+}
+
+/* rm -rf without following symlinks (Proton builds contain some). */
+static gboolean
+remove_tree (const char *path, GError **error)
+{
+  GStatBuf st;
+  if (g_lstat (path, &st) != 0)
+    {
+      int saved_errno = errno;
+      if (saved_errno == ENOENT)
+        return TRUE;
+      g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (saved_errno),
+                   "Could not read %s: %s", path, g_strerror (saved_errno));
+      return FALSE;
+    }
+
+  if (S_ISDIR (st.st_mode))
+    {
+      GDir *d = g_dir_open (path, 0, error);
+      if (!d)
+        return FALSE;
+      gboolean ok = TRUE;
+      const char *name;
+      while (ok && (name = g_dir_read_name (d)))
+        {
+          gchar *child = g_build_filename (path, name, NULL);
+          ok = remove_tree (child, error);
+          g_free (child);
+        }
+      g_dir_close (d);
+      if (!ok)
+        return FALSE;
+      if (g_rmdir (path) != 0)
+        {
+          int saved_errno = errno;
+          g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (saved_errno),
+                       "Could not remove %s: %s", path, g_strerror (saved_errno));
+          return FALSE;
+        }
+      return TRUE;
+    }
+
+  if (g_unlink (path) != 0)
+    {
+      int saved_errno = errno;
+      g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (saved_errno),
+                   "Could not remove %s: %s", path, g_strerror (saved_errno));
+      return FALSE;
+    }
+  return TRUE;
+}
+
+static void
+remove_thread_func (GTask *task, gpointer source_object, gpointer task_data,
+                    GCancellable *cancellable)
+{
+  (void) source_object;
+  gchar **names = task_data;
+  gchar *tools_dir = proton_fetch_get_tools_dir ();
+  GError *error = NULL;
+
+  for (gchar **name = names; *name; name++)
+    {
+      if (g_cancellable_set_error_if_cancelled (cancellable, &error))
+        break;
+      /* Only ever delete something that looks like one of our builds. */
+      gchar *dir = g_build_filename (tools_dir, *name, NULL);
+      gchar *proton_bin = g_build_filename (dir, "proton", NULL);
+      gboolean is_build = is_safe_dir_name (*name) &&
+                          g_file_test (proton_bin, G_FILE_TEST_IS_REGULAR);
+      g_free (proton_bin);
+      if (!is_build)
+        {
+          g_set_error (&error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+                       "%s is not an installed GE-Proton build", *name);
+          g_free (dir);
+          break;
+        }
+      gboolean ok = remove_tree (dir, &error);
+      g_free (dir);
+      if (!ok)
+        break;
+    }
+
+  g_free (tools_dir);
+  if (error)
+    g_task_return_error (task, error);
+  else
+    g_task_return_boolean (task, TRUE);
+}
+
+void
+proton_fetch_remove_async (const char *const *names, GCancellable *cancellable,
+                           GAsyncReadyCallback callback, gpointer user_data)
+{
+  GTask *task = g_task_new (NULL, cancellable, callback, user_data);
+  g_task_set_source_tag (task, proton_fetch_remove_async);
+  g_task_set_task_data (task, g_strdupv ((gchar **) names), (GDestroyNotify) g_strfreev);
+  g_task_run_in_thread (task, remove_thread_func);
+  g_object_unref (task);
+}
+
+gboolean
+proton_fetch_remove_finish (GAsyncResult *result, GError **error)
+{
+  return g_task_propagate_boolean (G_TASK (result), error);
 }
 
 static void
@@ -271,13 +426,6 @@ poll_thread_func (gpointer data)
 }
 
 /* ---- worker thread ---- */
-
-static gboolean
-is_safe_dir_name (const char *name)
-{
-  return name && *name && !strchr (name, '/') && g_strcmp0 (name, ".") != 0 &&
-         g_strcmp0 (name, "..") != 0;
-}
 
 /* Returns the asset in @release that we can run on this machine, or NULL. */
 static json_object *

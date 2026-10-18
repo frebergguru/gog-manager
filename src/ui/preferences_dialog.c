@@ -4,6 +4,8 @@
 
 #include "preferences_dialog.h"
 #include "proton_fetch_dialog.h"
+#include "proton_manage_dialog.h"
+#include "../proton_fetch.h"
 #include "../runner.h"
 #include <string.h>
 
@@ -12,6 +14,8 @@ typedef struct
   AdwPreferencesDialog *dialog;
   GtkWindow *parent;
   GogConfig *config;
+  GogLibrary *library;
+  GogState *state;
   GogLibraryPathChangedFunc on_library_path_changed;
   gpointer user_data;
 
@@ -20,6 +24,8 @@ typedef struct
   AdwActionRow *runner_row;
   AdwActionRow *no_runners_row;
   AdwActionRow *custom_runners_row;
+  AdwActionRow *manage_proton_row;
+  GtkWidget *manage_proton_button;
   GtkDropDown *default_runner_dropdown;
   GPtrArray *runners;
 
@@ -220,12 +226,50 @@ on_add_proton_clicked (GtkButton *button, gpointer user_data)
 }
 
 static void
+refresh_manage_proton_row (PrefsCtx *ctx)
+{
+  GPtrArray *names = proton_fetch_list_installed ();
+  gchar *subtitle = names->len == 0 ? g_strdup ("None downloaded yet")
+                    : names->len == 1
+                        ? g_strdup_printf ("1 version: %s", (const char *) names->pdata[0])
+                        : g_strdup_printf ("%u versions, newest %s", names->len,
+                                           (const char *) names->pdata[0]);
+  adw_action_row_set_subtitle (ctx->manage_proton_row, subtitle);
+  gtk_widget_set_sensitive (ctx->manage_proton_button, names->len > 0);
+  g_free (subtitle);
+  g_ptr_array_unref (names);
+}
+
+static void
 on_proton_fetch_done (gboolean success, const char *result, gpointer user_data)
 {
   PrefsCtx *ctx = user_data;
   if (success)
-    refresh_runner_dropdown (ctx);
+    {
+      refresh_runner_dropdown (ctx);
+      refresh_manage_proton_row (ctx);
+    }
   (void) result;
+}
+
+static void
+on_proton_manage_done (gboolean changed, gpointer user_data)
+{
+  PrefsCtx *ctx = user_data;
+  if (changed)
+    {
+      refresh_runner_dropdown (ctx);
+      refresh_manage_proton_row (ctx);
+    }
+}
+
+static void
+on_manage_proton_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  PrefsCtx *ctx = user_data;
+  gog_show_proton_manage_dialog (ctx->parent, ctx->config, ctx->library, ctx->state,
+                                 on_proton_manage_done, ctx);
 }
 
 static void
@@ -249,12 +293,15 @@ on_dialog_closed (AdwDialog *dialog, gpointer user_data)
 }
 
 void
-gog_show_preferences_dialog (GtkWindow *parent, GogConfig *config,
-                              GogLibraryPathChangedFunc on_library_path_changed, gpointer user_data)
+gog_show_preferences_dialog (GtkWindow *parent, GogConfig *config, GogLibrary *library,
+                              GogState *state, GogLibraryPathChangedFunc on_library_path_changed,
+                              gpointer user_data)
 {
   PrefsCtx *ctx = g_new0 (PrefsCtx, 1);
   ctx->parent = parent;
   ctx->config = config;
+  ctx->library = library;
+  ctx->state = state;
   ctx->on_library_path_changed = on_library_path_changed;
   ctx->user_data = user_data;
 
@@ -342,6 +389,18 @@ gog_show_preferences_dialog (GtkWindow *parent, GogConfig *config,
   g_signal_connect (download_btn, "clicked", G_CALLBACK (on_download_proton_clicked), ctx);
   adw_action_row_add_suffix (download_row, download_btn);
   adw_preferences_group_add (install_group, GTK_WIDGET (download_row));
+
+  ctx->manage_proton_row = ADW_ACTION_ROW (adw_action_row_new ());
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (ctx->manage_proton_row),
+                                 "Downloaded GE-Proton");
+  ctx->manage_proton_button = gtk_button_new_with_label ("Manage…");
+  gtk_widget_set_valign (ctx->manage_proton_button, GTK_ALIGN_CENTER);
+  gtk_widget_set_tooltip_text (ctx->manage_proton_button, "Remove old GE-Proton versions");
+  g_signal_connect (ctx->manage_proton_button, "clicked", G_CALLBACK (on_manage_proton_clicked),
+                    ctx);
+  adw_action_row_add_suffix (ctx->manage_proton_row, ctx->manage_proton_button);
+  adw_preferences_group_add (install_group, GTK_WIDGET (ctx->manage_proton_row));
+  refresh_manage_proton_row (ctx);
 
   refresh_runner_dropdown (ctx);
 

@@ -521,8 +521,8 @@ on_preferences_clicked (GtkButton *button, gpointer user_data)
 {
   (void) button;
   GogMainWindow *self = user_data;
-  gog_show_preferences_dialog (GTK_WINDOW (self), self->config, on_library_path_changed_from_prefs,
-                                self);
+  gog_show_preferences_dialog (GTK_WINDOW (self), self->config, self->library, self->state,
+                                on_library_path_changed_from_prefs, self);
 }
 
 static void

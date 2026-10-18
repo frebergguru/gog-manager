@@ -42,6 +42,7 @@ ui_sources = [
   'src/ui/game_detail.c',
   'src/ui/install_dialog.c',
   'src/ui/proton_fetch_dialog.c',
+  'src/ui/proton_manage_dialog.c',
   'src/ui/preferences_dialog.c',
 ]
 

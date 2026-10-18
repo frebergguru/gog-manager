@@ -15,6 +15,22 @@ G_BEGIN_DECLS
  * Created on first use. Transfer full. */
 gchar *proton_fetch_get_tools_dir (void);
 
+/* Orders two build directory names (plain strings) by version, newest
+ * first. Numbers compare numerically, so
+ * "GE-Proton11-10-x86_64" sorts before "GE-Proton11-9-x86_64". */
+gint proton_fetch_compare_newest_first (gconstpointer a, gconstpointer b);
+
+/* Directory names of the builds under proton_fetch_get_tools_dir(),
+ * newest first. Only builds this app downloaded; Steam/Heroic builds live
+ * elsewhere and are not ours to delete. Element type: gchar*, transfer full. */
+GPtrArray *proton_fetch_list_installed (void);
+
+/* Deletes the named builds (as returned by proton_fetch_list_installed())
+ * from the tools dir on a worker thread. Stops at the first failure. */
+void     proton_fetch_remove_async  (const char *const *names, GCancellable *cancellable,
+                                     GAsyncReadyCallback callback, gpointer user_data);
+gboolean proton_fetch_remove_finish (GAsyncResult *result, GError **error);
+
 #define GOG_TYPE_PROTON_FETCH_JOB (gog_proton_fetch_job_get_type ())
 G_DECLARE_FINAL_TYPE (GogProtonFetchJob, gog_proton_fetch_job, GOG, PROTON_FETCH_JOB, GObject)
 

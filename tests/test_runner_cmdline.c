@@ -8,6 +8,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "../src/runner.h"
+#include "../src/proton_fetch.h"
 
 static gboolean
 argv_contains (gchar **argv, const char *needle)
@@ -164,15 +165,92 @@ test_link_c_game_resolves_to_install_dir (void)
   g_free (tmp);
 }
 
+static void
+test_proton_names_sort_newest_first (void)
+{
+  /* Negative: the first name is newer and sorts first. */
+  g_assert_cmpint (proton_fetch_compare_newest_first ("GE-Proton11-10-x86_64", "GE-Proton11-9-x86_64"), <, 0);
+  g_assert_cmpint (proton_fetch_compare_newest_first ("GE-Proton11-9-x86_64", "GE-Proton10-1"), <, 0);
+  g_assert_cmpint (proton_fetch_compare_newest_first ("GE-Proton10-1", "GE-Proton9-27"), <, 0);
+  g_assert_cmpint (proton_fetch_compare_newest_first ("GE-Proton9-27", "GE-Proton11-9-x86_64"), >, 0);
+}
+
+static void
+make_fake_build (const char *tools_dir, const char *name)
+{
+  gchar *bin_dir = g_build_filename (tools_dir, name, "files", "bin", NULL);
+  g_assert_cmpint (g_mkdir_with_parents (bin_dir, 0755), ==, 0);
+  gchar *proton = g_build_filename (tools_dir, name, "proton", NULL);
+  g_assert_true (g_file_set_contents (proton, "#!/bin/sh\n", -1, NULL));
+  gchar *wine = g_build_filename (bin_dir, "wine", NULL);
+  g_assert_true (g_file_set_contents (wine, "", -1, NULL));
+  g_free (wine);
+  g_free (proton);
+  g_free (bin_dir);
+}
+
+static void
+on_remove_done (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+  (void) source;
+  GError *error = NULL;
+  g_assert_true (proton_fetch_remove_finish (res, &error));
+  g_assert_no_error (error);
+  g_main_loop_quit (user_data);
+}
+
+static void
+test_proton_list_and_remove (void)
+{
+  gchar *tools_dir = proton_fetch_get_tools_dir ();
+  make_fake_build (tools_dir, "GE-Proton10-1");
+  make_fake_build (tools_dir, "GE-Proton11-9-x86_64");
+  make_fake_build (tools_dir, "GE-Proton11-10-x86_64");
+
+  /* A symlink inside a build must be removed, not followed. */
+  gchar *outside = g_build_filename (tools_dir, "..", "keep-me", NULL);
+  g_assert_true (g_file_set_contents (outside, "x", -1, NULL));
+  gchar *link = g_build_filename (tools_dir, "GE-Proton10-1", "files", "link", NULL);
+  g_assert_cmpint (symlink (outside, link), ==, 0);
+
+  GPtrArray *names = proton_fetch_list_installed ();
+  g_assert_cmpuint (names->len, ==, 3);
+  g_assert_cmpstr (names->pdata[0], ==, "GE-Proton11-10-x86_64");
+  g_assert_cmpstr (names->pdata[2], ==, "GE-Proton10-1");
+  g_ptr_array_unref (names);
+
+  const char *remove[] = { "GE-Proton10-1", "GE-Proton11-9-x86_64", NULL };
+  GMainLoop *loop = g_main_loop_new (NULL, FALSE);
+  proton_fetch_remove_async (remove, NULL, on_remove_done, loop);
+  g_main_loop_run (loop);
+  g_main_loop_unref (loop);
+
+  names = proton_fetch_list_installed ();
+  g_assert_cmpuint (names->len, ==, 1);
+  g_assert_cmpstr (names->pdata[0], ==, "GE-Proton11-10-x86_64");
+  g_ptr_array_unref (names);
+  gchar *gone = g_build_filename (tools_dir, "GE-Proton10-1", NULL);
+  g_assert_false (g_file_test (gone, G_FILE_TEST_EXISTS));
+  g_assert_true (g_file_test (outside, G_FILE_TEST_IS_REGULAR));
+
+  g_free (gone);
+  g_free (link);
+  g_free (outside);
+  g_free (tools_dir);
+}
+
 int
 main (int argc, char *argv[])
 {
-  g_test_init (&argc, &argv, NULL);
+  /* Isolated XDG dirs: the proton tests write into the data dir. */
+  g_test_init (&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
   g_test_add_func ("/runner/wine_install_command", test_wine_install_command);
   g_test_add_func ("/runner/wine_install_non_silent", test_wine_install_non_silent_omits_switches);
   g_test_add_func ("/runner/proton_install_command_env", test_proton_install_command_env);
   g_test_add_func ("/runner/wine_launch_command", test_wine_launch_command);
   g_test_add_func ("/runner/wine_root_dir", test_wine_root_dir_proton_uses_pfx_subdir);
   g_test_add_func ("/runner/link_c_game", test_link_c_game_resolves_to_install_dir);
+  g_test_add_func ("/proton/names_sort_newest_first", test_proton_names_sort_newest_first);
+  g_test_add_func ("/proton/list_and_remove", test_proton_list_and_remove);
   return g_test_run ();
 }

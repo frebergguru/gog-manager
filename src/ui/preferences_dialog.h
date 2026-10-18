@@ -7,6 +7,7 @@
 
 #include <adwaita.h>
 #include "../config.h"
+#include "../library.h"
 
 G_BEGIN_DECLS
 
@@ -14,7 +15,10 @@ G_BEGIN_DECLS
  * caller can trigger a rescan. */
 typedef void (*GogLibraryPathChangedFunc) (const char *new_path, gpointer user_data);
 
-void gog_show_preferences_dialog (GtkWindow *parent, GogConfig *config,
+/* library and state are used to move installed games off GE-Proton
+ * versions removed from here. */
+void gog_show_preferences_dialog (GtkWindow *parent, GogConfig *config, GogLibrary *library,
+                                   GogState *state,
                                    GogLibraryPathChangedFunc on_library_path_changed,
                                    gpointer user_data);
 
