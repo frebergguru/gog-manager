@@ -18,6 +18,11 @@ gchar *text_strip_html (const char *html);
 /* Human-readable file size, e.g. "1.2 GB". */
 gchar *text_format_size (guint64 bytes);
 
+/* A language name as GOG writes it, for display: one in a non-Latin script
+ * gets its English name too, "Українська (Ukrainian)"; Latin ones ("polski")
+ * stay as they are. Transfer full. */
+gchar *text_language_label (const char *name);
+
 G_END_DECLS
 
 #endif

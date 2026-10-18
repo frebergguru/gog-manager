@@ -453,8 +453,10 @@ build_action_row (GogGameDetail *self)
         continue; /* not installable from this app */
 
       gchar *size_str = text_format_size (info->size);
-      gchar *label = g_strdup_printf ("Install (%s, %s, %s)", gog_os_to_string (info->os),
-                                       info->language_full ? info->language_full : "?", size_str);
+      gchar *lang = text_language_label (info->language_full ? info->language_full : "?");
+      gchar *label = g_strdup_printf ("Install (%s, %s, %s)", gog_os_to_string (info->os), lang,
+                                       size_str);
+      g_free (lang);
       GtkWidget *btn = gtk_button_new_with_label (label);
       gtk_widget_add_css_class (btn, "suggested-action");
       gtk_widget_add_css_class (btn, "pill");
@@ -582,6 +584,12 @@ refresh (GogGameDetail *self)
   GStrv installer_langs = gog_game_dup_installer_languages (self->game);
   if (installer_langs[0])
     {
+      for (gchar **l = installer_langs; *l; l++)
+        {
+          gchar *label = text_language_label (*l);
+          g_free (*l);
+          *l = label;
+        }
       gchar *joined = g_strjoinv (", ", installer_langs);
       g_string_append_printf (badges, "\nInstallers in %s", joined);
       g_free (joined);

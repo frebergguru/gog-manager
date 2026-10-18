@@ -91,6 +91,30 @@ test_strip_html_numeric_entities (void)
   g_free (out);
 }
 
+/* Non-Latin language names get their English name too. */
+static void
+test_language_label (void)
+{
+  static const char *const cases[][2] = {
+    { "yкраїнська", "Українська (Ukrainian)" }, /* GOG's spelling, Latin "y" */
+    { "українська", "Українська (Ukrainian)" },
+    { "русский", "Русский (Russian)" },
+    { "日本語", "日本語 (Japanese)" },
+    { "中文(繁體)", "中文(繁體) (Traditional Chinese)" },
+    { "Ελληνικά", "Ελληνικά (Greek)" },
+    { "polski", "polski" },
+    { "Português do Brasil", "Português do Brasil" },
+    { "English", "English" },
+    { "ქართული", "ქართული" }, /* not in the table: shown as it is */
+  };
+  for (gsize i = 0; i < G_N_ELEMENTS (cases); i++)
+    {
+      gchar *label = text_language_label (cases[i][0]);
+      g_assert_cmpstr (label, ==, cases[i][1]);
+      g_free (label);
+    }
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -103,5 +127,6 @@ main (int argc, char *argv[])
   g_test_add_func ("/text_util/strip_html_list", test_strip_html_list);
   g_test_add_func ("/text_util/strip_html_empty", test_strip_html_empty);
   g_test_add_func ("/text_util/strip_html_numeric_entities", test_strip_html_numeric_entities);
+  g_test_add_func ("/text_util/language_label", test_language_label);
   return g_test_run ();
 }

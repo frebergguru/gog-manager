@@ -9,6 +9,7 @@
 #include "../config.h"
 #include "gog_sync_dialog.h"
 #include "../gog_sync.h"
+#include "../text_util.h"
 #include <string.h>
 
 struct _GogMainWindow
@@ -46,6 +47,7 @@ struct _GogMainWindow
   GtkToggleButton *content_dlc_btn;
   GtkToggleButton *content_extras_btn;
   GtkDropDown *language_dropdown;
+  GStrv language_names;        /* GOG's names, for the dropdown's entries after "Any" */
   GtkDropDown *status_dropdown;
   GtkDropDown *sort_dropdown;
 
@@ -195,8 +197,11 @@ filter_func (gpointer item, gpointer user_data)
   guint lang_idx = gtk_drop_down_get_selected (self->language_dropdown);
   if (lang_idx != GTK_INVALID_LIST_POSITION && lang_idx != 0)
     {
-      GtkStringList *list = GTK_STRING_LIST (gtk_drop_down_get_model (self->language_dropdown));
-      const char *wanted = gtk_string_list_get_string (list, lang_idx);
+      /* The dropdown shows labels; games carry GOG's names. */
+      const char *wanted = self->language_names &&
+                                   lang_idx - 1 < g_strv_length (self->language_names)
+                               ? self->language_names[lang_idx - 1]
+                               : NULL;
       gboolean found = FALSE;
       for (const char *const *l = gog_game_get_languages (game); l && *l; l++)
         if (g_strcmp0 (*l, wanted) == 0)
@@ -533,10 +538,14 @@ populate_language_dropdown (GogMainWindow *self)
 {
   GtkStringList *list = gtk_string_list_new (NULL);
   gtk_string_list_append (list, "Any language");
-  GStrv langs = gog_library_get_all_languages (self->library);
-  for (GStrv l = langs; l && *l; l++)
-    gtk_string_list_append (list, *l);
-  g_strfreev (langs);
+  g_strfreev (self->language_names);
+  self->language_names = gog_library_get_all_languages (self->library);
+  for (GStrv l = self->language_names; l && *l; l++)
+    {
+      gchar *label = text_language_label (*l);
+      gtk_string_list_append (list, label);
+      g_free (label);
+    }
   gtk_drop_down_set_model (self->language_dropdown, G_LIST_MODEL (list));
   gtk_drop_down_set_selected (self->language_dropdown, 0);
   g_object_unref (list);
@@ -968,6 +977,7 @@ gog_main_window_finalize (GObject *object)
 {
   GogMainWindow *self = GOG_MAIN_WINDOW (object);
   g_clear_object (&self->library);
+  g_strfreev (self->language_names);
   gog_config_free (self->config);
   gog_state_free (self->state);
   G_OBJECT_CLASS (gog_main_window_parent_class)->finalize (object);

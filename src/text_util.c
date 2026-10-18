@@ -111,3 +111,71 @@ text_format_size (guint64 bytes)
 {
   return g_format_size (bytes);
 }
+
+/* English names for the language names GOG writes in other scripts. */
+static const struct
+{
+  const char *native;
+  const char *english;
+} native_languages[] = {
+  { "русский", "Russian" },          { "українська", "Ukrainian" },
+  { "беларуская", "Belarusian" },    { "български", "Bulgarian" },
+  { "српски", "Serbian" },           { "македонски", "Macedonian" },
+  { "ελληνικά", "Greek" },           { "العربية", "Arabic" },
+  { "עברית", "Hebrew" },             { "فارسی", "Persian" },
+  { "ไทย", "Thai" },                 { "한국어", "Korean" },
+  { "日本語", "Japanese" },          { "中文", "Chinese" },
+  { "简体中文", "Simplified Chinese" }, { "中文(简体)", "Simplified Chinese" },
+  { "繁體中文", "Traditional Chinese" }, { "中文(繁體)", "Traditional Chinese" },
+  { "हिन्दी", "Hindi" },              { "tiếng việt", "Vietnamese" },
+};
+
+static gboolean
+has_non_latin_letter (const char *s)
+{
+  for (const char *p = s; *p; p = g_utf8_next_char (p))
+    {
+      gunichar c = g_utf8_get_char (p);
+      if (!g_unichar_isalpha (c))
+        continue;
+      GUnicodeScript script = g_unichar_get_script (c);
+      if (script != G_UNICODE_SCRIPT_LATIN && script != G_UNICODE_SCRIPT_COMMON &&
+          script != G_UNICODE_SCRIPT_INHERITED)
+        return TRUE;
+    }
+  return FALSE;
+}
+
+gchar *
+text_language_label (const char *name)
+{
+  if (!name || !has_non_latin_letter (name))
+    return g_strdup (name ? name : "");
+
+  /* GOG writes Ukrainian with a Latin "y" in front of the Cyrillic. */
+  gchar *fixed = g_str_has_prefix (name, "yкраїн") ? g_strconcat ("у", name + 1, NULL)
+                                                   : g_strdup (name);
+  gchar *folded = g_utf8_casefold (fixed, -1);
+  const char *english = NULL;
+  for (gsize i = 0; i < G_N_ELEMENTS (native_languages) && !english; i++)
+    {
+      gchar *key = g_utf8_casefold (native_languages[i].native, -1);
+      if (g_strcmp0 (folded, key) == 0)
+        english = native_languages[i].english;
+      g_free (key);
+    }
+  g_free (folded);
+
+  /* Unknown: as GOG writes it (capitalising some scripts, like Georgian,
+   * would change their letters). */
+  if (!english)
+    return fixed;
+
+  /* Capitalised like a name: "Українська", as English names are. */
+  gunichar first = g_utf8_get_char (fixed);
+  gchar upper[8] = { 0 };
+  g_unichar_to_utf8 (g_unichar_totitle (first), upper);
+  gchar *out = g_strdup_printf ("%s%s (%s)", upper, g_utf8_next_char (fixed), english);
+  g_free (fixed);
+  return out;
+}
