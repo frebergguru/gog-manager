@@ -21,13 +21,15 @@ typedef struct
   SyncCtx *ctx;
   GogSyncItem *item;
   guint languages; /* 0 = all */
-  AdwExpanderRow *row;
+  AdwExpanderRow *row; /* NULL when the files are not known; then plain_row */
+  AdwActionRow *plain_row;
   GtkCheckButton *check;
   AdwActionRow *part_rows[N_PARTS];
   GtkCheckButton *part_checks[N_PARTS];
   AdwActionRow *language_row;
   GtkCheckButton *all_languages;
   GPtrArray *language_checks; /* GtkCheckButton*, each with its "bit" */
+  GPtrArray *file_rows;       /* AdwActionRow*, each with its "file" */
   gboolean updating;
 } GameRow;
 
@@ -136,6 +138,7 @@ static void
 game_row_free (GameRow *game)
 {
   g_ptr_array_unref (game->language_checks);
+  g_ptr_array_unref (game->file_rows);
   g_free (game);
 }
 
@@ -143,6 +146,8 @@ static GogSyncPart
 chosen_parts (GameRow *game)
 {
   GogSyncPart chosen = 0;
+  if (!game->row) /* files not known: all of it */
+    return GOG_SYNC_PART_ALL;
   for (guint p = 0; p < N_PARTS; p++)
     if (gtk_widget_get_visible (GTK_WIDGET (game->part_rows[p])) &&
         gtk_check_button_get_active (game->part_checks[p]))
@@ -217,6 +222,22 @@ add_name (GString *names, GHashTable *seen, const char *name)
 static void
 refresh_game (GameRow *game)
 {
+  if (!game->row)
+    {
+      gchar *subtitle = g_strdup_printf (game->item->n_files == 1 ? "%u file to download"
+                                                                  : "%u files to download",
+                                         game->item->n_files);
+      adw_action_row_set_subtitle (game->plain_row, subtitle);
+      g_free (subtitle);
+      update_download_button (game->ctx);
+      return;
+    }
+  for (guint i = 0; i < game->file_rows->len; i++)
+    {
+      GtkWidget *row = g_ptr_array_index (game->file_rows, i);
+      gtk_widget_set_visible (row, gog_sync_file_wanted (g_object_get_data (G_OBJECT (row), "file"),
+                                                         game->languages));
+    }
   guint total_n = 0;
   guint64 total_size = 0;
   GString *summary = g_string_new (NULL);
@@ -257,11 +278,7 @@ refresh_game (GameRow *game)
     }
 
   gchar *subtitle;
-  if (game->item->files->len == 0) /* saved before files were listed */
-    subtitle = g_strdup_printf (game->item->n_files == 1 ? "%u file to download"
-                                                         : "%u files to download",
-                                game->item->n_files);
-  else if (total_n == 0)
+  if (total_n == 0)
     subtitle = g_strdup ("Nothing to download in the chosen languages");
   else
     {
@@ -383,6 +400,39 @@ add_language_row (GameRow *game, const char *title)
   adw_expander_row_add_row (game->row, GTK_WIDGET (game->language_row));
 }
 
+/* One file, under its group: what it is, its name, size and language. */
+static void
+add_file_row (GameRow *game, GogSyncFile *file)
+{
+  AdwActionRow *row = ADW_ACTION_ROW (adw_action_row_new ());
+  adw_preferences_row_set_use_markup (ADW_PREFERENCES_ROW (row), FALSE);
+  const char *title = file->part == GOG_SYNC_PART_DLC && file->dlc_title ? file->dlc_title
+                      : file->label                                       ? file->label
+                                                                          : file->filename;
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row), title);
+  GString *subtitle = g_string_new (NULL);
+  if (g_strcmp0 (title, file->filename) != 0)
+    g_string_append (subtitle, file->filename);
+  if (file->size)
+    {
+      gchar *size = g_format_size (file->size);
+      g_string_append_printf (subtitle, "%s%s", subtitle->len ? " · " : "", size);
+      g_free (size);
+    }
+  if (file->languages && file->part != GOG_SYNC_PART_EXTRA)
+    {
+      gchar *langs = gog_sync_describe_languages (file->languages);
+      g_string_append_printf (subtitle, "%s%s", subtitle->len ? " · " : "", langs);
+      g_free (langs);
+    }
+  adw_action_row_set_subtitle (row, subtitle->str);
+  g_string_free (subtitle, TRUE);
+  gtk_widget_add_css_class (GTK_WIDGET (row), "gog-file-row");
+  g_object_set_data (G_OBJECT (row), "file", file);
+  g_ptr_array_add (game->file_rows, row);
+  adw_expander_row_add_row (game->row, GTK_WIDGET (row));
+}
+
 static void
 add_game_row (SyncCtx *ctx, GtkWidget *list, GogSyncItem *item)
 {
@@ -391,13 +441,10 @@ add_game_row (SyncCtx *ctx, GtkWidget *list, GogSyncItem *item)
   game->item = item;
   game->languages = gog_sync_item_languages (item);
   game->language_checks = g_ptr_array_new ();
+  game->file_rows = g_ptr_array_new ();
   g_ptr_array_add (ctx->games, game);
 
   gchar *title = title_for (ctx, item->gamename);
-  game->row = ADW_EXPANDER_ROW (adw_expander_row_new ());
-  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (game->row), title);
-  adw_preferences_row_set_use_markup (ADW_PREFERENCES_ROW (game->row), FALSE);
-
   GtkWidget *check = gtk_check_button_new ();
   gtk_widget_set_valign (check, GTK_ALIGN_CENTER);
   gchar *label = g_strdup_printf ("Download %s", title);
@@ -405,8 +452,26 @@ add_game_row (SyncCtx *ctx, GtkWidget *list, GogSyncItem *item)
                                   -1);
   g_free (label);
   g_signal_connect (check, "toggled", G_CALLBACK (on_check_toggled), ctx);
-  adw_expander_row_add_prefix (game->row, check);
   game->check = GTK_CHECK_BUTTON (check);
+
+  if (item->files->len == 0)
+    {
+      /* Saved before files were listed: nothing to open, so no arrow. */
+      game->plain_row = ADW_ACTION_ROW (adw_action_row_new ());
+      adw_preferences_row_set_title (ADW_PREFERENCES_ROW (game->plain_row), title);
+      adw_preferences_row_set_use_markup (ADW_PREFERENCES_ROW (game->plain_row), FALSE);
+      adw_action_row_add_prefix (game->plain_row, check);
+      adw_action_row_set_activatable_widget (game->plain_row, check);
+      refresh_game (game);
+      gtk_list_box_append (GTK_LIST_BOX (list), GTK_WIDGET (game->plain_row));
+      g_free (title);
+      return;
+    }
+
+  game->row = ADW_EXPANDER_ROW (adw_expander_row_new ());
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (game->row), title);
+  adw_preferences_row_set_use_markup (ADW_PREFERENCES_ROW (game->row), FALSE);
+  adw_expander_row_add_prefix (game->row, check);
 
   add_language_row (game, title);
   for (guint p = 0; p < N_PARTS; p++)
@@ -414,6 +479,7 @@ add_game_row (SyncCtx *ctx, GtkWidget *list, GogSyncItem *item)
       AdwActionRow *row = ADW_ACTION_ROW (adw_action_row_new ());
       adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row), part_titles[p]);
       adw_preferences_row_set_use_markup (ADW_PREFERENCES_ROW (row), FALSE);
+      gtk_widget_add_css_class (GTK_WIDGET (row), "gog-part-row");
       GtkWidget *part_check = gtk_check_button_new ();
       gtk_check_button_set_active (GTK_CHECK_BUTTON (part_check), TRUE);
       gtk_widget_set_valign (part_check, GTK_ALIGN_CENTER);
@@ -429,10 +495,14 @@ add_game_row (SyncCtx *ctx, GtkWidget *list, GogSyncItem *item)
       game->part_rows[p] = row;
       game->part_checks[p] = GTK_CHECK_BUTTON (part_check);
       adw_expander_row_add_row (game->row, GTK_WIDGET (row));
+      for (guint f = 0; f < item->files->len; f++)
+        {
+          GogSyncFile *file = g_ptr_array_index (item->files, f);
+          if (file->part == parts[p])
+            add_file_row (game, file);
+        }
     }
   refresh_game (game);
-  /* Nothing to open when the files are not known. */
-  adw_expander_row_set_enable_expansion (game->row, item->files->len > 0);
   gtk_list_box_append (GTK_LIST_BOX (list), GTK_WIDGET (game->row));
   g_free (title);
 }
@@ -607,7 +677,9 @@ on_check_finished (GogSyncJob *job, gboolean success, const gchar *error_message
       GPtrArray *items = g_ptr_array_ref (gog_sync_job_get_items (job));
       gtk_progress_bar_set_fraction (ctx->progress_bar, 1.0);
       gtk_progress_bar_set_text (ctx->progress_bar, "Check finished");
-      show_items (ctx, items, g_get_real_time () / G_USEC_PER_SEC);
+      gint64 checked = 0;
+      g_ptr_array_unref (gog_sync_load_results (&checked)); /* a quick check keeps the time */
+      show_items (ctx, items, checked);
       announce (ctx, gtk_label_get_text (ctx->summary_label));
     }
   else
@@ -677,6 +749,34 @@ on_check_clicked (GtkButton *button, gpointer user_data)
   GogSyncJob *job = gog_sync_job_new_check (ctx->library_dir);
   g_signal_connect (job, "finished", G_CALLBACK (on_check_finished), ctx);
   start_job (ctx, job);
+}
+
+/* Results saved by an older version have no file lists, so their games
+ * can't show their files. A check of just those games gets them. */
+static void
+fetch_missing_file_lists (SyncCtx *ctx)
+{
+  GStrvBuilder *builder = g_strv_builder_new ();
+  guint n = 0;
+  for (guint i = 0; i < ctx->items->len; i++)
+    {
+      GogSyncItem *item = g_ptr_array_index (ctx->items, i);
+      if (item->files->len == 0)
+        {
+          g_strv_builder_add (builder, item->gamename);
+          n++;
+        }
+    }
+  GStrv names = g_strv_builder_end (builder);
+  g_strv_builder_unref (builder);
+  if (n > 0)
+    {
+      GogSyncJob *job = gog_sync_job_new_check_games (ctx->library_dir, (const char *const *) names);
+      g_signal_connect (job, "finished", G_CALLBACK (on_check_finished), ctx);
+      start_job (ctx, job);
+      gtk_progress_bar_set_text (ctx->progress_bar, "Getting the file lists…");
+    }
+  g_strfreev (names);
 }
 
 static void
@@ -899,6 +999,7 @@ gog_show_sync_dialog (GtkWindow *parent, const char *library_dir, GogLibrary *li
       GPtrArray *saved = gog_sync_load_results (&checked); /* sets checked first */
       show_items (ctx, saved, checked);
       set_busy (ctx, FALSE);
+      fetch_missing_file_lists (ctx);
     }
   else
     {

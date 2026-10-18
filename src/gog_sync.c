@@ -525,11 +525,11 @@ gog_sync_load_results (gint64 *out_checked_unix)
   return items;
 }
 
-void
-gog_sync_save_results (GPtrArray *items)
+static void
+save_results_checked (GPtrArray *items, gint64 checked_unix)
 {
   json_object *root = json_object_new_object ();
-  json_object_object_add (root, "checked", json_object_new_int64 (g_get_real_time () / G_USEC_PER_SEC));
+  json_object_object_add (root, "checked", json_object_new_int64 (checked_unix));
   json_object *arr = json_object_new_array ();
   for (guint i = 0; items && i < items->len; i++)
     {
@@ -574,6 +574,12 @@ gog_sync_save_results (GPtrArray *items)
   json_object_put (root);
 }
 
+void
+gog_sync_save_results (GPtrArray *items)
+{
+  save_results_checked (items, g_get_real_time () / G_USEC_PER_SEC);
+}
+
 /* ---- the job ---- */
 
 typedef enum
@@ -594,6 +600,7 @@ struct _GogSyncJob
   guint total_files;
   GHashTable *sizes;  /* filename -> guint64* */
   GPtrArray *items;   /* check result */
+  GStrv only_games;   /* check only these, NULL for all */
 
   GThread *thread;
   GMutex proc_mutex;
@@ -622,6 +629,7 @@ gog_sync_job_finalize (GObject *object)
   if (self->thread)
     g_thread_unref (self->thread);
   g_free (self->library_dir);
+  g_strfreev (self->only_games);
   if (self->requests)
     {
       for (guint i = 0; i < self->requests->len; i++)
@@ -667,6 +675,14 @@ gog_sync_job_new_check (const char *library_dir)
   GogSyncJob *self = g_object_new (GOG_TYPE_SYNC_JOB, NULL);
   self->kind = JOB_CHECK;
   self->library_dir = g_strdup (library_dir);
+  return self;
+}
+
+GogSyncJob *
+gog_sync_job_new_check_games (const char *library_dir, const char *const *gamenames)
+{
+  GogSyncJob *self = gog_sync_job_new_check (library_dir);
+  self->only_games = g_strdupv ((gchar **) gamenames);
   return self;
 }
 
@@ -1171,19 +1187,31 @@ check_sync (GogSyncJob *job, GError **error)
   if (!check_login (job, error))
     return FALSE;
 
-  job_progress (job, -1, "Getting your list of games from GOG…");
-  gchar *list_argv[] = { LGOG, "--list", "games", NULL };
-  GString *names_out = g_string_new (NULL);
-  if (!run_streaming (job, list_argv, collect_line, names_out, error))
+  gchar **base_names;
+  gchar *only_regex = NULL;
+  if (job->only_games)
     {
-      g_string_free (names_out, TRUE);
-      return FALSE;
+      /* The status lists only these games and their DLC. */
+      base_names = g_strdupv (job->only_games);
+      only_regex = names_regex ((const char *const *) job->only_games);
     }
-  gchar **base_names = g_strsplit (g_strstrip (names_out->str), "\n", -1);
-  g_string_free (names_out, TRUE);
+  else
+    {
+      job_progress (job, -1, "Getting your list of games from GOG…");
+      gchar *list_argv[] = { LGOG, "--list", "games", NULL };
+      GString *names_out = g_string_new (NULL);
+      if (!run_streaming (job, list_argv, collect_line, names_out, error))
+        {
+          g_string_free (names_out, TRUE);
+          return FALSE;
+        }
+      base_names = g_strsplit (g_strstrip (names_out->str), "\n", -1);
+      g_string_free (names_out, TRUE);
+    }
 
   gchar *argv[] = { LGOG, "--status", "--size-only", "--exclude", "patches",
-                    "--directory", job->library_dir, NULL };
+                    "--directory", job->library_dir, only_regex ? "--game" : NULL, only_regex,
+                    NULL };
   GString *out = g_string_new (NULL);
   gboolean ok = run_streaming (job, argv, collect_line, out, error);
   if (ok)
@@ -1191,6 +1219,7 @@ check_sync (GogSyncJob *job, GError **error)
                                         (const char *const *) base_names);
   g_string_free (out, TRUE);
   g_strfreev (base_names);
+  g_free (only_regex);
 
   if (ok && job->items->len > 0)
     {
@@ -1222,8 +1251,22 @@ check_sync (GogSyncJob *job, GError **error)
       g_free (regex);
       g_strfreev (strv);
     }
+  gint64 checked = g_get_real_time () / G_USEC_PER_SEC;
+  if (ok && job->only_games)
+    {
+      /* The other games keep what the last full check found, and its time. */
+      GPtrArray *saved = gog_sync_load_results (&checked);
+      for (guint i = 0; i < saved->len; i++)
+        {
+          GogSyncItem *item = g_ptr_array_index (saved, i);
+          if (!g_strv_contains ((const char *const *) job->only_games, item->gamename))
+            g_ptr_array_add (job->items, g_ptr_array_steal_index (saved, i--));
+        }
+      g_ptr_array_unref (saved);
+      g_ptr_array_sort (job->items, compare_items);
+    }
   if (ok)
-    gog_sync_save_results (job->items);
+    save_results_checked (job->items, checked);
   return ok;
 }
 

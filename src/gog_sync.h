@@ -119,6 +119,10 @@ G_DECLARE_FINAL_TYPE (GogSyncJob, gog_sync_job, GOG, SYNC_JOB, GObject)
  * (also saved with gog_sync_save_results()). */
 GogSyncJob *gog_sync_job_new_check (const char *library_dir);
 
+/* The same for gamenames only (quick); the other games keep their saved
+ * results. */
+GogSyncJob *gog_sync_job_new_check_games (const char *library_dir, const char *const *gamenames);
+
 typedef struct
 {
   const char *gamename;

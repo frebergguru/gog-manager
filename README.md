@@ -27,8 +27,9 @@ your GOG login.
 - **New games and updates from GOG** — through
   [lgogdownloader](https://github.com/Sude-/lgogdownloader), lists the games
   you own that are not downloaded yet and the ones with a new version. Each
-  game opens into separate **Game**, **DLC** and **Extras** groups, with names
-  and sizes, so you can pick exactly what to download, and you can choose which
+  game opens into separate **Game**, **DLC** and **Extras** groups, each
+  listing its files with name, size and language, so you can see what is what
+  and pick exactly what to download, and you can choose which
   **languages** to download per game (remembered). The download shows the
   **total progress** and a progress bar for **each file** being downloaded, and
   you choose how many files download **at the same time** (1–8). Once

@@ -42,6 +42,15 @@
   font-weight: 700;
 }
 
+/* GOG updates: a game's files sit under their group (Game, DLC, Extras). */
+row.gog-file-row > box.header {
+  margin-left: 36px;
+}
+
+row.gog-part-row label.title {
+  font-weight: bold;
+}
+
 .gog-log-view {
   font-family: monospace;
   font-size: 0.9em;
