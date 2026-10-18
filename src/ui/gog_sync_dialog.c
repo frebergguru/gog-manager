@@ -21,13 +21,15 @@ typedef struct
 {
   SyncCtx *ctx;
   GogSyncItem *item;
-  guint languages; /* 0 = all */
+  guint languages; /* what gets downloaded, as far as offered; 0 = all */
+  guint choice;    /* GOG_SYNC_LANGUAGES_DEFAULT, 0 = all, or the chosen */
   AdwExpanderRow *row; /* NULL when the files are not known; then plain_row */
   AdwActionRow *plain_row;
   GtkCheckButton *check;
   AdwActionRow *part_rows[N_PARTS];
   GtkCheckButton *part_checks[N_PARTS];
   AdwActionRow *language_row;
+  GtkCheckButton *default_languages;
   GtkCheckButton *all_languages;
   GPtrArray *language_checks; /* GtkCheckButton*, each with its "bit" */
   GPtrArray *file_rows;       /* AdwActionRow*, each with its "file" */
@@ -293,7 +295,16 @@ refresh_game (GameRow *game)
 
   if (game->language_row)
     {
-      gchar *langs = gog_sync_describe_languages (game->languages);
+      gchar *langs;
+      if (game->choice == GOG_SYNC_LANGUAGES_DEFAULT)
+        {
+          gchar *def = gog_sync_describe_default_for (game->item->gamename,
+                                                      game->item->languages_offered);
+          langs = g_strdup_printf ("Default: %s", def);
+          g_free (def);
+        }
+      else
+        langs = gog_sync_describe_languages (game->languages);
       adw_action_row_set_subtitle (game->language_row, langs);
       g_free (langs);
     }
@@ -318,27 +329,35 @@ on_language_toggled (GtkCheckButton *check, gpointer user_data)
   if (game->updating)
     return;
   game->updating = TRUE;
-  if (check == game->all_languages)
+  if (check == game->default_languages || check == game->all_languages)
     {
-      /* "All languages" clears the others; it can't be turned off on its own. */
+      /* "Default" and "All languages" clear the others; neither can be
+       * turned off on its own. */
       gtk_check_button_set_active (check, TRUE);
+      gtk_check_button_set_active (check == game->default_languages ? game->all_languages
+                                                                    : game->default_languages,
+                                   FALSE);
       for (guint i = 0; i < game->language_checks->len; i++)
         gtk_check_button_set_active (g_ptr_array_index (game->language_checks, i), FALSE);
-      game->languages = 0;
+      game->choice = check == game->default_languages ? GOG_SYNC_LANGUAGES_DEFAULT : 0;
     }
   else
     {
-      game->languages = 0;
+      guint chosen = 0;
       for (guint i = 0; i < game->language_checks->len; i++)
         {
           GtkCheckButton *c = g_ptr_array_index (game->language_checks, i);
           if (gtk_check_button_get_active (c))
-            game->languages |= GPOINTER_TO_UINT (g_object_get_data (G_OBJECT (c), "bit"));
+            chosen |= GPOINTER_TO_UINT (g_object_get_data (G_OBJECT (c), "bit"));
         }
-      gtk_check_button_set_active (game->all_languages, game->languages == 0);
+      /* Unticking the last language goes back to the default. */
+      game->choice = chosen ? chosen : GOG_SYNC_LANGUAGES_DEFAULT;
+      gtk_check_button_set_active (game->default_languages, chosen == 0);
+      gtk_check_button_set_active (game->all_languages, FALSE);
     }
   game->updating = FALSE;
-  gog_sync_set_game_languages (game->item->gamename, game->languages);
+  gog_sync_set_game_languages (game->item->gamename, game->choice);
+  game->languages = gog_sync_item_languages (game->item);
   refresh_game (game);
 }
 
@@ -370,12 +389,14 @@ add_language_row (GameRow *game, const char *title)
   gtk_widget_set_margin_end (box, 6);
   gtk_widget_set_margin_top (box, 6);
   gtk_widget_set_margin_bottom (box, 6);
-  game->all_languages = language_check (game, box, "All languages", game->languages == 0);
+  gboolean by_default = game->choice == GOG_SYNC_LANGUAGES_DEFAULT;
+  game->default_languages = language_check (game, box, "Default (set in Preferences)", by_default);
+  game->all_languages = language_check (game, box, "All languages", game->choice == 0);
   for (guint i = 0; i < n_langs; i++)
     if (offered & (1u << i))
       {
         GtkCheckButton *c = language_check (game, box, langs[i].name,
-                                            (game->languages & (1u << i)) != 0);
+                                            !by_default && (game->choice & (1u << i)) != 0);
         g_object_set_data (G_OBJECT (c), "bit", GUINT_TO_POINTER (1u << i));
         g_ptr_array_add (game->language_checks, c);
       }
@@ -441,6 +462,7 @@ add_game_row (SyncCtx *ctx, GtkWidget *list, GogSyncItem *item)
   game->ctx = ctx;
   game->item = item;
   game->languages = gog_sync_item_languages (item);
+  game->choice = gog_sync_get_game_languages (item->gamename);
   game->language_checks = g_ptr_array_new ();
   game->file_rows = g_ptr_array_new ();
   g_ptr_array_add (ctx->games, game);

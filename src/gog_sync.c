@@ -3,6 +3,7 @@
  */
 
 #include "gog_sync.h"
+#include "original_language.h"
 #include "config.h"
 #include "json_util.h"
 #include <stdio.h>
@@ -200,7 +201,9 @@ guint
 gog_sync_get_game_languages (const char *gamename)
 {
   json_object *root = load_settings ();
-  guint mask = languages_from_arg (ju_get_string (ju_get_obj (root, "languages"), gamename, NULL));
+  const char *arg = ju_get_string (ju_get_obj (root, "languages"), gamename, NULL);
+  /* "all" is stored as such; nothing stored means the default. */
+  guint mask = !arg ? GOG_SYNC_LANGUAGES_DEFAULT : languages_from_arg (arg);
   json_object_put (root);
   return mask;
 }
@@ -215,7 +218,7 @@ gog_sync_set_game_languages (const char *gamename, guint mask)
       langs = json_object_new_object ();
       json_object_object_add (root, "languages", langs);
     }
-  if (mask)
+  if (mask != GOG_SYNC_LANGUAGES_DEFAULT)
     {
       gchar *arg = languages_arg (mask);
       json_object_object_add (langs, gamename, json_object_new_string (arg));
@@ -227,6 +230,89 @@ gog_sync_set_game_languages (const char *gamename, guint mask)
   json_object_put (root);
 }
 
+gboolean
+gog_sync_get_default_original (void)
+{
+  json_object *root = load_settings ();
+  gboolean original = ju_get_bool (root, "default_original", TRUE);
+  json_object_put (root);
+  return original;
+}
+
+void
+gog_sync_set_default_original (gboolean original)
+{
+  json_object *root = load_settings ();
+  json_object_object_add (root, "default_original", json_object_new_boolean (original));
+  save_settings (root);
+  json_object_put (root);
+}
+
+guint
+gog_sync_get_default_languages (void)
+{
+  json_object *root = load_settings ();
+  guint mask = languages_from_arg (ju_get_string (root, "default_languages", ""));
+  json_object_put (root);
+  return mask;
+}
+
+void
+gog_sync_set_default_languages (guint mask)
+{
+  json_object *root = load_settings ();
+  if (mask)
+    {
+      gchar *arg = languages_arg (mask);
+      json_object_object_add (root, "default_languages", json_object_new_string (arg));
+      g_free (arg);
+    }
+  else
+    json_object_object_del (root, "default_languages");
+  save_settings (root);
+  json_object_put (root);
+}
+
+#define LANGUAGE_EN 1u /* lgogdownloader's bit for English */
+
+guint
+gog_sync_default_languages_for (const char *gamename, guint offered)
+{
+  gboolean original = gog_sync_get_default_original ();
+  guint extra = gog_sync_get_default_languages ();
+  if (!original && !extra)
+    return 0; /* nothing narrowed down: all languages */
+  guint mask = extra;
+  if (original)
+    mask |= gog_original_languages (gamename, NULL);
+  if (!offered)
+    return mask;
+  mask &= offered;
+  if (!mask)
+    mask = offered & LANGUAGE_EN; /* 0, i.e. all, if not even English */
+  return mask;
+}
+
+gchar *
+gog_sync_describe_default_for (const char *gamename, guint offered)
+{
+  guint mask = gog_sync_default_languages_for (gamename, offered);
+  gchar *langs = gog_sync_describe_languages (mask);
+  gchar *source = NULL;
+  guint original = gog_sync_get_default_original () ? gog_original_languages (gamename, &source)
+                                                   : 0;
+  gchar *out;
+  if (original && (mask & original) && source)
+    out = g_strdup_printf ("%s (original: %s)", langs, source);
+  else if (gog_sync_get_default_original () && !original)
+    out = g_strdup_printf ("%s (original language not known)", langs);
+  else
+    out = g_strdup (langs);
+  g_free (source);
+  g_free (langs);
+  return out;
+}
+
 guint
 gog_sync_item_languages (GogSyncItem *item)
 {
@@ -235,7 +321,10 @@ gog_sync_item_languages (GogSyncItem *item)
    * language the game no longer has would hide everything. */
   if ((offered & (offered - 1)) == 0)
     return 0;
-  return gog_sync_get_game_languages (item->gamename) & offered;
+  guint chosen = gog_sync_get_game_languages (item->gamename);
+  if (chosen == GOG_SYNC_LANGUAGES_DEFAULT)
+    return gog_sync_default_languages_for (item->gamename, offered);
+  return chosen & offered;
 }
 
 gboolean
@@ -1419,6 +1508,18 @@ check_sync (GogSyncJob *job, GError **error)
       g_clear_error (&details_error);
       g_string_free (details, TRUE);
       g_free (regex);
+      /* Each game's original language, for the default download languages.
+       * Without it a game falls back to English, so a failure isn't fatal. */
+      if (ok && !job->cancelled)
+        {
+          job_progress (job, -1, "Looking up the games' original languages…");
+          GError *lookup_error = NULL;
+          if (!gog_original_lookup ((const char *const *) strv, &lookup_error))
+            {
+              job_log (job, lookup_error->message);
+              g_clear_error (&lookup_error);
+            }
+        }
       g_strfreev (strv);
     }
   if (ok)

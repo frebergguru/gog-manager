@@ -6,6 +6,7 @@
 #include <glib/gstdio.h>
 #include "../src/library.h"
 #include "../src/gog_sync.h"
+#include "../src/original_language.h"
 
 static void
 on_scan_done (GObject *source, GAsyncResult *res, gpointer user_data)
@@ -293,6 +294,81 @@ test_gog_sync_parse_status (void)
   g_free (root);
 }
 
+#define BIT_EN (1u << 0)
+#define BIT_DE (1u << 1)
+#define BIT_FR (1u << 2)
+#define BIT_NO (1u << 16)
+
+/* Default download languages: each game's original language (cached from
+ * Wikidata) plus the extra defaults, English when the original isn't known,
+ * and per-game choices before all of it. */
+static void
+test_default_download_languages (void)
+{
+  gchar *tmp = g_dir_make_tmp ("gog-langs-XXXXXX", NULL);
+  /* The app keeps its files next to the AppImage. */
+  gchar *fake = g_build_filename (tmp, "gog-manager.AppImage", NULL);
+  g_setenv ("APPIMAGE", fake, TRUE);
+  gchar *cache = g_build_filename (tmp, "gog-manager-original-languages.json", NULL);
+  g_assert_true (g_file_set_contents (
+      cache,
+      "{\"among_the_sleep\": {\"languages\": \"no\", \"source\": \"made in Norway\", "
+      "\"checked\": 1}, \"mystery\": {\"languages\": \"\", \"checked\": 1}}",
+      -1, NULL));
+
+  g_assert_cmpuint (gog_original_country_languages ("US"), ==, BIT_EN);
+  g_assert_cmpuint (gog_original_country_languages ("CA"), ==, BIT_EN | BIT_FR);
+  g_assert_cmpuint (gog_original_country_languages ("NO"), ==, BIT_NO);
+  g_assert_cmpuint (gog_original_country_languages ("XX"), ==, 0);
+
+  gchar *source = NULL;
+  g_assert_cmpuint (gog_original_languages ("among_the_sleep", &source), ==, BIT_NO);
+  g_assert_cmpstr (source, ==, "made in Norway");
+  g_free (source);
+  g_assert_cmpuint (gog_original_languages ("mystery", NULL), ==, 0);
+
+  /* Out of the box: the original language only. */
+  g_assert_true (gog_sync_get_default_original ());
+  g_assert_cmpuint (gog_sync_get_default_languages (), ==, 0);
+  guint offered = BIT_EN | BIT_DE | BIT_NO;
+  g_assert_cmpuint (gog_sync_default_languages_for ("among_the_sleep", offered), ==, BIT_NO);
+  /* Original not known: English, or all when there is no English. */
+  g_assert_cmpuint (gog_sync_default_languages_for ("mystery", offered), ==, BIT_EN);
+  g_assert_cmpuint (gog_sync_default_languages_for ("mystery", BIT_DE | BIT_FR), ==, 0);
+
+  gog_sync_set_default_languages (BIT_EN);
+  g_assert_cmpuint (gog_sync_default_languages_for ("among_the_sleep", offered), ==,
+                    BIT_EN | BIT_NO);
+  gog_sync_set_default_original (FALSE);
+  g_assert_cmpuint (gog_sync_default_languages_for ("among_the_sleep", offered), ==, BIT_EN);
+  gog_sync_set_default_languages (0);
+  g_assert_cmpuint (gog_sync_default_languages_for ("among_the_sleep", offered), ==, 0);
+  gog_sync_set_default_original (TRUE);
+
+  /* Per game: nothing stored is the default; "all" and choices are kept. */
+  GogSyncItem item = { .gamename = (gchar *) "among_the_sleep", .languages_offered = offered };
+  g_assert_cmpuint (gog_sync_get_game_languages ("among_the_sleep"), ==,
+                    GOG_SYNC_LANGUAGES_DEFAULT);
+  g_assert_cmpuint (gog_sync_item_languages (&item), ==, BIT_NO);
+  gog_sync_set_game_languages ("among_the_sleep", 0);
+  g_assert_cmpuint (gog_sync_get_game_languages ("among_the_sleep"), ==, 0);
+  g_assert_cmpuint (gog_sync_item_languages (&item), ==, 0);
+  gog_sync_set_game_languages ("among_the_sleep", BIT_DE);
+  g_assert_cmpuint (gog_sync_item_languages (&item), ==, BIT_DE);
+  gog_sync_set_game_languages ("among_the_sleep", GOG_SYNC_LANGUAGES_DEFAULT);
+  g_assert_cmpuint (gog_sync_item_languages (&item), ==, BIT_NO);
+
+  gchar *settings = g_build_filename (tmp, "gog-manager-download.json", NULL);
+  g_remove (settings);
+  g_remove (cache);
+  g_rmdir (tmp);
+  g_unsetenv ("APPIMAGE");
+  g_free (settings);
+  g_free (cache);
+  g_free (fake);
+  g_free (tmp);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -302,5 +378,6 @@ main (int argc, char *argv[])
   g_test_add_func ("/library/scan_detects_installer_languages", test_scan_detects_installer_languages);
   g_test_add_func ("/library/all_languages_listed_once", test_all_languages_listed_once);
   g_test_add_func ("/gog_sync/parse_status", test_gog_sync_parse_status);
+  g_test_add_func ("/gog_sync/default_download_languages", test_default_download_languages);
   return g_test_run ();
 }

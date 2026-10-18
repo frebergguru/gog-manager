@@ -8,6 +8,7 @@
 #include "proton_manage_dialog.h"
 #include "../proton_fetch.h"
 #include "../runner.h"
+#include "../gog_sync.h"
 #include <string.h>
 
 typedef struct
@@ -327,6 +328,87 @@ on_download_proton_clicked (GtkButton *button, gpointer user_data)
                                 ctx);
 }
 
+/* ---- default download languages ---- */
+
+static void
+refresh_other_languages (AdwExpanderRow *row)
+{
+  guint mask = gog_sync_get_default_languages ();
+  gchar *text;
+  if (mask)
+    text = gog_sync_describe_languages (mask);
+  else if (gog_sync_get_default_original ())
+    text = g_strdup ("None");
+  else
+    text = g_strdup ("None, so every language is downloaded");
+  adw_expander_row_set_subtitle (row, text);
+  g_free (text);
+}
+
+static void
+on_default_original_changed (AdwSwitchRow *row, GParamSpec *pspec, gpointer user_data)
+{
+  (void) pspec;
+  gog_sync_set_default_original (adw_switch_row_get_active (row));
+  refresh_other_languages (user_data);
+}
+
+static void
+on_default_language_toggled (GtkCheckButton *check, gpointer user_data)
+{
+  guint bit = GPOINTER_TO_UINT (g_object_get_data (G_OBJECT (check), "bit"));
+  guint mask = gog_sync_get_default_languages ();
+  mask = gtk_check_button_get_active (check) ? (mask | bit) : (mask & ~bit);
+  gog_sync_set_default_languages (mask);
+  refresh_other_languages (user_data);
+}
+
+/* Which languages GOG downloads come in, for games with no choice of their
+ * own in New Games and Updates on GOG. */
+static AdwPreferencesGroup *
+download_languages_group (void)
+{
+  AdwPreferencesGroup *group = ADW_PREFERENCES_GROUP (adw_preferences_group_new ());
+  adw_preferences_group_set_title (group, "Download Languages");
+  adw_preferences_group_set_description (
+      group, "The languages new games and updates from GOG come in. A game's own choice in "
+             "New Games and Updates on GOG goes before these.");
+
+  AdwExpanderRow *others = ADW_EXPANDER_ROW (adw_expander_row_new ());
+
+  GtkWidget *original = adw_switch_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (original), "Original Language");
+  adw_action_row_set_subtitle (ADW_ACTION_ROW (original),
+                               "Each game's original language, from Wikidata: a game made in "
+                               "Norway counts as Norwegian. English when it isn't known.");
+  adw_switch_row_set_active (ADW_SWITCH_ROW (original), gog_sync_get_default_original ());
+  g_signal_connect (original, "notify::active", G_CALLBACK (on_default_original_changed), others);
+  adw_preferences_group_add (group, original);
+
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (others), "Other Languages");
+  guint n_langs;
+  const GogSyncLanguage *langs = gog_sync_get_languages (&n_langs);
+  guint chosen = gog_sync_get_default_languages ();
+  for (guint i = 0; i < n_langs; i++)
+    {
+      GtkWidget *row = adw_action_row_new ();
+      adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row), langs[i].name);
+      GtkWidget *check = gtk_check_button_new ();
+      gtk_widget_set_valign (check, GTK_ALIGN_CENTER);
+      gtk_check_button_set_active (GTK_CHECK_BUTTON (check), (chosen & (1u << i)) != 0);
+      gtk_accessible_update_property (GTK_ACCESSIBLE (check), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                      langs[i].name, -1);
+      g_object_set_data (G_OBJECT (check), "bit", GUINT_TO_POINTER (1u << i));
+      g_signal_connect (check, "toggled", G_CALLBACK (on_default_language_toggled), others);
+      adw_action_row_add_prefix (ADW_ACTION_ROW (row), check);
+      adw_action_row_set_activatable_widget (ADW_ACTION_ROW (row), check);
+      adw_expander_row_add_row (others, row);
+    }
+  refresh_other_languages (others);
+  adw_preferences_group_add (group, GTK_WIDGET (others));
+  return group;
+}
+
 /* Saves while the window's widgets still exist; destroy comes too late. */
 static gboolean
 on_close_request (GtkWindow *window, gpointer user_data)
@@ -469,6 +551,7 @@ gog_show_preferences_dialog (GtkWindow *parent, GogConfig *config, GogLibrary *l
   refresh_runner_dropdown (ctx);
 
   adw_preferences_page_add (page, install_group);
+  adw_preferences_page_add (page, download_languages_group ());
 
   GtkWidget *toolbar_view = adw_toolbar_view_new ();
   adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (toolbar_view), adw_header_bar_new ());

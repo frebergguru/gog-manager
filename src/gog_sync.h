@@ -68,19 +68,39 @@ gchar *gog_sync_describe_languages (guint languages);
  * not language-specific, and files of unknown language always count. */
 gboolean gog_sync_file_wanted (const GogSyncFile *file, guint languages);
 
-/* The languages chosen for item, as far as it has them (0 = all). */
+/* The languages to download for item, as far as it has them (0 = all):
+ * the game's own choice, or else the default (see below). */
 guint gog_sync_item_languages (GogSyncItem *item);
+
+/* The default languages for a game offered in `offered` (0 = all): its
+ * original language when that default is on, plus the default extra
+ * languages. Falls back to English, or else all, when none of those is
+ * offered (e.g. the original language isn't known). */
+guint gog_sync_default_languages_for (const char *gamename, guint offered);
+
+/* "Norwegian (made in Norway)" for the menus. Transfer full. */
+gchar *gog_sync_describe_default_for (const char *gamename, guint offered);
 
 /* TRUE if item has a file in the languages chosen for it (an item saved
  * before files were listed always has). */
 gboolean gog_sync_item_has_wanted_files (GogSyncItem *item);
 
 /* Download choices remembered between runs: how many files download at
- * the same time (1-8), and each game's languages (0 = all). */
+ * the same time (1-8), and each game's languages: GOG_SYNC_LANGUAGES_DEFAULT
+ * (nothing chosen for it), 0 for all, or the languages chosen. */
+#define GOG_SYNC_LANGUAGES_DEFAULT G_MAXUINT
 guint gog_sync_get_threads (void);
 void  gog_sync_set_threads (guint threads);
 guint gog_sync_get_game_languages (const char *gamename);
 void  gog_sync_set_game_languages (const char *gamename, guint languages);
+
+/* The default for games with no languages of their own: whether to take
+ * each game's original language (on unless turned off), and which other
+ * languages to always take (none unless chosen). */
+gboolean gog_sync_get_default_original (void);
+void     gog_sync_set_default_original (gboolean original);
+guint    gog_sync_get_default_languages (void);
+void     gog_sync_set_default_languages (guint languages);
 
 /* TRUE if lgogdownloader is on PATH. */
 gboolean gog_sync_is_available (void);
