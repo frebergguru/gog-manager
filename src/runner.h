@@ -116,6 +116,21 @@ gboolean runner_is_freetype_warning (const char *line);
  * distributions. One line per array element; free with g_strfreev(). */
 gchar **runner_freetype_help (void);
 
+/* One way to install what is missing, for the dialog. */
+typedef struct
+{
+  gchar *systems;   /* e.g. "Arch, Manjaro, EndeavourOS" */
+  gchar *command;   /* a shell command to run as is */
+  gchar *note;      /* may be NULL */
+} GogFixCommand;
+
+void gog_fix_command_free (GogFixCommand *fix);
+
+/* The same help as runner_freetype_help(), structured: *summary_out gets a
+ * paragraph on what is missing and why it matters, and the array holds one
+ * GogFixCommand per distribution family, this system's own first. */
+GPtrArray *runner_freetype_fixes (gchar **summary_out);
+
 G_END_DECLS
 
 #endif

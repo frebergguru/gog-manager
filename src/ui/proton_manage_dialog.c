@@ -3,13 +3,14 @@
  */
 
 #include "proton_manage_dialog.h"
+#include "dialog_window.h"
 #include "../proton_fetch.h"
 #include "../game.h"
 #include "../text_util.h"
 
 typedef struct
 {
-  AdwDialog *dialog;
+  GtkWindow *window;
   GogConfig *config;
   GogLibrary *library;
   GogState *state;
@@ -132,7 +133,7 @@ set_status (ManageCtx *ctx, const char *message)
   gtk_widget_set_visible (GTK_WIDGET (ctx->status_label), message && *message);
 #if GTK_CHECK_VERSION(4, 14, 0)
   if (message && *message)
-    gtk_accessible_announce (GTK_ACCESSIBLE (ctx->dialog), message,
+    gtk_accessible_announce (GTK_ACCESSIBLE (ctx->window), message,
                              GTK_ACCESSIBLE_ANNOUNCEMENT_PRIORITY_MEDIUM);
 #endif
 }
@@ -148,7 +149,7 @@ update_buttons (ManageCtx *ctx)
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->remove_old_button),
                             !ctx->busy && ctx->names->len > 1);
   gtk_widget_set_sensitive (ctx->list_box, !ctx->busy);
-  adw_dialog_set_can_close (ctx->dialog, !ctx->busy);
+  gog_dialog_window_set_can_close (ctx->window, !ctx->busy);
 }
 
 static void
@@ -297,9 +298,8 @@ start_remove (ManageCtx *ctx)
 }
 
 static void
-on_confirm_response (AdwAlertDialog *alert, const char *response, gpointer user_data)
+on_confirm_response (const char *response, gpointer user_data)
 {
-  (void) alert;
   ManageCtx *ctx = user_data;
   if (g_strcmp0 (response, "remove") == 0)
     start_remove (ctx);
@@ -350,15 +350,12 @@ confirm_remove (ManageCtx *ctx, GStrv names)
       g_free (users);
     }
 
-  AdwDialog *alert = adw_alert_dialog_new (heading, body->str);
-  adw_alert_dialog_add_responses (ADW_ALERT_DIALOG (alert), "cancel", "Cancel", "remove",
-                                  "Remove", NULL);
-  adw_alert_dialog_set_response_appearance (ADW_ALERT_DIALOG (alert), "remove",
-                                            ADW_RESPONSE_DESTRUCTIVE);
-  adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (alert), "cancel");
-  adw_alert_dialog_set_close_response (ADW_ALERT_DIALOG (alert), "cancel");
-  g_signal_connect (alert, "response", G_CALLBACK (on_confirm_response), ctx);
-  adw_dialog_present (alert, GTK_WIDGET (ctx->dialog));
+  GogAlert *alert = gog_alert_new (heading, body->str);
+  gog_alert_add_response (alert, "cancel", "Cancel", ADW_RESPONSE_DEFAULT);
+  gog_alert_add_response (alert, "remove", "Remove", ADW_RESPONSE_DESTRUCTIVE);
+  gog_alert_set_default_response (alert, "cancel");
+  gog_alert_set_close_response (alert, "cancel");
+  gog_alert_present (alert, ctx->window, on_confirm_response, ctx);
 
   g_free (heading);
   g_string_free (body, TRUE);
@@ -501,9 +498,9 @@ rebuild_list (ManageCtx *ctx)
 }
 
 static void
-on_dialog_closed (AdwDialog *dialog, gpointer user_data)
+on_window_destroy (GtkWidget *window, gpointer user_data)
 {
-  (void) dialog;
+  (void) window;
   ManageCtx *ctx = user_data;
   if (ctx->on_done)
     ctx->on_done (ctx->changed, ctx->user_data);
@@ -537,10 +534,7 @@ gog_show_proton_manage_dialog (GtkWindow *parent, GogConfig *config, GogLibrary 
   ctx->rows = g_ptr_array_new ();
   ctx->row_notes = g_ptr_array_new_with_free_func (g_free);
 
-  AdwDialog *dialog = adw_dialog_new ();
-  ctx->dialog = dialog;
-  adw_dialog_set_title (dialog, "Manage GE-Proton");
-  adw_dialog_set_content_width (dialog, 480);
+  ctx->window = gog_dialog_window_new (parent, "Manage GE-Proton", 520, -1, 360, 240);
 
   GtkWidget *toolbar_view = adw_toolbar_view_new ();
   GtkWidget *header = adw_header_bar_new ();
@@ -570,6 +564,8 @@ gog_show_proton_manage_dialog (GtkWindow *parent, GogConfig *config, GogLibrary 
                                   GTK_POLICY_AUTOMATIC);
   gtk_scrolled_window_set_propagate_natural_height (GTK_SCROLLED_WINDOW (scroll), TRUE);
   gtk_scrolled_window_set_max_content_height (GTK_SCROLLED_WINDOW (scroll), 360);
+  /* Resizing the window gives the list the room. */
+  gtk_widget_set_vexpand (scroll, TRUE);
   gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scroll), ctx->list_box);
   gtk_box_append (GTK_BOX (outer), scroll);
 
@@ -598,10 +594,10 @@ gog_show_proton_manage_dialog (GtkWindow *parent, GogConfig *config, GogLibrary 
   gtk_box_append (GTK_BOX (outer), btn_box);
 
   adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (toolbar_view), outer);
-  adw_dialog_set_child (dialog, toolbar_view);
+  adw_window_set_content (ADW_WINDOW (ctx->window), toolbar_view);
 
   rebuild_list (ctx);
 
-  g_signal_connect (dialog, "closed", G_CALLBACK (on_dialog_closed), ctx);
-  adw_dialog_present (dialog, GTK_WIDGET (parent));
+  g_signal_connect (ctx->window, "destroy", G_CALLBACK (on_window_destroy), ctx);
+  gtk_window_present (ctx->window);
 }

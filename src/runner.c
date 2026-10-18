@@ -669,8 +669,62 @@ find_freetype (gboolean *has32, gboolean *has64)
     }
 }
 
-gchar **
-runner_freetype_help (void)
+void
+gog_fix_command_free (GogFixCommand *fix)
+{
+  if (!fix)
+    return;
+  g_free (fix->systems);
+  g_free (fix->command);
+  g_free (fix->note);
+  g_free (fix);
+}
+
+static GogFixCommand *
+fix_new (const char *systems, gchar *command, const char *note)
+{
+  GogFixCommand *fix = g_new0 (GogFixCommand, 1);
+  fix->systems = g_strdup (systems);
+  fix->command = command;
+  fix->note = g_strdup (note);
+  return fix;
+}
+
+/* TRUE if /etc/os-release names this family in ID or ID_LIKE. */
+static gboolean
+os_is_like (const char *const *ids)
+{
+  gchar *text = NULL;
+  if (!g_file_get_contents ("/etc/os-release", &text, NULL, NULL))
+    return FALSE;
+  gboolean found = FALSE;
+  gchar **lines = g_strsplit (text, "\n", -1);
+  for (gchar **l = lines; *l && !found; l++)
+    {
+      const char *value = NULL;
+      if (g_str_has_prefix (*l, "ID="))
+        value = *l + 3;
+      else if (g_str_has_prefix (*l, "ID_LIKE="))
+        value = *l + 8;
+      if (!value)
+        continue;
+      gchar *unquoted = g_strdup (value);
+      g_strdelimit (unquoted, "\"'", ' ');
+      gchar **words = g_strsplit (g_strstrip (unquoted), " ", -1);
+      for (gchar **w = words; *w && !found; w++)
+        for (const char *const *id = ids; *id; id++)
+          if (g_strcmp0 (*w, *id) == 0)
+            found = TRUE;
+      g_strfreev (words);
+      g_free (unquoted);
+    }
+  g_strfreev (lines);
+  g_free (text);
+  return found;
+}
+
+GPtrArray *
+runner_freetype_fixes (gchar **summary_out)
 {
   gboolean has32, has64;
   find_freetype (&has32, &has64);
@@ -681,27 +735,78 @@ runner_freetype_help (void)
   const char *which = need32 && need64 ? "FreeType (32-bit and 64-bit)"
                       : need32         ? "the 32-bit FreeType library"
                                        : "the FreeType library";
+  if (summary_out)
+    *summary_out = g_strdup_printf (
+        "Wine could not load %s, which Windows programs need for their text. Without it, "
+        "installers and games may show no text, and some installers stop responding. "
+        "GOG installers are 32-bit programs.", which);
 
+  GPtrArray *fixes = g_ptr_array_new_with_free_func ((GDestroyNotify) gog_fix_command_free);
+  g_ptr_array_add (fixes, fix_new ("Arch, Manjaro, EndeavourOS",
+                                   g_strdup_printf ("sudo pacman -S%s%s",
+                                                    need64 ? " freetype2" : "",
+                                                    need32 ? " lib32-freetype2" : ""),
+                                   need32 ? "32-bit packages need the multilib repository "
+                                            "enabled in /etc/pacman.conf."
+                                          : NULL));
+  g_ptr_array_add (fixes, fix_new ("Debian, Ubuntu, Mint",
+                                   g_strdup_printf ("%ssudo apt install%s%s",
+                                                    need32 ? "sudo dpkg --add-architecture i386 "
+                                                             "&& sudo apt update && "
+                                                           : "",
+                                                    need64 ? " libfreetype6" : "",
+                                                    need32 ? " libfreetype6:i386" : ""),
+                                   NULL));
+  g_ptr_array_add (fixes, fix_new ("Fedora",
+                                   g_strdup_printf ("sudo dnf install%s%s",
+                                                    need64 ? " freetype" : "",
+                                                    need32 ? " freetype.i686" : ""),
+                                   NULL));
+  g_ptr_array_add (fixes, fix_new ("openSUSE",
+                                   g_strdup_printf ("sudo zypper install%s%s",
+                                                    need64 ? " libfreetype6" : "",
+                                                    need32 ? " libfreetype6-32bit" : ""),
+                                   NULL));
+
+  /* This system's own family first. */
+  static const char *const families[][4] = {
+    { "arch", "manjaro", "endeavouros", NULL },
+    { "debian", "ubuntu", "linuxmint", NULL },
+    { "fedora", "rhel", NULL, NULL },
+    { "suse", "opensuse", "opensuse-leap", NULL },
+  };
+  for (guint i = 0; i < G_N_ELEMENTS (families); i++)
+    if (os_is_like (families[i]))
+      {
+        if (i > 0)
+          {
+            gpointer mine = g_ptr_array_steal_index (fixes, i);
+            g_ptr_array_insert (fixes, 0, mine);
+          }
+        break;
+      }
+  return fixes;
+}
+
+gchar **
+runner_freetype_help (void)
+{
+  gchar *summary = NULL;
+  GPtrArray *fixes = runner_freetype_fixes (&summary);
   GPtrArray *out = g_ptr_array_new ();
   g_ptr_array_add (out, g_strdup ("Fonts are missing for Windows programs."));
-  g_ptr_array_add (out, g_strdup_printf (
-      "Wine could not load %s, so installers and games may show no text, and some "
-      "installers stop responding. GOG installers are 32-bit programs.", which));
-  g_ptr_array_add (out, g_strdup ("To fix it, run the command for your system in a terminal, "
-                                  "then start the install again:"));
-  g_ptr_array_add (out, g_strdup_printf (
-      "  Arch, Manjaro, EndeavourOS: sudo pacman -S%s%s   (32-bit needs the multilib "
-      "repository enabled in /etc/pacman.conf)",
-      need64 ? " freetype2" : "", need32 ? " lib32-freetype2" : ""));
-  g_ptr_array_add (out, g_strdup_printf (
-      "  Debian, Ubuntu, Mint:%s sudo apt install%s%s",
-      need32 ? " sudo dpkg --add-architecture i386 && sudo apt update &&" : "",
-      need64 ? " libfreetype6" : "", need32 ? " libfreetype6:i386" : ""));
-  g_ptr_array_add (out, g_strdup_printf ("  Fedora: sudo dnf install%s%s",
-                                         need64 ? " freetype" : "", need32 ? " freetype.i686" : ""));
-  g_ptr_array_add (out, g_strdup_printf ("  openSUSE: sudo zypper install%s%s",
-                                         need64 ? " libfreetype6" : "",
-                                         need32 ? " libfreetype6-32bit" : ""));
+  g_ptr_array_add (out, summary);
+  g_ptr_array_add (out, g_strdup ("To fix it, run the command for your system in a terminal:"));
+  for (guint i = 0; i < fixes->len; i++)
+    {
+      GogFixCommand *fix = g_ptr_array_index (fixes, i);
+      if (fix->note)
+        g_ptr_array_add (out, g_strdup_printf ("  %s: %s   (%s)", fix->systems, fix->command,
+                                               fix->note));
+      else
+        g_ptr_array_add (out, g_strdup_printf ("  %s: %s", fix->systems, fix->command));
+    }
   g_ptr_array_add (out, NULL);
+  g_ptr_array_unref (fixes);
   return (gchar **) g_ptr_array_free (out, FALSE);
 }

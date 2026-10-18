@@ -756,14 +756,20 @@ on_about_clicked (GtkButton *button, gpointer user_data)
 {
   (void) button;
   GogMainWindow *self = user_data;
-  AdwDialog *about = g_object_new (ADW_TYPE_ABOUT_DIALOG, "application-name", "GOG Library Manager",
-                                    "application-icon", "org.gogmanager.app",
-                                    "version", GOG_MANAGER_VERSION, "developer-name", "Hypnotize",
-                                    "comments",
-                                    "Browse, sort, and install your local GOG offline installers "
-                                    "— Windows titles via Wine or Proton, Linux titles natively.",
-                                    "license-type", GTK_LICENSE_GPL_3_0, NULL);
-  adw_dialog_present (about, GTK_WIDGET (self));
+  /* AdwAboutWindow, not AdwAboutDialog: a real window can be moved and
+   * resized like the app's other dialogs. libadwaita marks it deprecated,
+   * but it is still the only about box that is a window of its own. */
+  G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+  GtkWindow *about = g_object_new (ADW_TYPE_ABOUT_WINDOW, "transient-for", GTK_WINDOW (self),
+                                   "modal", TRUE, "application-name", "GOG Library Manager",
+                                   "application-icon", "org.gogmanager.app",
+                                   "version", GOG_MANAGER_VERSION, "developer-name", "Hypnotize",
+                                   "comments",
+                                   "Browse, sort, and install your local GOG offline installers "
+                                   "— Windows titles via Wine or Proton, Linux titles natively.",
+                                   "license-type", GTK_LICENSE_GPL_3_0, NULL);
+  G_GNUC_END_IGNORE_DEPRECATIONS
+  gtk_window_present (about);
 }
 
 static void

@@ -3,13 +3,14 @@
  */
 
 #include "proton_fetch_dialog.h"
+#include "dialog_window.h"
 #include "proton_manage_dialog.h"
 #include "../proton_fetch.h"
 #include "../text_util.h"
 
 typedef struct
 {
-  AdwDialog *dialog;
+  GtkWindow *window;
   GtkWindow *parent;
   GogConfig *config;
   GogLibrary *library;
@@ -165,7 +166,7 @@ on_cleanup_finished (GObject *source, GAsyncResult *res, gpointer user_data)
     }
   gtk_widget_set_visible (GTK_WIDGET (ctx->cleanup_button), FALSE);
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->action_button), TRUE);
-  adw_dialog_set_can_close (ctx->dialog, TRUE);
+  gog_dialog_window_set_can_close (ctx->window, TRUE);
   gtk_widget_grab_focus (GTK_WIDGET (ctx->action_button));
 }
 
@@ -176,7 +177,7 @@ on_cleanup_clicked (GtkButton *button, gpointer user_data)
   gtk_widget_set_sensitive (GTK_WIDGET (button), FALSE);
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->action_button), FALSE);
   /* Removing takes a moment; keep ctx alive until it is done. */
-  adw_dialog_set_can_close (ctx->dialog, FALSE);
+  gog_dialog_window_set_can_close (ctx->window, FALSE);
   gtk_label_set_text (ctx->cleanup_label, "Removing older versions…");
   proton_fetch_remove_async ((const char *const *) ctx->unused, NULL, on_cleanup_finished, ctx);
 }
@@ -208,7 +209,7 @@ on_job_finished (GogProtonFetchJob *job, gboolean success, const gchar *result, 
   gtk_button_set_label (ctx->action_button, "Close");
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->action_button), TRUE);
   gtk_widget_set_visible (GTK_WIDGET (ctx->cancel_button), FALSE);
-  adw_dialog_set_can_close (ctx->dialog, TRUE);
+  gog_dialog_window_set_can_close (ctx->window, TRUE);
   gtk_widget_grab_focus (GTK_WIDGET (ctx->action_button));
 }
 
@@ -225,7 +226,7 @@ start_download (FetchCtx *ctx)
   gtk_button_set_label (ctx->action_button, "Downloading…");
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->action_button), FALSE);
   /* Closing mid-download would orphan the job; use Cancel instead. */
-  adw_dialog_set_can_close (ctx->dialog, FALSE);
+  gog_dialog_window_set_can_close (ctx->window, FALSE);
   gtk_widget_grab_focus (GTK_WIDGET (ctx->cancel_button));
 
   gog_proton_fetch_job_start (ctx->job);
@@ -241,7 +242,7 @@ on_action_clicked (GtkButton *button, gpointer user_data)
       start_download (ctx);
       return;
     }
-  adw_dialog_close (ctx->dialog);
+  gtk_window_close (ctx->window);
 }
 
 static void
@@ -252,13 +253,13 @@ on_cancel_clicked (GtkButton *button, gpointer user_data)
   if (ctx->job)
     gog_proton_fetch_job_cancel (ctx->job);
   else
-    adw_dialog_close (ctx->dialog);
+    gtk_window_close (ctx->window);
 }
 
 static void
-on_dialog_closed (AdwDialog *dialog, gpointer user_data)
+on_window_destroy (GtkWidget *window, gpointer user_data)
 {
-  (void) dialog;
+  (void) window;
   FetchCtx *ctx = user_data;
   if (ctx->on_done)
     ctx->on_done (ctx->succeeded, ctx->result, ctx->user_data);
@@ -276,10 +277,7 @@ gog_show_proton_fetch_dialog (GtkWindow *parent, GogConfig *config, GogLibrary *
   ctx->on_done = on_done;
   ctx->user_data = user_data;
 
-  AdwDialog *dialog = adw_dialog_new ();
-  ctx->dialog = dialog;
-  adw_dialog_set_title (dialog, "Download GE-Proton");
-  adw_dialog_set_content_width (dialog, 480);
+  ctx->window = gog_dialog_window_new (parent, "Download GE-Proton", 520, -1, 360, 200);
 
   GtkWidget *toolbar_view = adw_toolbar_view_new ();
   GtkWidget *header = adw_header_bar_new ();
@@ -356,8 +354,8 @@ gog_show_proton_fetch_dialog (GtkWindow *parent, GogConfig *config, GogLibrary *
   gtk_box_append (GTK_BOX (outer), btn_box);
 
   adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (toolbar_view), outer);
-  adw_dialog_set_child (dialog, toolbar_view);
+  adw_window_set_content (ADW_WINDOW (ctx->window), toolbar_view);
 
-  g_signal_connect (dialog, "closed", G_CALLBACK (on_dialog_closed), ctx);
-  adw_dialog_present (dialog, GTK_WIDGET (parent));
+  g_signal_connect (ctx->window, "destroy", G_CALLBACK (on_window_destroy), ctx);
+  gtk_window_present (ctx->window);
 }

@@ -6,10 +6,11 @@
 #include "proton_fetch_dialog.h"
 #include "../runner.h"
 #include "../installer_engine.h"
+#include "dialog_window.h"
 
 typedef struct
 {
-  AdwDialog *dialog;
+  GtkWindow *window;
   GtkWindow *parent;
   GogGame *game;
   GogInstallerInfo *installer;
@@ -80,6 +81,96 @@ on_job_progress (GogInstallJob *job, gdouble fraction, const gchar *message, gpo
     gtk_progress_bar_set_fraction (ctx->progress_bar, fraction);
   if (message)
     gtk_progress_bar_set_text (ctx->progress_bar, message);
+}
+
+static void
+on_copy_command_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) user_data;
+  const char *command = g_object_get_data (G_OBJECT (button), "gog-command");
+  gdk_clipboard_set_text (gtk_widget_get_clipboard (GTK_WIDGET (button)), command);
+  gtk_widget_set_tooltip_text (GTK_WIDGET (button), "Copied");
+}
+
+/* One row per distribution: name, the command (selectable), a copy button. */
+static GtkWidget *
+fonts_fix_list (void)
+{
+  GPtrArray *fixes = runner_freetype_fixes (NULL);
+  GtkWidget *list = gtk_list_box_new ();
+  gtk_list_box_set_selection_mode (GTK_LIST_BOX (list), GTK_SELECTION_NONE);
+  gtk_widget_add_css_class (list, "boxed-list");
+  for (guint i = 0; i < fixes->len; i++)
+    {
+      GogFixCommand *fix = g_ptr_array_index (fixes, i);
+      GtkWidget *row = adw_action_row_new ();
+      /* Commands contain "&&", which markup would reject. */
+      adw_preferences_row_set_use_markup (ADW_PREFERENCES_ROW (row), FALSE);
+      adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row), fix->systems);
+      gchar *subtitle = fix->note ? g_strdup_printf ("%s\n%s", fix->command, fix->note)
+                                  : g_strdup (fix->command);
+      adw_action_row_set_subtitle (ADW_ACTION_ROW (row), subtitle);
+      adw_action_row_set_subtitle_selectable (ADW_ACTION_ROW (row), TRUE);
+      g_free (subtitle);
+
+      GtkWidget *copy = gtk_button_new_from_icon_name ("edit-copy-symbolic");
+      gtk_widget_set_valign (copy, GTK_ALIGN_CENTER);
+      gtk_widget_add_css_class (copy, "flat");
+      gtk_widget_set_tooltip_text (copy, "Copy command");
+      gchar *label = g_strdup_printf ("Copy the command for %s", fix->systems);
+      gtk_accessible_update_property (GTK_ACCESSIBLE (copy), GTK_ACCESSIBLE_PROPERTY_LABEL, label, -1);
+      g_free (label);
+      g_object_set_data_full (G_OBJECT (copy), "gog-command", g_strdup (fix->command), g_free);
+      g_signal_connect (copy, "clicked", G_CALLBACK (on_copy_command_clicked), NULL);
+      adw_action_row_add_suffix (ADW_ACTION_ROW (row), copy);
+      gtk_list_box_append (GTK_LIST_BOX (list), row);
+    }
+  g_ptr_array_unref (fixes);
+
+  GtkWidget *scroll = gtk_scrolled_window_new ();
+  gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll), GTK_POLICY_NEVER,
+                                  GTK_POLICY_AUTOMATIC);
+  gtk_scrolled_window_set_propagate_natural_height (GTK_SCROLLED_WINDOW (scroll), TRUE);
+  gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scroll), list);
+  return scroll;
+}
+
+static void
+on_fonts_response (const char *response, gpointer user_data)
+{
+  InstallCtx *ctx = user_data;
+  if (!ctx->job)
+    return;
+  if (g_strcmp0 (response, "cancel") == 0)
+    gog_install_job_cancel (ctx->job);
+  else
+    gog_install_job_resume (ctx->job);
+}
+
+static void
+on_job_fonts_missing (GogInstallJob *job, gboolean paused, gpointer user_data)
+{
+  (void) job;
+  InstallCtx *ctx = user_data;
+  gchar *summary = NULL;
+  g_ptr_array_unref (runner_freetype_fixes (&summary));
+  gchar *body = g_strdup_printf (
+      paused ? "%s\n\nThe install is paused. Run the command for your system in a terminal, "
+               "then choose Continue."
+             : "%s\n\nThe installer is already running. If it stops making progress, cancel, "
+               "run the command for your system, and start the install again.",
+      summary);
+  GogAlert *alert = gog_alert_new ("Fonts Missing for Windows Programs", body);
+  g_free (body);
+  g_free (summary);
+  gog_alert_set_extra_child (alert, fonts_fix_list ());
+  gog_alert_add_response (alert, "cancel", "Cancel Install", ADW_RESPONSE_DESTRUCTIVE);
+  gog_alert_add_response (alert, "continue", paused ? "Continue" : "Keep Installing",
+                          ADW_RESPONSE_SUGGESTED);
+  gog_alert_set_default_response (alert, "continue");
+  /* Closing it must not throw the install away without asking. */
+  gog_alert_set_close_response (alert, "continue");
+  gog_alert_present (alert, ctx->window, on_fonts_response, ctx);
 }
 
 static void
@@ -157,7 +248,7 @@ on_job_finished (GogInstallJob *job, gboolean success, const gchar *error_messag
   gtk_button_set_label (ctx->action_button, "Close");
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->action_button), TRUE);
   gtk_widget_set_visible (GTK_WIDGET (ctx->cancel_button), FALSE);
-  adw_dialog_set_can_close (ctx->dialog, TRUE);
+  gog_dialog_window_set_can_close (ctx->window, TRUE);
   gtk_widget_grab_focus (GTK_WIDGET (ctx->action_button));
 }
 
@@ -235,7 +326,7 @@ on_get_proton_clicked (GtkButton *button, gpointer user_data)
 {
   (void) button;
   InstallCtx *ctx = user_data;
-  gog_show_proton_fetch_dialog (ctx->parent, ctx->config, ctx->library, on_proton_fetch_done,
+  gog_show_proton_fetch_dialog (ctx->window, ctx->config, ctx->library, on_proton_fetch_done,
                                 ctx);
 }
 
@@ -261,7 +352,7 @@ on_choose_dir_clicked (GtkButton *button, gpointer user_data)
   InstallCtx *ctx = user_data;
   GtkFileDialog *dialog = gtk_file_dialog_new ();
   gtk_file_dialog_set_title (dialog, "Choose Install Directory");
-  gtk_file_dialog_select_folder (dialog, ctx->parent, NULL, on_choose_dir_response, ctx);
+  gtk_file_dialog_select_folder (dialog, ctx->window, NULL, on_choose_dir_response, ctx);
   g_object_unref (dialog);
 }
 
@@ -283,13 +374,14 @@ start_install (InstallCtx *ctx)
   g_signal_connect (ctx->job, "progress", G_CALLBACK (on_job_progress), ctx);
   g_signal_connect (ctx->job, "log-line", G_CALLBACK (on_job_log_line), ctx);
   g_signal_connect (ctx->job, "finished", G_CALLBACK (on_job_finished), ctx);
+  g_signal_connect (ctx->job, "fonts-missing", G_CALLBACK (on_job_fonts_missing), ctx);
 
   gtk_widget_set_visible (ctx->setup_box, FALSE);
   gtk_widget_set_visible (ctx->progress_box, TRUE);
   gtk_button_set_label (ctx->action_button, "Installing…");
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->action_button), FALSE);
   /* Closing mid-install would orphan the job; use Cancel instead. */
-  adw_dialog_set_can_close (ctx->dialog, FALSE);
+  gog_dialog_window_set_can_close (ctx->window, FALSE);
   gtk_widget_grab_focus (GTK_WIDGET (ctx->cancel_button));
 
   gog_install_job_start (ctx->job);
@@ -308,8 +400,8 @@ on_action_clicked (GtkButton *button, gpointer user_data)
     }
 
   /* Job already finished (button now reads "Close"); on_done runs from
-   * on_dialog_closed so the header close button reports back too. */
-  adw_dialog_close (ctx->dialog);
+   * on_window_destroy so the title bar's close button reports back too. */
+  gtk_window_close (ctx->window);
 }
 
 static void
@@ -320,13 +412,13 @@ on_cancel_clicked (GtkButton *button, gpointer user_data)
   if (ctx->job)
     gog_install_job_cancel (ctx->job);
   else
-    adw_dialog_close (ctx->dialog);
+    gtk_window_close (ctx->window);
 }
 
 static void
-on_dialog_closed (AdwDialog *dialog, gpointer user_data)
+on_window_destroy (GtkWidget *window, gpointer user_data)
 {
-  (void) dialog;
+  (void) window;
   InstallCtx *ctx = user_data;
   if (ctx->on_done)
     ctx->on_done (ctx->game, ctx->succeeded, ctx->user_data);
@@ -359,10 +451,7 @@ gog_show_install_dialog (GtkWindow *parent, GogGame *game, GogInstallerInfo *ins
   ctx->runner_locked = into_base && (gog_game_get_runner_kind (base) == GOG_RUNNER_WINE ||
                                      gog_game_get_runner_kind (base) == GOG_RUNNER_PROTON);
 
-  AdwDialog *dialog = adw_dialog_new ();
-  ctx->dialog = dialog;
-  adw_dialog_set_title (dialog, "Install");
-  adw_dialog_set_content_width (dialog, 520);
+  ctx->window = gog_dialog_window_new (parent, "Install", 560, -1, 360, 240);
 
   GtkWidget *toolbar_view = adw_toolbar_view_new ();
   GtkWidget *header = adw_header_bar_new ();
@@ -447,6 +536,8 @@ gog_show_install_dialog (GtkWindow *parent, GogGame *game, GogInstallerInfo *ins
 
   GtkWidget *log_scroll = gtk_scrolled_window_new ();
   gtk_widget_set_size_request (log_scroll, -1, 220);
+  /* Resizing the window gives the log the room. */
+  gtk_widget_set_vexpand (log_scroll, TRUE);
   gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (log_scroll), GTK_POLICY_NEVER,
                                    GTK_POLICY_AUTOMATIC);
   ctx->log_view = GTK_TEXT_VIEW (gtk_text_view_new ());
@@ -478,9 +569,9 @@ gog_show_install_dialog (GtkWindow *parent, GogGame *game, GogInstallerInfo *ins
     populate_runner_dropdown (ctx);
 
   adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (toolbar_view), outer);
-  adw_dialog_set_child (dialog, toolbar_view);
+  adw_window_set_content (ADW_WINDOW (ctx->window), toolbar_view);
 
-  g_signal_connect (dialog, "closed", G_CALLBACK (on_dialog_closed), ctx);
+  g_signal_connect (ctx->window, "destroy", G_CALLBACK (on_window_destroy), ctx);
 
-  adw_dialog_present (dialog, GTK_WIDGET (parent));
+  gtk_window_present (ctx->window);
 }

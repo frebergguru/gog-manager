@@ -26,12 +26,18 @@ G_DECLARE_FINAL_TYPE (GogInstallJob, gog_install_job, GOG, INSTALL_JOB, GObject)
  *   "log-line" (gchar *line) — raw subprocess output, for a live log view.
  *   "finished" (gboolean success, gchar *error_message) — error_message is
  *      NULL on success.
+ *   "fonts-missing" (gboolean paused) — Wine has no FreeType, so Windows
+ *      programs get no fonts (see runner_freetype_fixes()). When paused is
+ *      TRUE the install waits for gog_install_job_resume() or
+ *      gog_install_job_cancel(); when FALSE the installer is already
+ *      running and carries on.
  */
 GogInstallJob *gog_install_job_new (GogGame *game, GogInstallerInfo *installer,
                                      const char *install_dir, GogRunnerInfo *runner);
 
 void gog_install_job_start  (GogInstallJob *self);
 void gog_install_job_cancel (GogInstallJob *self);
+void gog_install_job_resume (GogInstallJob *self);
 
 const char *gog_install_job_get_install_dir (GogInstallJob *self);
 

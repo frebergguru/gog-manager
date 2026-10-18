@@ -46,6 +46,7 @@ ui_sources = [
   'src/ui/proton_manage_dialog.c',
   'src/ui/gog_sync_dialog.c',
   'src/ui/preferences_dialog.c',
+  'src/ui/dialog_window.c',
 ]
 
 executable('gog-manager',

@@ -4,6 +4,7 @@
 
 #include "gog_sync_dialog.h"
 #include "../gog_sync.h"
+#include "dialog_window.h"
 
 #define N_SLOTS 8 /* the most downloads at the same time */
 #define N_PARTS 3
@@ -693,12 +694,18 @@ on_check_finished (GogSyncJob *job, gboolean success, const gchar *error_message
   set_busy (ctx, FALSE);
 }
 
-static void
-on_failures_response (AdwAlertDialog *dialog, const char *response, gpointer user_data)
+typedef struct
 {
-  (void) dialog;
-  SyncCtx *ctx = user_data;
-  GPtrArray *failures = g_object_get_data (G_OBJECT (dialog), "failures");
+  SyncCtx *ctx;
+  GPtrArray *failures; /* GogSyncFailure*, reffed */
+} FailuresAsk;
+
+static void
+on_failures_response (const char *response, gpointer user_data)
+{
+  FailuresAsk *ask = user_data;
+  SyncCtx *ctx = ask->ctx;
+  GPtrArray *failures = ask->failures;
   if (g_strcmp0 (response, "ignore") == 0)
     {
       gog_sync_ignore_files (failures);
@@ -711,6 +718,8 @@ on_failures_response (AdwAlertDialog *dialog, const char *response, gpointer use
     }
   else
     append_log_line (ctx, "The files that failed stay in the list, to try again later.");
+  g_ptr_array_unref (ask->failures);
+  g_free (ask);
 }
 
 /* Lists the files that failed and why, and asks whether to keep them for
@@ -732,19 +741,19 @@ ask_about_failures (SyncCtx *ctx, GPtrArray *failures)
                          "again later, or ignore these files? Ignored files show up again when "
                          "GOG puts out a new version of them.");
 
-  AdwDialog *dialog = adw_alert_dialog_new (failures->len == 1 ? "A File Could Not Be Downloaded"
-                                                               : "Some Files Could Not Be Downloaded",
-                                            body->str);
-  adw_alert_dialog_add_responses (ADW_ALERT_DIALOG (dialog), "ignore", "_Ignore",
-                                  "later", "_Try Again Later", NULL);
-  adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dialog), "later");
-  adw_alert_dialog_set_close_response (ADW_ALERT_DIALOG (dialog), "later");
-  g_object_set_data_full (G_OBJECT (dialog), "failures", g_ptr_array_ref (failures),
-                          (GDestroyNotify) g_ptr_array_unref);
-  g_signal_connect (dialog, "response", G_CALLBACK (on_failures_response), ctx);
-  /* No announce(): screen readers read an alert dialog as it opens, and
-   * announcing while it opens crashed GTK 4.22. */
-  adw_dialog_present (dialog, GTK_WIDGET (ctx->window));
+  GogAlert *alert = gog_alert_new (failures->len == 1 ? "A File Could Not Be Downloaded"
+                                                       : "Some Files Could Not Be Downloaded",
+                                   body->str);
+  gog_alert_add_response (alert, "ignore", "_Ignore", ADW_RESPONSE_DEFAULT);
+  gog_alert_add_response (alert, "later", "_Try Again Later", ADW_RESPONSE_SUGGESTED);
+  gog_alert_set_default_response (alert, "later");
+  gog_alert_set_close_response (alert, "later");
+  FailuresAsk *ask = g_new0 (FailuresAsk, 1);
+  ask->ctx = ctx;
+  ask->failures = g_ptr_array_ref (failures);
+  /* No announce(): screen readers read a new window's description as it
+   * opens, and announcing while an alert opened crashed GTK 4.22. */
+  gog_alert_present (alert, ctx->window, on_failures_response, ask);
   g_string_free (body, TRUE);
 }
 

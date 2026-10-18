@@ -26,6 +26,9 @@ struct _GogInstallJob
   pid_t current_pgid;            /* its process group, 0 if none; proc_mutex */
   volatile gboolean cancelled;
   gboolean freetype_explained;   /* install thread only */
+  gboolean installer_running;    /* install thread only */
+  GCond resume_cond;             /* with proc_mutex: wakes a paused install */
+  gboolean resumed;              /* proc_mutex */
 };
 
 enum
@@ -33,6 +36,7 @@ enum
   SIG_PROGRESS,
   SIG_LOG_LINE,
   SIG_FINISHED,
+  SIG_FONTS_MISSING,
   N_SIGNALS,
 };
 
@@ -48,6 +52,7 @@ gog_install_job_finalize (GObject *object)
   g_free (self->install_dir);
   gog_runner_info_free (self->runner);
   g_mutex_clear (&self->proc_mutex);
+  g_cond_clear (&self->resume_cond);
   if (self->thread)
     g_thread_unref (self->thread);
   G_OBJECT_CLASS (gog_install_job_parent_class)->finalize (object);
@@ -67,12 +72,16 @@ gog_install_job_class_init (GogInstallJobClass *klass)
   signals[SIG_FINISHED] = g_signal_new ("finished", G_TYPE_FROM_CLASS (klass), G_SIGNAL_RUN_LAST,
                                          0, NULL, NULL, NULL, G_TYPE_NONE, 2,
                                          G_TYPE_BOOLEAN, G_TYPE_STRING);
+  signals[SIG_FONTS_MISSING] = g_signal_new ("fonts-missing", G_TYPE_FROM_CLASS (klass),
+                                              G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
+                                              G_TYPE_NONE, 1, G_TYPE_BOOLEAN);
 }
 
 static void
 gog_install_job_init (GogInstallJob *self)
 {
   g_mutex_init (&self->proc_mutex);
+  g_cond_init (&self->resume_cond);
 }
 
 GogInstallJob *
@@ -185,6 +194,44 @@ job_finished (GogInstallJob *job, gboolean success, const char *error_message)
   g_idle_add (emit_finished_idle, fm);
 }
 
+typedef struct
+{
+  GogInstallJob *job;
+  gboolean paused;
+} FontsMsg;
+
+static gboolean
+emit_fonts_missing_idle (gpointer data)
+{
+  FontsMsg *fm = data;
+  g_signal_emit (fm->job, signals[SIG_FONTS_MISSING], 0, fm->paused);
+  g_object_unref (fm->job);
+  g_free (fm);
+  return G_SOURCE_REMOVE;
+}
+
+static void
+job_fonts_missing (GogInstallJob *job, gboolean paused)
+{
+  FontsMsg *fm = g_new (FontsMsg, 1);
+  fm->job = g_object_ref (job);
+  fm->paused = paused;
+  g_idle_add (emit_fonts_missing_idle, fm);
+}
+
+/* Holds the install thread until gog_install_job_resume() or a cancel.
+ * Returns FALSE if cancelled. */
+static gboolean
+job_wait_for_resume (GogInstallJob *job)
+{
+  g_mutex_lock (&job->proc_mutex);
+  while (!job->resumed && !job->cancelled)
+    g_cond_wait (&job->resume_cond, &job->proc_mutex);
+  gboolean go_on = !job->cancelled;
+  g_mutex_unlock (&job->proc_mutex);
+  return go_on;
+}
+
 /* ---- subprocess execution with live log streaming ---- */
 
 /* Each child leads its own process group, so cancelling can kill whatever
@@ -279,6 +326,10 @@ run_and_stream_full (GogInstallJob *job, gchar **argv, gchar **envp, gint max_ok
           if (!job->freetype_explained)
             {
               job->freetype_explained = TRUE;
+              /* Seen while the prefix was being set up, the install pauses
+               * for it below; later, the installer is already running. */
+              if (job->installer_running)
+                job_fonts_missing (job, FALSE);
               gchar **help = runner_freetype_help ();
               for (gchar **h = help; *h; h++)
                 job_log (job, *h);
@@ -786,6 +837,19 @@ install_windows_sync (GogInstallJob *job, GError **error)
       return FALSE;
     }
 
+  /* Wine said while setting up the prefix that it has no fonts; without
+   * them GOG's installer can hang. Wait for the user to fix it or cancel. */
+  if (job->freetype_explained)
+    {
+      job_progress (job, -1, "Paused: fonts are missing for Windows programs");
+      job_fonts_missing (job, TRUE);
+      if (!job_wait_for_resume (job))
+        {
+          g_set_error (error, G_IO_ERROR, G_IO_ERROR_CANCELLED, "Cancelled");
+          return FALSE;
+        }
+    }
+
   gchar *wine_root = runner_wine_root_dir (job->runner->kind, job->install_dir);
   gboolean linked = runner_link_c_game (wine_root, job->install_dir, error);
   g_free (wine_root);
@@ -793,6 +857,7 @@ install_windows_sync (GogInstallJob *job, GError **error)
     return FALSE;
 
   job_progress (job, -1, "Running installer (silent)…");
+  job->installer_running = TRUE;
   InstallWatch *watch = install_watch_start (job);
   GogCommand *silent = runner_build_install_command (job->runner, job->installer->file_path,
                                                       job->install_dir,
@@ -866,14 +931,24 @@ gog_install_job_start (GogInstallJob *self)
 void
 gog_install_job_cancel (GogInstallJob *self)
 {
-  self->cancelled = TRUE;
   g_mutex_lock (&self->proc_mutex);
+  self->cancelled = TRUE;
+  g_cond_broadcast (&self->resume_cond);
   if (self->current_pgid > 0)
     kill (-self->current_pgid, SIGKILL);
   if (self->current_proc)
     g_subprocess_force_exit (self->current_proc);
   g_mutex_unlock (&self->proc_mutex);
   kill_prefix_processes (self, FALSE);
+}
+
+void
+gog_install_job_resume (GogInstallJob *self)
+{
+  g_mutex_lock (&self->proc_mutex);
+  self->resumed = TRUE;
+  g_cond_broadcast (&self->resume_cond);
+  g_mutex_unlock (&self->proc_mutex);
 }
 
 gboolean

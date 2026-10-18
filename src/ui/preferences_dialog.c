@@ -3,6 +3,7 @@
  */
 
 #include "preferences_dialog.h"
+#include "dialog_window.h"
 #include "proton_fetch_dialog.h"
 #include "proton_manage_dialog.h"
 #include "../proton_fetch.h"
@@ -11,7 +12,7 @@
 
 typedef struct
 {
-  AdwPreferencesDialog *dialog;
+  GtkWindow *window;
   GtkWindow *parent;
   GogConfig *config;
   GogLibrary *library;
@@ -326,10 +327,19 @@ on_download_proton_clicked (GtkButton *button, gpointer user_data)
                                 ctx);
 }
 
-static void
-on_dialog_closed (AdwDialog *dialog, gpointer user_data)
+/* Saves while the window's widgets still exist; destroy comes too late. */
+static gboolean
+on_close_request (GtkWindow *window, gpointer user_data)
 {
-  (void) dialog;
+  (void) window;
+  save_and_close (user_data);
+  return FALSE;
+}
+
+static void
+on_window_destroy (GtkWidget *window, gpointer user_data)
+{
+  (void) window;
   PrefsCtx *ctx = user_data;
   if (ctx->checking)
     {
@@ -338,7 +348,6 @@ on_dialog_closed (AdwDialog *dialog, gpointer user_data)
     }
   g_free (ctx->latest_tag);
   g_free (ctx->latest_dir);
-  save_and_close (ctx);
   if (ctx->runners)
     g_ptr_array_unref (ctx->runners);
   g_free (ctx->pending_library_path);
@@ -358,9 +367,7 @@ gog_show_preferences_dialog (GtkWindow *parent, GogConfig *config, GogLibrary *l
   ctx->on_library_path_changed = on_library_path_changed;
   ctx->user_data = user_data;
 
-  AdwPreferencesDialog *dialog = ADW_PREFERENCES_DIALOG (adw_preferences_dialog_new ());
-  ctx->dialog = dialog;
-  adw_preferences_dialog_set_search_enabled (dialog, FALSE);
+  ctx->window = gog_dialog_window_new (parent, "Preferences", 640, 600, 360, 300);
 
   AdwPreferencesPage *page = ADW_PREFERENCES_PAGE (adw_preferences_page_new ());
   adw_preferences_page_set_title (page, "General");
@@ -463,8 +470,12 @@ gog_show_preferences_dialog (GtkWindow *parent, GogConfig *config, GogLibrary *l
 
   adw_preferences_page_add (page, install_group);
 
-  adw_preferences_dialog_add (dialog, page);
+  GtkWidget *toolbar_view = adw_toolbar_view_new ();
+  adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (toolbar_view), adw_header_bar_new ());
+  adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (toolbar_view), GTK_WIDGET (page));
+  adw_window_set_content (ADW_WINDOW (ctx->window), toolbar_view);
 
-  g_signal_connect (dialog, "closed", G_CALLBACK (on_dialog_closed), ctx);
-  adw_dialog_present (ADW_DIALOG (dialog), GTK_WIDGET (parent));
+  g_signal_connect (ctx->window, "close-request", G_CALLBACK (on_close_request), ctx);
+  g_signal_connect (ctx->window, "destroy", G_CALLBACK (on_window_destroy), ctx);
+  gtk_window_present (ctx->window);
 }

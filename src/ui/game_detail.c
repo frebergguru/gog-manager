@@ -7,6 +7,7 @@
 #include "../installer_engine.h"
 #include "../launch.h"
 #include "../runner.h"
+#include "dialog_window.h"
 #include "../text_util.h"
 
 struct _GogGameDetail
@@ -123,11 +124,9 @@ on_play_clicked (GtkButton *button, gpointer user_data)
 }
 
 static void
-on_uninstall_response (GObject *source, GAsyncResult *res, gpointer user_data)
+on_uninstall_response (const char *response, gpointer user_data)
 {
-  AdwAlertDialog *dialog = ADW_ALERT_DIALOG (source);
   GogGameDetail *self = user_data;
-  const char *response = adw_alert_dialog_choose_finish (dialog, res);
   if (g_strcmp0 (response, "uninstall") != 0)
     return;
 
@@ -189,21 +188,21 @@ on_uninstall_clicked (GtkButton *button, gpointer user_data)
   GogGame *base = gog_game_get_base_game (self->game);
   gboolean is_dlc_record = base && g_strcmp0 (gog_game_get_install_path (base),
                                               gog_game_get_install_path (self->game)) == 0;
-  AdwAlertDialog *dialog = ADW_ALERT_DIALOG (
+  GogAlert *alert =
       is_dlc_record
-          ? adw_alert_dialog_new ("Uninstall DLC?",
+          ? gog_alert_new ("Uninstall DLC?",
                                   "This DLC was installed into its base game's folder and its "
                                   "files can't be separated from the game's, so they stay on disk. "
                                   "It will only be marked as not installed.")
-          : adw_alert_dialog_new ("Uninstall Game?",
+          : gog_alert_new ("Uninstall Game?",
                                   "This removes the installed game files (and its Wine/Proton "
                                   "prefix, if any) from disk, including any DLC installed into "
-                                  "it. The original installer files are not affected."));
-  adw_alert_dialog_add_responses (dialog, "cancel", "Cancel", "uninstall", "Uninstall", NULL);
-  adw_alert_dialog_set_response_appearance (dialog, "uninstall", ADW_RESPONSE_DESTRUCTIVE);
-  adw_alert_dialog_set_default_response (dialog, "cancel");
-  adw_alert_dialog_set_close_response (dialog, "cancel");
-  adw_alert_dialog_choose (dialog, GTK_WIDGET (self->parent_window), NULL, on_uninstall_response, self);
+                                  "it. The original installer files are not affected.");
+  gog_alert_add_response (alert, "cancel", "Cancel", ADW_RESPONSE_DEFAULT);
+  gog_alert_add_response (alert, "uninstall", "Uninstall", ADW_RESPONSE_DESTRUCTIVE);
+  gog_alert_set_default_response (alert, "cancel");
+  gog_alert_set_close_response (alert, "cancel");
+  gog_alert_present (alert, self->parent_window, on_uninstall_response, self);
 }
 
 static void
