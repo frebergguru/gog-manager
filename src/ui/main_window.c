@@ -833,7 +833,18 @@ build_header_bar (GogMainWindow *self)
   g_signal_connect (rescan_btn, "clicked", G_CALLBACK (on_rescan_clicked), self);
   adw_header_bar_pack_end (ADW_HEADER_BAR (header), rescan_btn);
 
-  GtkWidget *sync_btn = gtk_button_new_from_icon_name ("software-update-available-symbolic");
+  /* Not every icon theme has the first name (Breeze doesn't); take the
+   * first one the theme does have, or a text label as a last resort, so the
+   * button is never blank. */
+  static const char *const sync_icons[] = { "software-update-available-symbolic",
+                                            "folder-download-symbolic", NULL };
+  GtkIconTheme *icon_theme = gtk_icon_theme_get_for_display (gtk_widget_get_display (header));
+  GtkWidget *sync_btn = NULL;
+  for (const char *const *icon = sync_icons; *icon && !sync_btn; icon++)
+    if (gtk_icon_theme_has_icon (icon_theme, *icon))
+      sync_btn = gtk_button_new_from_icon_name (*icon);
+  if (!sync_btn)
+    sync_btn = gtk_button_new_with_label ("GOG");
   gtk_widget_set_tooltip_text (sync_btn, "New Games and Updates on GOG");
   set_accessible_label (sync_btn, "New Games and Updates on GOG");
   g_signal_connect (sync_btn, "clicked", G_CALLBACK (on_gog_sync_clicked), self);
