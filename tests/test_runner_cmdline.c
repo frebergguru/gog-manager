@@ -101,6 +101,26 @@ test_wine_launch_command (void)
   gog_runner_info_free (runner);
 }
 
+/* Manifest arguments are Windows command lines: backslashes stay. */
+static void
+test_wine_launch_windows_arguments (void)
+{
+  GogRunnerInfo *runner = gog_runner_info_new (GOG_RUNNER_WINE, "System Wine", "/usr/bin/wine");
+  GogCommand *cmd = runner_build_launch_command (
+      runner, "/games/foo", "DOSBOX\\dosbox.exe", "DOSBOX",
+      "-conf \"..\\dosbox foo.conf\" -path C:\\Data -q \\\"x\\\" -e \"\" end");
+
+  guint n = g_strv_length (cmd->argv);
+  g_assert_cmpuint (n, >=, 10);
+  const char *const expected[] = { "-conf", "..\\dosbox foo.conf", "-path", "C:\\Data",
+                                   "-q", "\"x\"", "-e", "", "end" };
+  for (guint i = 0; i < G_N_ELEMENTS (expected); i++)
+    g_assert_cmpstr (cmd->argv[n - G_N_ELEMENTS (expected) + i], ==, expected[i]);
+
+  gog_command_free (cmd);
+  gog_runner_info_free (runner);
+}
+
 static void
 test_wine_root_dir_proton_uses_pfx_subdir (void)
 {
@@ -248,6 +268,7 @@ main (int argc, char *argv[])
   g_test_add_func ("/runner/wine_install_non_silent", test_wine_install_non_silent_omits_switches);
   g_test_add_func ("/runner/proton_install_command_env", test_proton_install_command_env);
   g_test_add_func ("/runner/wine_launch_command", test_wine_launch_command);
+  g_test_add_func ("/runner/wine_launch_windows_arguments", test_wine_launch_windows_arguments);
   g_test_add_func ("/runner/wine_root_dir", test_wine_root_dir_proton_uses_pfx_subdir);
   g_test_add_func ("/runner/link_c_game", test_link_c_game_resolves_to_install_dir);
   g_test_add_func ("/proton/names_sort_newest_first", test_proton_names_sort_newest_first);

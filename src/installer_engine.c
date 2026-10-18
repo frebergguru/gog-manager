@@ -284,8 +284,9 @@ move_path (const char *src, const char *dst, GError **error)
   if (g_rename (src, dst) == 0)
     return TRUE;
 
-  /* g_rename fails across filesystems (EXDEV) -- fall back to copy+delete. */
-  if (g_file_test (src, G_FILE_TEST_IS_DIR))
+  /* g_rename fails across filesystems (EXDEV) -- fall back to copy+delete.
+   * A symlink to a directory is copied as a link, not walked into. */
+  if (g_file_test (src, G_FILE_TEST_IS_DIR) && !g_file_test (src, G_FILE_TEST_IS_SYMLINK))
     {
       if (g_mkdir_with_parents (dst, 0755) != 0)
         {
@@ -404,6 +405,12 @@ extract_linux_sync (GogInstallJob *job, GError **error)
   /* GOG's .sh installers are a shell stub followed by a zip, so unzip warns
    * about "extra bytes at beginning" and exits 1 even though it worked. */
   gboolean ok = run_and_stream_full (job, argv, NULL, 1, error);
+  /* Cancel pressed as unzip finished: nothing has been moved in yet. */
+  if (ok && job->cancelled)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_CANCELLED, "Cancelled");
+      ok = FALSE;
+    }
   if (!ok)
     {
       remove_dir_recursive (tmp_dir);
@@ -590,8 +597,13 @@ gog_uninstall_game (GogGame *game, GError **error)
   /* The path comes from the state file; never let a corrupt or hand-edited
    * record turn uninstall into "delete my home directory". */
   gchar *canonical = g_canonicalize_filename (path, NULL);
+  gchar *home = g_canonicalize_filename (g_get_home_dir (), NULL);
+  gchar *canonical_slash = g_strconcat (canonical, G_DIR_SEPARATOR_S, NULL);
+  /* Nor a folder the home directory is inside, such as /home. */
   gboolean dangerous = !g_path_is_absolute (path) || g_strcmp0 (canonical, "/") == 0 ||
-                       g_strcmp0 (canonical, g_get_home_dir ()) == 0;
+                       g_strcmp0 (canonical, home) == 0 || g_str_has_prefix (home, canonical_slash);
+  g_free (canonical_slash);
+  g_free (home);
   g_free (canonical);
   if (!shares_base_dir && dangerous)
     {

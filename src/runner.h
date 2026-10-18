@@ -74,7 +74,7 @@ GogCommand *runner_build_install_command (GogRunnerInfo *runner, const char *ins
 /* Builds the command to run an already-installed Windows game's exe
  * (relative to install_dir, Windows-style backslashes are handled
  * internally) via `wine start /b /wait /d c:\game\<workdir> c:\game\<path>
- * <arguments...>`. */
+ * <arguments...>`. arguments is split the way Windows splits a command line. */
 GogCommand *runner_build_launch_command (GogRunnerInfo *runner, const char *install_dir,
                                           const char *exe_relpath, const char *working_dir_relpath,
                                           const char *arguments);

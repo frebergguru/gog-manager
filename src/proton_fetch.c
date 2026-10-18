@@ -999,7 +999,12 @@ fetch_sync (GogProtonFetchJob *job, GError **error)
     job_log (job, tar_output);
   g_free (tar_output);
   if (!extracted)
-    goto out;
+    {
+      /* A half-unpacked build may already hold its "proton" script, and
+       * would then pass for installed. */
+      remove_tree (install_dir, NULL);
+      goto out;
+    }
 
   gchar *proton_bin = g_build_filename (install_dir, "proton", NULL);
   gboolean found = g_file_test (proton_bin, G_FILE_TEST_IS_REGULAR);

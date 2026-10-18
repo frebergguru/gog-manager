@@ -235,6 +235,70 @@ win_backslash (const char *relpath)
   return copy;
 }
 
+/* Splits a manifest's arguments the way a Windows program splits its own
+ * command line (CommandLineToArgvW): backslashes are literal unless they
+ * precede a quote, so "-path C:\Data" keeps its backslash, which POSIX
+ * shell parsing would drop. Each argument is appended to argv. */
+static void
+append_windows_args (GPtrArray *argv, const char *args)
+{
+  const char *p = args;
+  while (*p)
+    {
+      while (*p == ' ' || *p == '\t')
+        p++;
+      if (!*p)
+        break;
+
+      GString *arg = g_string_new (NULL);
+      gboolean quoted = FALSE;
+      while (*p && (quoted || (*p != ' ' && *p != '\t')))
+        {
+          if (*p == '\\')
+            {
+              gsize n = 0;
+              while (*p == '\\')
+                {
+                  n++;
+                  p++;
+                }
+              if (*p == '"')
+                {
+                  /* 2n backslashes + quote: n backslashes, quote toggles;
+                   * 2n+1: n backslashes and a literal quote. */
+                  for (gsize i = 0; i < n / 2; i++)
+                    g_string_append_c (arg, '\\');
+                  if (n % 2)
+                    {
+                      g_string_append_c (arg, '"');
+                      p++;
+                    }
+                }
+              else
+                for (gsize i = 0; i < n; i++)
+                  g_string_append_c (arg, '\\');
+            }
+          else if (*p == '"')
+            {
+              /* "" inside quotes is a literal quote. */
+              if (quoted && p[1] == '"')
+                {
+                  g_string_append_c (arg, '"');
+                  p += 2;
+                }
+              else
+                {
+                  quoted = !quoted;
+                  p++;
+                }
+            }
+          else
+            g_string_append_c (arg, *p++);
+        }
+      g_ptr_array_add (argv, g_string_free (arg, FALSE));
+    }
+}
+
 /* Builds the base argv (before program-specific verbs) and the base envp
  * shared by install/launch/tool commands for a given runner + install dir. */
 static void
@@ -377,22 +441,7 @@ runner_build_launch_command (GogRunnerInfo *runner, const char *install_dir, con
   g_ptr_array_add (argv, exe_arg);
 
   if (arguments && *arguments)
-    {
-      gint argc = 0;
-      gchar **split = NULL;
-      GError *parse_error = NULL;
-      if (!g_shell_parse_argv (arguments, &argc, &split, &parse_error))
-        {
-          g_warning ("Failed to parse command arguments: %s", parse_error->message);
-          g_error_free (parse_error);
-        }
-      else
-        {
-          for (gint i = 0; i < argc; i++)
-            g_ptr_array_add (argv, split[i]);
-          g_free (split); /* elements now owned by argv */
-        }
-    }
+    append_windows_args (argv, arguments);
 
   g_free (win_exe);
   g_free (win_wd);

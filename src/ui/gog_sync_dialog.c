@@ -26,7 +26,7 @@ typedef struct
   GtkButton *cancel_button;
 
   GPtrArray *items;  /* GogSyncItem*, what is listed */
-  GPtrArray *checks; /* GtkCheckButton*, parallel to items */
+  GPtrArray *checks; /* GtkCheckButton*, in display order; each carries its "item" */
 
   GogSyncJob *job;
   gboolean busy;
@@ -164,6 +164,9 @@ add_group (SyncCtx *ctx, GogSyncKind kind, const char *heading)
       gchar *label = g_strdup_printf ("Select %s", title);
       gtk_accessible_update_property (GTK_ACCESSIBLE (check), GTK_ACCESSIBLE_PROPERTY_LABEL,
                                       label, -1);
+      /* The groups list items out of ctx->items order, so each check
+       * remembers its own item. */
+      g_object_set_data (G_OBJECT (check), "item", item);
       g_signal_connect (check, "toggled", G_CALLBACK (on_check_toggled), ctx);
       adw_action_row_add_prefix (row, check);
       adw_action_row_set_activatable_widget (row, check);
@@ -330,8 +333,12 @@ on_download_clicked (GtkButton *button, gpointer user_data)
   SyncCtx *ctx = user_data;
   GStrvBuilder *builder = g_strv_builder_new ();
   for (guint i = 0; i < ctx->checks->len; i++)
-    if (gtk_check_button_get_active (g_ptr_array_index (ctx->checks, i)))
-      g_strv_builder_add (builder, ((GogSyncItem *) g_ptr_array_index (ctx->items, i))->gamename);
+    {
+      GtkCheckButton *check = g_ptr_array_index (ctx->checks, i);
+      GogSyncItem *item = g_object_get_data (G_OBJECT (check), "item");
+      if (gtk_check_button_get_active (check))
+        g_strv_builder_add (builder, item->gamename);
+    }
   GStrv names = g_strv_builder_end (builder);
   g_strv_builder_unref (builder);
   if (names[0])

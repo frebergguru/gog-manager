@@ -733,6 +733,9 @@ static void
 on_gog_sync_done (gboolean downloaded, gpointer user_data)
 {
   GogMainWindow *self = user_data;
+  /* The updates window is destroyed with this one; don't rescan then. */
+  if (gtk_widget_in_destruction (GTK_WIDGET (self)))
+    return;
   gboolean changed = load_gog_updates (self);
   if (downloaded || changed)
     start_scan (self); /* new files, or new "Update on GOG" marks on the cards */

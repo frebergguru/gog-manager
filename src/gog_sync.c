@@ -371,7 +371,10 @@ strip_ansi (const char *s)
 static void
 flush_line (GogSyncJob *job, GString *buf, gboolean by_cr, LineFunc on_line, gpointer data)
 {
-  gchar *clean = strip_ansi (buf->str);
+  gchar *stripped = strip_ansi (buf->str);
+  /* File names and messages are not always UTF-8; GTK only takes UTF-8. */
+  gchar *clean = g_utf8_make_valid (stripped, -1);
+  g_free (stripped);
   g_strstrip (clean);
   if (*clean)
     on_line (job, clean, by_cr, data);
