@@ -19,6 +19,7 @@ struct _GogMainWindow
   GogConfig *config;
   GogState *state;
   GHashTable *gog_updates; /* gamenames with a new version on GOG (last check) */
+  GHashTable *dlc_counts;  /* GogGame* (base game) -> number of its DLC, as GUINT_TO_POINTER */
 
   GtkStack *root_stack; /* "empty" | "loading" | "browse" */
   AdwStatusPage *empty_page;
@@ -42,6 +43,8 @@ struct _GogMainWindow
   GtkToggleButton *os_windows_btn;
   GtkToggleButton *os_linux_btn;
   GtkToggleButton *os_mac_btn;
+  GtkToggleButton *content_dlc_btn;
+  GtkToggleButton *content_extras_btn;
   GtkDropDown *language_dropdown;
   GtkDropDown *status_dropdown;
   GtkDropDown *sort_dropdown;
@@ -68,6 +71,7 @@ typedef struct
   GtkLabel *title;
   GtkLabel *badges;
   GtkLabel *languages;
+  GtkLabel *content;
 } CardWidgets;
 
 static void start_scan (GogMainWindow *self);
@@ -84,6 +88,33 @@ has_gog_update (GogMainWindow *self, GogGame *game)
   gboolean found = g_hash_table_contains (self->gog_updates, name);
   g_free (name);
   return found;
+}
+
+static guint
+dlc_count (GogMainWindow *self, GogGame *game)
+{
+  return self->dlc_counts ? GPOINTER_TO_UINT (g_hash_table_lookup (self->dlc_counts, game)) : 0;
+}
+
+/* After a scan: how many DLC each game has, for the DLC filter and cards. */
+static void
+rebuild_dlc_counts (GogMainWindow *self)
+{
+  if (self->dlc_counts)
+    g_hash_table_remove_all (self->dlc_counts);
+  else
+    self->dlc_counts = g_hash_table_new (g_direct_hash, g_direct_equal);
+  GListModel *model = gog_library_get_model (self->library);
+  guint n = g_list_model_get_n_items (model);
+  for (guint i = 0; i < n; i++)
+    {
+      GogGame *g = g_list_model_get_item (model, i);
+      GogGame *base = gog_game_get_base_game (g);
+      if (base)
+        g_hash_table_insert (self->dlc_counts, base,
+                             GUINT_TO_POINTER (dlc_count (self, base) + 1));
+      g_object_unref (g);
+    }
 }
 
 /* Reloads the saved check results. Returns TRUE if the set changed. */
@@ -147,6 +178,16 @@ filter_func (gpointer item, gpointer user_data)
       gboolean ok = (want_win && gog_game_get_supports_os (game, GOG_OS_WINDOWS)) ||
                     (want_lin && gog_game_get_supports_os (game, GOG_OS_LINUX)) ||
                     (want_mac && gog_game_get_supports_os (game, GOG_OS_MAC));
+      if (!ok)
+        return FALSE;
+    }
+
+  gboolean want_dlc = gtk_toggle_button_get_active (self->content_dlc_btn);
+  gboolean want_extras = gtk_toggle_button_get_active (self->content_extras_btn);
+  if (want_dlc || want_extras)
+    {
+      gboolean ok = (want_dlc && dlc_count (self, game) > 0) ||
+                    (want_extras && gog_game_get_extras (game)->len > 0);
       if (!ok)
         return FALSE;
     }
@@ -364,6 +405,18 @@ update_card (CardWidgets *cw, GogGame *game)
   g_strfreev (codes);
   g_strfreev (names);
 
+  guint n_dlc = dlc_count (cw->window, game);
+  guint n_extras = gog_game_get_extras (game)->len;
+  GString *content = g_string_new (NULL);
+  if (n_dlc > 0)
+    g_string_append_printf (content, "%u DLC", n_dlc);
+  if (n_extras > 0)
+    g_string_append_printf (content, "%s%u %s", content->len ? " · " : "", n_extras,
+                            n_extras == 1 ? "extra" : "extras");
+  gtk_label_set_label (cw->content, content->str);
+  gtk_widget_set_visible (GTK_WIDGET (cw->content), content->len > 0);
+  g_string_free (content, TRUE);
+
   if (gog_game_get_icon_path (game))
     gtk_picture_set_filename (cw->cover, gog_game_get_icon_path (game));
   else
@@ -416,6 +469,13 @@ on_factory_setup (GtkSignalListItemFactory *factory, GtkListItem *list_item, gpo
   gtk_label_set_xalign (GTK_LABEL (languages), 0.0);
   gtk_box_append (GTK_BOX (box), languages);
 
+  GtkWidget *content = gtk_label_new (NULL);
+  gtk_widget_add_css_class (content, "dim-label");
+  gtk_widget_add_css_class (content, "caption");
+  gtk_label_set_wrap (GTK_LABEL (content), TRUE);
+  gtk_label_set_xalign (GTK_LABEL (content), 0.0);
+  gtk_box_append (GTK_BOX (box), content);
+
   gtk_list_item_set_child (list_item, box);
 
   CardWidgets *cw = g_new0 (CardWidgets, 1);
@@ -424,6 +484,7 @@ on_factory_setup (GtkSignalListItemFactory *factory, GtkListItem *list_item, gpo
   cw->title = GTK_LABEL (title);
   cw->badges = GTK_LABEL (badges);
   cw->languages = GTK_LABEL (languages);
+  cw->content = GTK_LABEL (content);
   g_object_set_data_full (G_OBJECT (list_item), "cw", cw, g_free);
 }
 
@@ -544,6 +605,8 @@ on_scan_done (GObject *source, GAsyncResult *res, gpointer user_data)
       gog_state_apply_to_game (self->state, g);
       g_object_unref (g);
     }
+  rebuild_dlc_counts (self);
+  on_filters_changed (NULL, self); /* the DLC filter needs the new counts */
 
   if (n == 0)
     {
@@ -574,6 +637,9 @@ start_scan (GogMainWindow *self)
       return;
     }
   self->scanning = TRUE;
+  /* The counts are keyed by the game objects this scan replaces. */
+  if (self->dlc_counts)
+    g_hash_table_remove_all (self->dlc_counts);
 
   /* The scan replaces every game object; don't leave a detail page open on
    * one that is about to be dropped from the library. */
@@ -766,6 +832,27 @@ build_sidebar (GogMainWindow *self)
   g_signal_connect (self->os_linux_btn, "toggled", G_CALLBACK (on_filters_changed), self);
   g_signal_connect (self->os_mac_btn, "toggled", G_CALLBACK (on_filters_changed), self);
 
+  GtkWidget *content_heading = gtk_label_new ("Content");
+  gtk_widget_add_css_class (content_heading, "heading");
+  gtk_widget_set_halign (content_heading, GTK_ALIGN_START);
+  gtk_box_append (GTK_BOX (box), content_heading);
+
+  /* Either or both: with both on, games with DLC or extras are shown. */
+  GtkWidget *content_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_add_css_class (content_box, "linked");
+  self->content_dlc_btn = GTK_TOGGLE_BUTTON (gtk_toggle_button_new_with_label ("DLC"));
+  self->content_extras_btn = GTK_TOGGLE_BUTTON (gtk_toggle_button_new_with_label ("Extras"));
+  gtk_widget_set_tooltip_text (GTK_WIDGET (self->content_dlc_btn), "Only games that have DLC");
+  gtk_widget_set_tooltip_text (GTK_WIDGET (self->content_extras_btn),
+                               "Only games that have extras, such as manuals and soundtracks");
+  set_accessible_label (GTK_WIDGET (self->content_dlc_btn), "Only games that have DLC");
+  set_accessible_label (GTK_WIDGET (self->content_extras_btn), "Only games that have extras");
+  gtk_box_append (GTK_BOX (content_box), GTK_WIDGET (self->content_dlc_btn));
+  gtk_box_append (GTK_BOX (content_box), GTK_WIDGET (self->content_extras_btn));
+  gtk_box_append (GTK_BOX (box), content_box);
+  g_signal_connect (self->content_dlc_btn, "toggled", G_CALLBACK (on_filters_changed), self);
+  g_signal_connect (self->content_extras_btn, "toggled", G_CALLBACK (on_filters_changed), self);
+
   GtkWidget *lang_heading = gtk_label_new ("Language");
   gtk_widget_add_css_class (lang_heading, "heading");
   gtk_widget_set_halign (lang_heading, GTK_ALIGN_START);
@@ -874,6 +961,7 @@ gog_main_window_dispose (GObject *object)
   if (self->library)
     g_signal_handlers_disconnect_by_data (self->library, self);
   g_clear_pointer (&self->gog_updates, g_hash_table_unref);
+  g_clear_pointer (&self->dlc_counts, g_hash_table_unref);
   G_OBJECT_CLASS (gog_main_window_parent_class)->dispose (object);
 }
 
