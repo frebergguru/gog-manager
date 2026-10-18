@@ -8,6 +8,8 @@
 #include <errno.h>
 #include <signal.h>
 #include <unistd.h>
+#include <stdio.h>
+#include <sys/stat.h>
 
 struct _GogInstallJob
 {
@@ -500,6 +502,233 @@ extract_linux_sync (GogInstallJob *job, GError **error)
   return ok;
 }
 
+/* ---- Windows: watching the installer while it runs ---- */
+
+/* A Windows installer under Wine says nothing on stdout, so without this
+ * the dialog shows a pulsing bar for many minutes and a stuck installer
+ * looks exactly like a busy one. The watcher thread copies the installer's
+ * own log (/LOG=c:\install.log) into the dialog and measures how much has
+ * been written into the install directory. */
+
+#define WATCH_INTERVAL_US (G_USEC_PER_SEC)
+#define STALL_SECONDS 120
+
+typedef struct
+{
+  GogInstallJob *job;
+  gchar *log_path;          /* <wine root>/drive_c/install.log */
+  goffset log_pos;
+  GString *partial;         /* log text after the last newline */
+  guint64 expected;         /* installer + its .bin parts, 0 if unknown */
+  volatile gint stop;
+  GThread *thread;
+} InstallWatch;
+
+/* Bytes under dir, leaving out the Wine/Proton prefix that lives there. */
+static guint64
+dir_size_without_prefix (const char *dir, gboolean top)
+{
+  GDir *d = g_dir_open (dir, 0, NULL);
+  if (!d)
+    return 0;
+  guint64 total = 0;
+  const char *name;
+  while ((name = g_dir_read_name (d)))
+    {
+      if (top && (strcmp (name, "proton-prefix") == 0 || strcmp (name, "prefix") == 0))
+        continue;
+      gchar *path = g_build_filename (dir, name, NULL);
+      GStatBuf st;
+      if (g_lstat (path, &st) == 0)
+        {
+          if (S_ISDIR (st.st_mode))
+            total += dir_size_without_prefix (path, FALSE);
+          else if (S_ISREG (st.st_mode))
+            total += (guint64) st.st_size;
+        }
+      g_free (path);
+    }
+  g_dir_close (d);
+  return total;
+}
+
+/* The installer .exe plus its setup_<name>-1.bin, -2.bin ... parts. The
+ * installed size is not known up front, but GOG games are mostly already
+ * compressed media, so this is a fair estimate of it. */
+static guint64
+installer_set_size (const char *exe_path)
+{
+  gchar *dir = g_path_get_dirname (exe_path);
+  gchar *base = g_path_get_basename (exe_path);
+  gchar *dot = strrchr (base, '.');
+  if (dot)
+    *dot = '\0';
+  gchar *prefix = g_strconcat (base, "-", NULL);
+
+  guint64 total = 0;
+  GDir *d = g_dir_open (dir, 0, NULL);
+  if (d)
+    {
+      const char *name;
+      while ((name = g_dir_read_name (d)))
+        {
+          gboolean part = g_str_has_prefix (name, prefix) && g_str_has_suffix (name, ".bin");
+          gchar *path = g_build_filename (dir, name, NULL);
+          GStatBuf st;
+          if ((part || strcmp (path, exe_path) == 0) && g_stat (path, &st) == 0)
+            total += (guint64) st.st_size;
+          g_free (path);
+        }
+      g_dir_close (d);
+    }
+  g_free (prefix);
+  g_free (base);
+  g_free (dir);
+  return total;
+}
+
+/* Copies whole new lines of the installer's log into the job log. Returns
+ * TRUE if anything new was read. */
+static gboolean
+watch_read_log (InstallWatch *w)
+{
+  GStatBuf st;
+  if (g_stat (w->log_path, &st) != 0)
+    return FALSE;
+  /* A second run (the non-silent retry) starts the log over. */
+  if (st.st_size < w->log_pos)
+    {
+      w->log_pos = 0;
+      g_string_truncate (w->partial, 0);
+    }
+  if (st.st_size == w->log_pos)
+    return FALSE;
+
+  FILE *f = g_fopen (w->log_path, "rb");
+  if (!f)
+    return FALSE;
+  gboolean got = FALSE;
+  if (fseeko (f, w->log_pos, SEEK_SET) == 0)
+    {
+      char buf[8192];
+      size_t n;
+      while ((n = fread (buf, 1, sizeof buf, f)) > 0)
+        {
+          w->log_pos += (goffset) n;
+          g_string_append_len (w->partial, buf, (gssize) n);
+          got = TRUE;
+        }
+    }
+  fclose (f);
+
+  char *nl;
+  while ((nl = memchr (w->partial->str, '\n', w->partial->len)))
+    {
+      gsize len = (gsize) (nl - w->partial->str);
+      if (len > 0 && w->partial->str[len - 1] == '\r')
+        len--;
+      if (len > 0)
+        {
+          /* Inno Setup writes its log in the Windows code page. */
+          gchar *valid = g_utf8_make_valid (w->partial->str, (gssize) len);
+          job_log (w->job, valid);
+          g_free (valid);
+        }
+      g_string_erase (w->partial, 0, (gssize) (nl - w->partial->str) + 1);
+    }
+  return got;
+}
+
+static gpointer
+install_watch_thread (gpointer data)
+{
+  InstallWatch *w = data;
+  guint64 last_written = 0;
+  gint64 last_change = g_get_monotonic_time ();
+  gboolean stall_logged = FALSE;
+
+  while (!g_atomic_int_get (&w->stop))
+    {
+      g_usleep (WATCH_INTERVAL_US);
+      if (g_atomic_int_get (&w->stop))
+        break;
+
+      gboolean log_moved = watch_read_log (w);
+      guint64 written = dir_size_without_prefix (w->job->install_dir, TRUE);
+      gint64 now = g_get_monotonic_time ();
+      if (log_moved || written != last_written)
+        {
+          last_change = now;
+          last_written = written;
+          stall_logged = FALSE;
+        }
+      gint64 idle = (now - last_change) / G_USEC_PER_SEC;
+
+      gchar *done = g_format_size (written);
+      gchar *msg;
+      double fraction = -1;
+      if (idle >= STALL_SECONDS)
+        {
+          msg = g_strdup_printf ("No progress for %" G_GINT64_FORMAT " min, may be stuck",
+                                 idle / 60);
+          if (!stall_logged)
+            {
+              job_log (w->job, "The installer has written no files and logged nothing for 2 "
+                               "minutes. It may be stuck, or waiting for a window that did "
+                               "not appear. Cancel stops it.");
+              stall_logged = TRUE;
+            }
+        }
+      else if (written == 0)
+        msg = g_strdup ("Starting the installer… (no game files written yet)");
+      else if (w->expected > 0)
+        {
+          gchar *total = g_format_size (w->expected);
+          msg = g_strdup_printf ("Installing… %s of about %s", done, total);
+          g_free (total);
+          fraction = MIN ((double) written / (double) w->expected, 0.99);
+        }
+      else
+        msg = g_strdup_printf ("Installing… %s written", done);
+
+      job_progress (w->job, fraction, msg);
+      g_free (msg);
+      g_free (done);
+    }
+
+  watch_read_log (w); /* the last lines, written as it finished */
+  return NULL;
+}
+
+static InstallWatch *
+install_watch_start (GogInstallJob *job)
+{
+  InstallWatch *w = g_new0 (InstallWatch, 1);
+  w->job = g_object_ref (job);
+  gchar *wine_root = runner_wine_root_dir (job->runner->kind, job->install_dir);
+  w->log_path = g_build_filename (wine_root, "drive_c", "install.log", NULL);
+  g_free (wine_root);
+  /* Leftovers from an earlier attempt in this prefix are not news. */
+  GStatBuf st;
+  if (g_stat (w->log_path, &st) == 0)
+    w->log_pos = st.st_size;
+  w->partial = g_string_new (NULL);
+  w->expected = installer_set_size (job->installer->file_path);
+  w->thread = g_thread_new ("gog-install-watch", install_watch_thread, w);
+  return w;
+}
+
+static void
+install_watch_stop (InstallWatch *w)
+{
+  g_atomic_int_set (&w->stop, 1);
+  g_thread_join (w->thread);
+  g_object_unref (w->job);
+  g_free (w->log_path);
+  g_string_free (w->partial, TRUE);
+  g_free (w);
+}
+
 /* ---- Windows: Wine/Proton silent install with fallback ---- */
 
 static gboolean
@@ -549,6 +778,7 @@ install_windows_sync (GogInstallJob *job, GError **error)
     return FALSE;
 
   job_progress (job, -1, "Running installer (silent)…");
+  InstallWatch *watch = install_watch_start (job);
   GogCommand *silent = runner_build_install_command (job->runner, job->installer->file_path,
                                                       job->install_dir,
                                                       job->installer->language_code, TRUE);
@@ -557,10 +787,14 @@ install_windows_sync (GogInstallJob *job, GError **error)
   gog_command_free (silent);
 
   if (ok)
-    return TRUE;
+    {
+      install_watch_stop (watch);
+      return TRUE;
+    }
 
   if (job->cancelled)
     {
+      install_watch_stop (watch);
       if (error)
         *error = g_steal_pointer (&silent_err);
       else
@@ -576,6 +810,7 @@ install_windows_sync (GogInstallJob *job, GError **error)
                                                             job->installer->language_code, FALSE);
   ok = run_and_stream (job, interactive->argv, interactive->envp, error);
   gog_command_free (interactive);
+  install_watch_stop (watch);
   return ok;
 }
 
