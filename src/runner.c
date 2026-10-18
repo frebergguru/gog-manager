@@ -570,3 +570,52 @@ runner_build_regedit_command (GogRunnerInfo *runner, const char *install_dir)
   cmd->envp = envp;
   return cmd;
 }
+
+GogCommand *
+runner_build_kill_command (GogRunnerInfo *runner, const char *install_dir)
+{
+  gchar **envp = NULL;
+  gchar *wine_root = NULL;
+  build_base (runner, install_dir, &envp, &wine_root);
+  /* Proton only gets STEAM_COMPAT_DATA_PATH; wineserver finds its server
+   * through WINEPREFIX. */
+  envp = g_environ_setenv (envp, "WINEPREFIX", wine_root, TRUE);
+  g_free (wine_root);
+
+  gchar *wineserver = NULL;
+  if (runner->kind == GOG_RUNNER_PROTON)
+    {
+      const char *layouts[] = { "files", "dist" };
+      for (guint i = 0; i < G_N_ELEMENTS (layouts) && !wineserver; i++)
+        {
+          gchar *candidate = g_build_filename (runner->bin_path, layouts[i], "bin", "wineserver", NULL);
+          if (g_file_test (candidate, G_FILE_TEST_IS_EXECUTABLE))
+            wineserver = candidate;
+          else
+            g_free (candidate);
+        }
+      if (!wineserver)
+        wineserver = g_build_filename (runner->bin_path, "files", "bin", "wineserver", NULL);
+    }
+  else
+    {
+      gchar *dir = g_path_get_dirname (runner->bin_path);
+      wineserver = g_build_filename (dir, "wineserver", NULL);
+      g_free (dir);
+      if (!g_file_test (wineserver, G_FILE_TEST_IS_EXECUTABLE))
+        {
+          g_free (wineserver);
+          wineserver = g_strdup ("wineserver");
+        }
+    }
+
+  GPtrArray *argv = g_ptr_array_new ();
+  g_ptr_array_add (argv, wineserver);
+  g_ptr_array_add (argv, g_strdup ("-k"));
+  g_ptr_array_add (argv, NULL);
+
+  GogCommand *cmd = g_new0 (GogCommand, 1);
+  cmd->argv = (gchar **) g_ptr_array_free (argv, FALSE);
+  cmd->envp = envp;
+  return cmd;
+}

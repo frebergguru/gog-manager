@@ -6,6 +6,8 @@
 #include <glib/gstdio.h>
 #include <string.h>
 #include <errno.h>
+#include <signal.h>
+#include <unistd.h>
 
 struct _GogInstallJob
 {
@@ -19,6 +21,7 @@ struct _GogInstallJob
   GThread *thread;
   GMutex proc_mutex;
   GSubprocess *current_proc;     /* protected by proc_mutex */
+  pid_t current_pgid;            /* its process group, 0 if none; proc_mutex */
   volatile gboolean cancelled;
 };
 
@@ -181,6 +184,33 @@ job_finished (GogInstallJob *job, gboolean success, const char *error_message)
 
 /* ---- subprocess execution with live log streaming ---- */
 
+/* Each child leads its own process group, so cancelling can kill whatever
+ * it started too: a grandchild still holding the output pipe would keep
+ * the read loop below waiting forever. */
+static void
+child_new_process_group (gpointer user_data)
+{
+  (void) user_data;
+  setpgid (0, 0);
+}
+
+/* Stops every Wine process in the job's prefix. The installer keeps running
+ * after its wine/proton launcher is killed, and its processes hold the
+ * output pipe open. When wait is FALSE (UI thread) this does not block. */
+static void
+kill_prefix_processes (GogInstallJob *job, gboolean wait)
+{
+  if (!job->runner || !job->runner->bin_path)
+    return;
+  GogCommand *kill_cmd = runner_build_kill_command (job->runner, job->install_dir);
+  GSpawnFlags flags = G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL;
+  if (wait)
+    g_spawn_sync (NULL, kill_cmd->argv, kill_cmd->envp, flags, NULL, NULL, NULL, NULL, NULL, NULL);
+  else
+    g_spawn_async (NULL, kill_cmd->argv, kill_cmd->envp, flags, NULL, NULL, NULL, NULL);
+  gog_command_free (kill_cmd);
+}
+
 /* Runs argv, streaming its combined output to the log. Exit statuses from 0
  * up to max_ok_status count as success (unzip, for instance, exits 1 for
  * mere warnings such as the shell-script stub in front of GOG's Linux
@@ -199,6 +229,7 @@ run_and_stream_full (GogInstallJob *job, gchar **argv, gchar **envp, gint max_ok
                                                               G_SUBPROCESS_FLAGS_STDERR_MERGE);
   if (envp)
     g_subprocess_launcher_set_environ (launcher, envp);
+  g_subprocess_launcher_set_child_setup (launcher, child_new_process_group, NULL, NULL);
 
   GSubprocess *proc = g_subprocess_launcher_spawnv (launcher, (const gchar *const *) argv, error);
   g_object_unref (launcher);
@@ -207,10 +238,16 @@ run_and_stream_full (GogInstallJob *job, gchar **argv, gchar **envp, gint max_ok
 
   g_mutex_lock (&job->proc_mutex);
   job->current_proc = proc;
+  const char *pid_str = g_subprocess_get_identifier (proc);
+  job->current_pgid = pid_str ? (pid_t) g_ascii_strtoll (pid_str, NULL, 10) : 0;
   /* A cancel that landed between the check above and the spawn would
    * otherwise miss this process. */
   if (job->cancelled)
-    g_subprocess_force_exit (proc);
+    {
+      if (job->current_pgid > 0)
+        kill (-job->current_pgid, SIGKILL);
+      g_subprocess_force_exit (proc);
+    }
   g_mutex_unlock (&job->proc_mutex);
 
   GInputStream *raw_out = g_subprocess_get_stdout_pipe (proc);
@@ -243,6 +280,7 @@ run_and_stream_full (GogInstallJob *job, gchar **argv, gchar **envp, gint max_ok
 
   g_mutex_lock (&job->proc_mutex);
   job->current_proc = NULL;
+  job->current_pgid = 0;
   g_mutex_unlock (&job->proc_mutex);
 
   if (!waited)
@@ -555,6 +593,10 @@ install_thread_func (gpointer data)
   else
     ok = install_windows_sync (job, &error);
 
+  /* Catch anything the cancel's own wineserver -k raced past. */
+  if (job->cancelled)
+    kill_prefix_processes (job, TRUE);
+
   if (ok)
     job_progress (job, 1.0, "Done");
 
@@ -576,9 +618,12 @@ gog_install_job_cancel (GogInstallJob *self)
 {
   self->cancelled = TRUE;
   g_mutex_lock (&self->proc_mutex);
+  if (self->current_pgid > 0)
+    kill (-self->current_pgid, SIGKILL);
   if (self->current_proc)
     g_subprocess_force_exit (self->current_proc);
   g_mutex_unlock (&self->proc_mutex);
+  kill_prefix_processes (self, FALSE);
 }
 
 gboolean

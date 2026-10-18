@@ -84,6 +84,30 @@ test_proton_install_command_env (void)
   gog_runner_info_free (runner);
 }
 
+/* Cancelling an install stops the prefix's own wineserver, found through
+ * WINEPREFIX -- for Proton that is <prefix>/pfx, not STEAM_COMPAT_DATA_PATH. */
+static void
+test_kill_command_targets_prefix (void)
+{
+  GogRunnerInfo *proton = gog_runner_info_new (GOG_RUNNER_PROTON, "GE-Proton9-20",
+                                                "/opt/proton/GE-Proton9-20");
+  GogCommand *cmd = runner_build_kill_command (proton, "/games/bar");
+  g_assert_true (g_str_has_suffix (cmd->argv[0], "/GE-Proton9-20/files/bin/wineserver"));
+  g_assert_cmpstr (cmd->argv[1], ==, "-k");
+  g_assert_null (cmd->argv[2]);
+  g_assert_true (g_str_has_suffix (envp_lookup (cmd->envp, "WINEPREFIX"), "/games/bar/proton-prefix/pfx"));
+  gog_command_free (cmd);
+  gog_runner_info_free (proton);
+
+  GogRunnerInfo *wine = gog_runner_info_new (GOG_RUNNER_WINE, "Wine", "/nonexistent/bin/wine");
+  cmd = runner_build_kill_command (wine, "/games/foo");
+  /* No wineserver next to that wine: fall back to the one on PATH. */
+  g_assert_cmpstr (cmd->argv[0], ==, "wineserver");
+  g_assert_true (g_str_has_suffix (envp_lookup (cmd->envp, "WINEPREFIX"), "/games/foo/prefix"));
+  gog_command_free (cmd);
+  gog_runner_info_free (wine);
+}
+
 static void
 test_wine_launch_command (void)
 {
@@ -308,6 +332,7 @@ main (int argc, char *argv[])
   g_test_add_func ("/runner/wine_install_command", test_wine_install_command);
   g_test_add_func ("/runner/wine_install_non_silent", test_wine_install_non_silent_omits_switches);
   g_test_add_func ("/runner/proton_install_command_env", test_proton_install_command_env);
+  g_test_add_func ("/runner/kill_command", test_kill_command_targets_prefix);
   g_test_add_func ("/runner/wine_launch_command", test_wine_launch_command);
   g_test_add_func ("/runner/wine_launch_windows_arguments", test_wine_launch_windows_arguments);
   g_test_add_func ("/runner/wine_root_dir", test_wine_root_dir_proton_uses_pfx_subdir);

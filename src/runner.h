@@ -100,6 +100,13 @@ GogCommand *runner_build_launch_command (GogRunnerInfo *runner, const char *inst
 GogCommand *runner_build_winecfg_command (GogRunnerInfo *runner, const char *install_dir);
 GogCommand *runner_build_regedit_command (GogRunnerInfo *runner, const char *install_dir);
 
+/* Builds `wineserver -k` for the game's prefix: stops every Wine process
+ * running in it, including ones that outlived the wine/proton command that
+ * started them (an installer keeps going after its launcher is killed).
+ * Uses the runner's own wineserver -- Proton's lives in files/bin (or
+ * dist/bin in older builds). */
+GogCommand *runner_build_kill_command (GogRunnerInfo *runner, const char *install_dir);
+
 G_END_DECLS
 
 #endif
