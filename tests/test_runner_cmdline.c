@@ -108,6 +108,27 @@ test_kill_command_targets_prefix (void)
   gog_runner_info_free (wine);
 }
 
+/* Wine's FreeType warning is swallowed line by line and replaced by help
+ * that names a package to install. */
+static void
+test_freetype_warning_and_help (void)
+{
+  g_assert_true (runner_is_freetype_warning ("Wine cannot find the FreeType font library.  To enable Wine to"));
+  g_assert_true (runner_is_freetype_warning ("use TrueType fonts please install a version of FreeType greater than"));
+  g_assert_true (runner_is_freetype_warning ("or equal to 2.0.5."));
+  g_assert_true (runner_is_freetype_warning ("http://www.freetype.org"));
+  g_assert_false (runner_is_freetype_warning ("ntsync: up and running."));
+  g_assert_false (runner_is_freetype_warning (NULL));
+
+  gchar **help = runner_freetype_help ();
+  gchar *joined = g_strjoinv ("\n", help);
+  g_assert_true (strstr (joined, "FreeType") != NULL);
+  g_assert_true (strstr (joined, "sudo pacman -S") != NULL);
+  g_assert_true (strstr (joined, "sudo dnf install") != NULL);
+  g_free (joined);
+  g_strfreev (help);
+}
+
 static void
 test_wine_launch_command (void)
 {
@@ -333,6 +354,7 @@ main (int argc, char *argv[])
   g_test_add_func ("/runner/wine_install_non_silent", test_wine_install_non_silent_omits_switches);
   g_test_add_func ("/runner/proton_install_command_env", test_proton_install_command_env);
   g_test_add_func ("/runner/kill_command", test_kill_command_targets_prefix);
+  g_test_add_func ("/runner/freetype_warning", test_freetype_warning_and_help);
   g_test_add_func ("/runner/wine_launch_command", test_wine_launch_command);
   g_test_add_func ("/runner/wine_launch_windows_arguments", test_wine_launch_windows_arguments);
   g_test_add_func ("/runner/wine_root_dir", test_wine_root_dir_proton_uses_pfx_subdir);

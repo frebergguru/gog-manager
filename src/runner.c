@@ -6,6 +6,7 @@
 #include "proton_fetch.h"
 #include <glib/gstdio.h>
 #include <string.h>
+#include <stdio.h>
 #include <errno.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -618,4 +619,89 @@ runner_build_kill_command (GogRunnerInfo *runner, const char *install_dir)
   cmd->argv = (gchar **) g_ptr_array_free (argv, FALSE);
   cmd->envp = envp;
   return cmd;
+}
+
+gboolean
+runner_is_freetype_warning (const char *line)
+{
+  static const char *const parts[] = {
+    "Wine cannot find the FreeType font library",
+    "use TrueType fonts please install a version of FreeType",
+    "or equal to 2.0.5.",
+    "http://www.freetype.org",
+  };
+  if (!line)
+    return FALSE;
+  for (guint i = 0; i < G_N_ELEMENTS (parts); i++)
+    if (g_str_has_prefix (line, parts[i]))
+      return TRUE;
+  return FALSE;
+}
+
+/* Which word sizes of libfreetype.so.6 are installed, read from the ELF
+ * class byte: directory names alone can't tell (Fedora's /usr/lib is
+ * 32-bit, Arch's is 64-bit). */
+static void
+find_freetype (gboolean *has32, gboolean *has64)
+{
+  static const char *const dirs[] = {
+    "/usr/lib", "/usr/lib32", "/usr/lib64", "/usr/lib/i386-linux-gnu",
+    "/usr/lib/x86_64-linux-gnu", "/lib", "/lib32", "/lib64", "/lib/i386-linux-gnu",
+    "/lib/x86_64-linux-gnu",
+  };
+  *has32 = *has64 = FALSE;
+  for (guint i = 0; i < G_N_ELEMENTS (dirs); i++)
+    {
+      gchar *path = g_build_filename (dirs[i], "libfreetype.so.6", NULL);
+      FILE *f = g_fopen (path, "rb");
+      g_free (path);
+      if (!f)
+        continue;
+      unsigned char ident[5];
+      if (fread (ident, 1, sizeof ident, f) == sizeof ident && memcmp (ident, "\177ELF", 4) == 0)
+        {
+          if (ident[4] == 1)
+            *has32 = TRUE;
+          else if (ident[4] == 2)
+            *has64 = TRUE;
+        }
+      fclose (f);
+    }
+}
+
+gchar **
+runner_freetype_help (void)
+{
+  gboolean has32, has64;
+  find_freetype (&has32, &has64);
+  /* Wine only warns when one is missing; if both look present, the 32-bit
+   * one is the usual culprit (GOG installers are 32-bit programs). */
+  gboolean need64 = !has64;
+  gboolean need32 = !has32 || has64;
+  const char *which = need32 && need64 ? "FreeType (32-bit and 64-bit)"
+                      : need32         ? "the 32-bit FreeType library"
+                                       : "the FreeType library";
+
+  GPtrArray *out = g_ptr_array_new ();
+  g_ptr_array_add (out, g_strdup ("Fonts are missing for Windows programs."));
+  g_ptr_array_add (out, g_strdup_printf (
+      "Wine could not load %s, so installers and games may show no text, and some "
+      "installers stop responding. GOG installers are 32-bit programs.", which));
+  g_ptr_array_add (out, g_strdup ("To fix it, run the command for your system in a terminal, "
+                                  "then start the install again:"));
+  g_ptr_array_add (out, g_strdup_printf (
+      "  Arch, Manjaro, EndeavourOS: sudo pacman -S%s%s   (32-bit needs the multilib "
+      "repository enabled in /etc/pacman.conf)",
+      need64 ? " freetype2" : "", need32 ? " lib32-freetype2" : ""));
+  g_ptr_array_add (out, g_strdup_printf (
+      "  Debian, Ubuntu, Mint:%s sudo apt install%s%s",
+      need32 ? " sudo dpkg --add-architecture i386 && sudo apt update &&" : "",
+      need64 ? " libfreetype6" : "", need32 ? " libfreetype6:i386" : ""));
+  g_ptr_array_add (out, g_strdup_printf ("  Fedora: sudo dnf install%s%s",
+                                         need64 ? " freetype" : "", need32 ? " freetype.i686" : ""));
+  g_ptr_array_add (out, g_strdup_printf ("  openSUSE: sudo zypper install%s%s",
+                                         need64 ? " libfreetype6" : "",
+                                         need32 ? " libfreetype6-32bit" : ""));
+  g_ptr_array_add (out, NULL);
+  return (gchar **) g_ptr_array_free (out, FALSE);
 }

@@ -107,6 +107,15 @@ GogCommand *runner_build_regedit_command (GogRunnerInfo *runner, const char *ins
  * dist/bin in older builds). */
 GogCommand *runner_build_kill_command (GogRunnerInfo *runner, const char *install_dir);
 
+/* TRUE for each line of Wine's "Wine cannot find the FreeType font
+ * library" warning, which Wine prints once per process. */
+gboolean runner_is_freetype_warning (const char *line);
+
+/* A plain explanation of that warning: which FreeType (32-bit, 64-bit or
+ * both) this system lacks, and the command that installs it on common
+ * distributions. One line per array element; free with g_strfreev(). */
+gchar **runner_freetype_help (void);
+
 G_END_DECLS
 
 #endif

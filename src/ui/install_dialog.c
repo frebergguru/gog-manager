@@ -452,6 +452,9 @@ gog_show_install_dialog (GtkWindow *parent, GogGame *game, GogInstallerInfo *ins
   ctx->log_view = GTK_TEXT_VIEW (gtk_text_view_new ());
   gtk_text_view_set_editable (ctx->log_view, FALSE);
   gtk_text_view_set_monospace (ctx->log_view, TRUE);
+  /* Long lines (installer paths, the FreeType fix commands) wrap rather
+   * than widen the dialog. */
+  gtk_text_view_set_wrap_mode (ctx->log_view, GTK_WRAP_WORD_CHAR);
   gtk_widget_add_css_class (GTK_WIDGET (ctx->log_view), "gog-log-view");
   gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (log_scroll), GTK_WIDGET (ctx->log_view));
   gtk_widget_add_css_class (log_scroll, "card");

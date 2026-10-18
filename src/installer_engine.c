@@ -25,6 +25,7 @@ struct _GogInstallJob
   GSubprocess *current_proc;     /* protected by proc_mutex */
   pid_t current_pgid;            /* its process group, 0 if none; proc_mutex */
   volatile gboolean cancelled;
+  gboolean freetype_explained;   /* install thread only */
 };
 
 enum
@@ -271,7 +272,21 @@ run_and_stream_full (GogInstallJob *job, gchar **argv, gchar **envp, gint max_ok
       if (!line)
         break;
       gchar *valid = g_utf8_make_valid (line, (gssize) len);
-      job_log (job, valid);
+      /* Wine repeats its terse FreeType warning for every process; say
+       * once, plainly, what is missing and how to install it. */
+      if (runner_is_freetype_warning (valid))
+        {
+          if (!job->freetype_explained)
+            {
+              job->freetype_explained = TRUE;
+              gchar **help = runner_freetype_help ();
+              for (gchar **h = help; *h; h++)
+                job_log (job, *h);
+              g_strfreev (help);
+            }
+        }
+      else
+        job_log (job, valid);
       g_free (valid);
       g_free (line);
     }
