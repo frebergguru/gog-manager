@@ -25,7 +25,9 @@ All notable changes to GOG Manager are listed here. The format follows
   "Windows · 4,6 GB · Installed", and the banner keeps the art's own
   proportions instead of cropping it to a fixed height.
 - Descriptions no longer keep the stray indents and double spaces in
-  GOG's HTML.
+  GOG's HTML, a list item written as "<li><br>Text" keeps its text on the
+  bullet's line, and a paragraph GOG repeats word for word (DOOM 3: BFG
+  Edition has its feature list twice) is shown once.
 - Install buttons say "Windows" and "Linux", not "windows" and "linux".
 - Preferences is split into three pages, Library, Runners and Downloads,
   with the switcher in the header (a bar at the bottom in a narrow window).

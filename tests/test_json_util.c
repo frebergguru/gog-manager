@@ -82,6 +82,17 @@ test_strip_html_whitespace (void)
   g_free (out);
 }
 
+/* DOOM 3: BFG Edition's description: its list twice, the second time
+ * as "<li><br>Item". */
+static void
+test_strip_html_repeated_list (void)
+{
+  gchar *out = text_strip_html ("Intro\n<br>\n<ul><li><b>One</b>:<br> First</li><li>Two</li></ul>"
+                                "\n<br>\n<ul><li><b>One</b>:<br> First</li><li><br>Two</li></ul>");
+  g_assert_cmpstr (out, ==, "Intro\n\n\u2022 One:\nFirst\n\u2022 Two");
+  g_free (out);
+}
+
 static void
 test_strip_html_empty (void)
 {
@@ -153,6 +164,7 @@ main (int argc, char *argv[])
   g_test_add_func ("/text_util/strip_html_list", test_strip_html_list);
   g_test_add_func ("/text_util/strip_html_empty", test_strip_html_empty);
   g_test_add_func ("/text_util/strip_html_whitespace", test_strip_html_whitespace);
+  g_test_add_func ("/text_util/strip_html_repeated_list", test_strip_html_repeated_list);
   g_test_add_func ("/text_util/strip_html_numeric_entities", test_strip_html_numeric_entities);
   g_test_add_func ("/text_util/strip_html_invalid_utf8", test_strip_html_invalid_utf8);
   g_test_add_func ("/text_util/language_label", test_language_label);

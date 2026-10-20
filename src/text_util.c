@@ -5,6 +5,25 @@
 #include "text_util.h"
 #include <string.h>
 
+#define BULLET "\xE2\x80\xA2 "
+
+/* Drops paragraphs that repeat an earlier one word for word: some of
+ * GOG's descriptions have their feature list twice. */
+static gchar *
+drop_repeated_paragraphs (const char *text)
+{
+  gchar **paragraphs = g_strsplit (text, "\n\n", -1);
+  GPtrArray *kept = g_ptr_array_new ();
+  for (gchar **p = paragraphs; *p; p++)
+    if (!g_ptr_array_find_with_equal_func (kept, *p, g_str_equal, NULL))
+      g_ptr_array_add (kept, *p);
+  g_ptr_array_add (kept, NULL);
+  gchar *out = g_strjoinv ("\n\n", (gchar **) kept->pdata);
+  g_ptr_array_unref (kept);
+  g_strfreev (paragraphs);
+  return out;
+}
+
 static void
 append_unescaped_entity (GString *out, const char *entity, gsize len)
 {
@@ -55,13 +74,15 @@ text_strip_html (const char *html)
           const char *end = strchr (p, '>');
           gsize taglen = end ? (gsize) (end - p + 1) : strlen (p);
 
-          if (g_ascii_strncasecmp (p, "<br", 3) == 0 ||
-              g_ascii_strncasecmp (p, "<li", 3) == 0)
+          if (g_ascii_strncasecmp (p, "<br", 3) == 0 && g_str_has_suffix (out->str, BULLET))
+            ; /* "<li><br>Text": the text stays on the bullet's line */
+          else if (g_ascii_strncasecmp (p, "<br", 3) == 0 ||
+                   g_ascii_strncasecmp (p, "<li", 3) == 0)
             {
               if (out->len > 0 && out->str[out->len - 1] != '\n')
                 g_string_append_c (out, '\n');
               if (g_ascii_strncasecmp (p, "<li", 3) == 0)
-                g_string_append (out, "\xE2\x80\xA2 "); /* bullet */
+                g_string_append (out, BULLET);
             }
           else if (g_ascii_strncasecmp (p, "<p", 2) == 0 ||
                    g_ascii_strncasecmp (p, "</p", 3) == 0 ||
@@ -120,7 +141,7 @@ text_strip_html (const char *html)
           collapsed = next;
         }
     }
-  gchar *trimmed = g_strdup (g_strstrip (collapsed));
+  gchar *trimmed = drop_repeated_paragraphs (g_strstrip (collapsed));
   g_free (collapsed);
   return trimmed;
 }
