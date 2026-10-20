@@ -106,8 +106,15 @@ API ourselves: it holds the login and handles GOG's quirks.
       100% off and show "Free on GOG now: X (until …)" with a link to the
       store page. Leave out games already in the library.
       - Query: `price=between:0,0&discounted=eq:true&productType=in:game,pack`
-        plus `countryCode`, `currencyCode` and `locale`; deals differ by
-        country, so take the country from the system locale or a setting.
+        plus `countryCode`, `currencyCode` and `locale`. Deals differ by
+        country, and the user may be travelling or living somewhere other
+        than their system language suggests, so ask GOG where they are:
+        `https://www.gog.com/userData.json` (no login needed) answers from
+        the request's location with `country` ("NO") and
+        `selectedCurrency.code` ("NOK"). Ask on each check, not once, as
+        the user may have moved; fall back to the system locale when it
+        fails, and allow a country setting to override it. Without
+        `countryCode` the catalog quietly uses US prices in USD.
         (`price=between:0,0` alone gives the ~440 always-free products,
         mostly demos.) Tested 2026-10-20: the filters work; no 100% deal
         was running that day.
