@@ -195,8 +195,13 @@ driver and optional external helpers (wine, curl, tar) are taken from the host.
 2. Downloads `linuxdeploy`, its GTK plugin and `appimagetool` into
    `.appimage-tools/` (cached across runs), plus a static `patchelf` if the host
    lacks one.
-3. Runs `linuxdeploy --plugin gtk --output appimage` to bundle everything.
-4. Runs `packaging/check-stripped.sh` on the AppDir and the finished AppImage,
+3. Patches the GTK plugin: a missing GTK 4 modules directory is skipped
+   instead of being fatal, and its AppRun hook no longer sets `GTK_THEME`.
+   That variable loads GTK's own Adwaita theme over libadwaita's stylesheet
+   and drops its padding and spacing; libadwaita follows the desktop's dark or
+   light setting by itself. (So `APPIMAGE_GTK_THEME` has no effect either.)
+4. Runs `linuxdeploy --plugin gtk --output appimage` to bundle everything.
+5. Runs `packaging/check-stripped.sh` on the AppDir and the finished AppImage,
    and deletes the AppImage and fails if any binary or bundled library still
    has symbols or debug info.
 
