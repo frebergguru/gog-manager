@@ -59,7 +59,9 @@ struct _GogMainWindow
   GtkToggleButton *category_match_all;
   GHashTable *category_selected; /* chosen category names (owned) */
   gboolean category_rebuilding;  /* check buttons being made, not toggled */
-  GtkLabel *category_status;   /* progress or failure of the category lookup */
+  GtkWidget *status_bar;       /* bottom bar: progress or failure of the GOG lookups */
+  GtkLabel *category_status;
+  GtkWidget *status_dismiss;   /* shown for a failure, not while fetching */
   GtkDropDown *sort_dropdown;
 
   /* GTK fires "toggled"/"notify::selected" on some widgets as a side
@@ -1234,7 +1236,36 @@ static void
 set_category_status (GogMainWindow *self, const char *text)
 {
   gtk_label_set_label (self->category_status, text ? text : "");
-  gtk_widget_set_visible (GTK_WIDGET (self->category_status), text != NULL);
+  gtk_widget_set_visible (self->status_dismiss, !self->categories_running);
+  gtk_widget_set_visible (self->status_bar, text != NULL);
+}
+
+static void
+on_status_dismiss_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  set_category_status (user_data, NULL);
+}
+
+/* A bar along the bottom of the window, so the lookups after a scan are
+ * noticed. White on dark blue for contrast (WCAG AA). */
+static GtkWidget *
+build_status_bar (GogMainWindow *self)
+{
+  GtkWidget *bar = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
+  gtk_widget_add_css_class (bar, "gog-status-bar");
+  self->category_status = GTK_LABEL (gtk_label_new (NULL));
+  gtk_label_set_wrap (self->category_status, TRUE);
+  gtk_label_set_xalign (self->category_status, 0);
+  gtk_widget_set_hexpand (GTK_WIDGET (self->category_status), TRUE);
+  gtk_box_append (GTK_BOX (bar), GTK_WIDGET (self->category_status));
+  self->status_dismiss = gtk_button_new_with_label ("Dismiss");
+  gtk_widget_set_valign (self->status_dismiss, GTK_ALIGN_CENTER);
+  g_signal_connect (self->status_dismiss, "clicked", G_CALLBACK (on_status_dismiss_clicked), self);
+  gtk_box_append (GTK_BOX (bar), self->status_dismiss);
+  gtk_widget_set_visible (bar, FALSE);
+  self->status_bar = bar;
+  return bar;
 }
 
 typedef struct
@@ -1807,13 +1838,6 @@ build_sidebar (GogMainWindow *self)
   gtk_menu_button_set_label (self->category_button, "Any category");
   set_accessible_label (GTK_WIDGET (self->category_button), "Category: Any category");
   gtk_box_append (GTK_BOX (box), GTK_WIDGET (self->category_button));
-  self->category_status = GTK_LABEL (gtk_label_new (NULL));
-  gtk_label_set_wrap (self->category_status, TRUE);
-  gtk_label_set_xalign (self->category_status, 0);
-  gtk_widget_add_css_class (GTK_WIDGET (self->category_status), "dim-label");
-  gtk_widget_add_css_class (GTK_WIDGET (self->category_status), "caption");
-  gtk_widget_set_visible (GTK_WIDGET (self->category_status), FALSE);
-  gtk_box_append (GTK_BOX (box), GTK_WIDGET (self->category_status));
 
   GtkWidget *status_heading = gtk_label_new ("Status");
   gtk_widget_add_css_class (status_heading, "heading");
@@ -1957,6 +1981,7 @@ gog_main_window_new (GtkApplication *app)
   self->root_stack = GTK_STACK (gtk_stack_new ());
   gtk_stack_set_transition_type (self->root_stack, GTK_STACK_TRANSITION_TYPE_CROSSFADE);
   adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (toolbar_view), GTK_WIDGET (self->root_stack));
+  adw_toolbar_view_add_bottom_bar (ADW_TOOLBAR_VIEW (toolbar_view), build_status_bar (self));
   adw_application_window_set_content (ADW_APPLICATION_WINDOW (self), toolbar_view);
 
   /* --- empty page (no library path chosen yet) --- */

@@ -16,6 +16,9 @@ All notable changes to GOG Manager are listed here. The format follows
   they work offline; Preferences fetches them again with the categories.
 
 ### Changed
+- The progress of fetching categories, covers and details from GOG, and
+  any failure, is shown in a blue bar along the bottom of the window
+  instead of small text in the sidebar. A failure can be dismissed.
 - The config, install state, download choices, last GOG check and caches are
   kept in a hidden `.gog-manager-configs` folder next to the AppImage instead
   of directly beside it. Files from an older version are moved there on start.

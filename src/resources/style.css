@@ -33,6 +33,28 @@
   color: @success_fg_color;
 }
 
+/* Progress of the GOG lookups, along the bottom of the window. Fixed
+ * colours, not the accent: white on Adwaita's blue 4 is 6.5:1. */
+.gog-status-bar {
+  background-color: #1a5fb4;
+  color: #ffffff;
+  padding: 6px 12px;
+}
+
+.gog-status-bar button {
+  color: #ffffff;
+  background-color: alpha(#ffffff, 0.15);
+}
+
+.gog-status-bar button:hover {
+  background-color: alpha(#ffffff, 0.25);
+}
+
+/* Adwaita's blue focus ring would vanish on the blue bar. */
+.gog-status-bar button:focus-visible {
+  outline-color: #ffffff;
+}
+
 .gog-sidebar {
   padding: 6px;
 }
