@@ -45,6 +45,7 @@ gog_sync_item_free (GogSyncItem *item)
   if (!item)
     return;
   g_free (item->gamename);
+  g_free (item->title);
   g_ptr_array_unref (item->files);
   g_free (item);
 }
@@ -619,6 +620,7 @@ gog_sync_apply_details (GPtrArray *items, const char *list_output)
 
   GHashTable *offered = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
   GHashTable *table = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_free);
+  GHashTable *games = g_hash_table_new (g_str_hash, g_str_equal); /* gamename -> json */
   for (size_t i = 0; i < json_object_array_length (root); i++)
     {
       json_object *game = json_object_array_get_idx (root, i);
@@ -631,12 +633,25 @@ gog_sync_apply_details (GPtrArray *items, const char *list_output)
       for (size_t d = 0; dlcs && d < json_object_array_length (dlcs); d++)
         add_details (table, json_object_array_get_idx (dlcs, d), TRUE, &langs);
       g_hash_table_insert (offered, g_strdup (gamename), GUINT_TO_POINTER (langs));
+      g_hash_table_insert (games, (gpointer) gamename, game);
     }
 
   for (guint i = 0; items && i < items->len; i++)
     {
       GogSyncItem *item = g_ptr_array_index (items, i);
       item->languages_offered |= GPOINTER_TO_UINT (g_hash_table_lookup (offered, item->gamename));
+      json_object *game = g_hash_table_lookup (games, item->gamename);
+      const char *title = ju_get_string (game, "title", NULL);
+      if (title && *title)
+        {
+          g_free (item->title);
+          item->title = g_strdup (title);
+        }
+      /* lgogdownloader writes it as a string. */
+      const char *id_text = ju_get_string (game, "product_id", NULL);
+      gint64 id = id_text ? g_ascii_strtoll (id_text, NULL, 10) : ju_get_int64 (game, "product_id", 0);
+      if (id > 0)
+        item->product_id = id;
       for (guint f = 0; f < item->files->len; f++)
         {
           GogSyncFile *file = g_ptr_array_index (item->files, f);
@@ -655,6 +670,7 @@ gog_sync_apply_details (GPtrArray *items, const char *list_output)
         }
     }
   /* The table's strings point into root. */
+  g_hash_table_unref (games);
   g_hash_table_unref (table);
   g_hash_table_unref (offered);
   json_object_put (root);
@@ -689,6 +705,8 @@ gog_sync_load_results (gint64 *out_checked_unix)
                                                                           : GOG_SYNC_UPDATE;
       item->n_files = (guint) ju_get_int64 (rec, "files", 0);
       item->languages_offered = (guint) ju_get_int64 (rec, "languages", 0);
+      item->title = g_strdup (ju_get_string (rec, "title", NULL));
+      item->product_id = MAX (ju_get_int64 (rec, "product_id", 0), 0);
       json_object *files = ju_get_array (rec, "file_list");
       for (size_t f = 0; files && f < json_object_array_length (files); f++)
         {
@@ -730,6 +748,10 @@ save_results_checked (GPtrArray *items, gint64 checked_unix)
                                                                                        : "update"));
       json_object_object_add (rec, "files", json_object_new_int64 (item->n_files));
       json_object_object_add (rec, "languages", json_object_new_int64 (item->languages_offered));
+      if (item->title)
+        json_object_object_add (rec, "title", json_object_new_string (item->title));
+      if (item->product_id > 0)
+        json_object_object_add (rec, "product_id", json_object_new_int64 (item->product_id));
       json_object *files = json_object_new_array ();
       for (guint f = 0; f < item->files->len; f++)
         {

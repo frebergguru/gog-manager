@@ -22,6 +22,12 @@ typedef void (*GogSyncDoneFunc) (gboolean downloaded, gpointer user_data);
 void gog_show_sync_dialog (GtkWindow *parent, const char *library_dir, GogLibrary *library,
                            GogSyncDoneFunc on_done, gpointer user_data);
 
+/* The same, with gamename (a game not downloaded yet) ticked and opened,
+ * so its languages and parts can be chosen before Download. */
+void gog_show_sync_dialog_for_game (GtkWindow *parent, const char *library_dir,
+                                    GogLibrary *library, const char *gamename,
+                                    GogSyncDoneFunc on_done, gpointer user_data);
+
 G_END_DECLS
 
 #endif

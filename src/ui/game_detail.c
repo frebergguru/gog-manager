@@ -60,6 +60,7 @@ struct _GogGameDetail
 enum
 {
   SIG_CHANGED,
+  SIG_DOWNLOAD,
   N_SIGNALS,
 };
 
@@ -95,6 +96,9 @@ gog_game_detail_class_init (GogGameDetailClass *klass)
   detail_signals[SIG_CHANGED] =
       g_signal_new (GOG_GAME_DETAIL_SIGNAL_CHANGED, G_TYPE_FROM_CLASS (klass), G_SIGNAL_RUN_LAST,
                     0, NULL, NULL, NULL, G_TYPE_NONE, 0);
+  detail_signals[SIG_DOWNLOAD] =
+      g_signal_new (GOG_GAME_DETAIL_SIGNAL_DOWNLOAD, G_TYPE_FROM_CLASS (klass), G_SIGNAL_RUN_LAST,
+                    0, NULL, NULL, NULL, G_TYPE_NONE, 1, G_TYPE_STRING);
 }
 
 static void
@@ -517,9 +521,30 @@ os_label (GogOs os)
 }
 
 static void
+on_download_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  GogGameDetail *self = user_data;
+  g_signal_emit (self, detail_signals[SIG_DOWNLOAD], 0, gog_game_get_slug (self->game));
+}
+
+static void
 build_action_row (GogGameDetail *self)
 {
   clear_box (self->action_box);
+
+  /* Owned on GOG, no files here yet: the one thing to do is fetch them. */
+  if (!gog_game_get_downloaded (self->game))
+    {
+      GtkWidget *download = gtk_button_new_with_label ("Download…");
+      gtk_widget_add_css_class (download, "suggested-action");
+      gtk_widget_add_css_class (download, "pill");
+      gtk_widget_set_tooltip_text (download, "Choose its languages, DLC and extras, and "
+                                             "download it from GOG with lgogdownloader");
+      g_signal_connect (download, "clicked", G_CALLBACK (on_download_clicked), self);
+      gtk_box_append (self->action_box, download);
+      return;
+    }
 
   if (gog_game_get_installed (self->game))
     {
@@ -1250,7 +1275,10 @@ refresh_details (GogGameDetail *self)
   for (guint i = 0; i < G_N_ELEMENTS (systems); i++)
     if (gog_game_get_supports_os (self->game, systems[i]))
       g_ptr_array_add (badges, g_strdup (os_label (systems[i])));
-  g_ptr_array_add (badges, text_format_size (gog_game_get_total_size (self->game)));
+  if (gog_game_get_downloaded (self->game))
+    g_ptr_array_add (badges, text_format_size (gog_game_get_total_size (self->game)));
+  else
+    g_ptr_array_add (badges, g_strdup ("Not downloaded"));
   if (gog_game_get_installed (self->game))
     g_ptr_array_add (badges, g_strdup ("Installed"));
   /* Early access: GOG still works on it. */

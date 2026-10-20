@@ -73,6 +73,7 @@ struct _SyncCtx
   GogSyncJob *job;
   gboolean busy;
   gboolean downloaded;
+  gchar *focus_gamename; /* the game to tick and open; NULL for none */
 };
 
 static void
@@ -88,6 +89,7 @@ ctx_free (SyncCtx *ctx)
   g_ptr_array_unref (ctx->games);
   g_ptr_array_unref (ctx->items);
   g_free (ctx->library_dir);
+  g_free (ctx->focus_gamename);
   g_free (ctx);
 }
 
@@ -462,7 +464,7 @@ add_game_row (SyncCtx *ctx, GtkWidget *list, GogSyncItem *item)
   game->file_rows = g_ptr_array_new ();
   g_ptr_array_add (ctx->games, game);
 
-  gchar *title = title_for (ctx, item->gamename);
+  gchar *title = item->title ? g_strdup (item->title) : title_for (ctx, item->gamename);
   GtkWidget *check = gtk_check_button_new ();
   gtk_widget_set_valign (check, GTK_ALIGN_CENTER);
   gchar *label = g_strdup_printf ("Download %s", title);
@@ -626,6 +628,20 @@ show_items (SyncCtx *ctx, GPtrArray *items, gint64 checked_unix)
   g_free (summary);
   g_free (when);
   (void) n_other;
+
+  /* Opened from a game's Download button: that game, ready to go. */
+  for (guint i = 0; ctx->focus_gamename && i < ctx->games->len; i++)
+    {
+      GameRow *game = g_ptr_array_index (ctx->games, i);
+      if (g_strcmp0 (game->item->gamename, ctx->focus_gamename) != 0)
+        continue;
+      gtk_check_button_set_active (game->check, TRUE);
+      if (game->row)
+        adw_expander_row_set_expanded (game->row, TRUE);
+      /* Also before the window is shown. */
+      gtk_window_set_focus (ctx->window, GTK_WIDGET (game->check));
+      break;
+    }
 }
 
 static void
@@ -1013,11 +1029,30 @@ on_window_destroy (GtkWidget *window, gpointer user_data)
   ctx_free (ctx);
 }
 
+static void show_dialog (GtkWindow *parent, const char *library_dir, GogLibrary *library,
+                         const char *focus_gamename, GogSyncDoneFunc on_done,
+                         gpointer user_data);
+
 void
 gog_show_sync_dialog (GtkWindow *parent, const char *library_dir, GogLibrary *library,
                       GogSyncDoneFunc on_done, gpointer user_data)
 {
+  show_dialog (parent, library_dir, library, NULL, on_done, user_data);
+}
+
+void
+gog_show_sync_dialog_for_game (GtkWindow *parent, const char *library_dir, GogLibrary *library,
+                               const char *gamename, GogSyncDoneFunc on_done, gpointer user_data)
+{
+  show_dialog (parent, library_dir, library, gamename, on_done, user_data);
+}
+
+static void
+show_dialog (GtkWindow *parent, const char *library_dir, GogLibrary *library,
+             const char *focus_gamename, GogSyncDoneFunc on_done, gpointer user_data)
+{
   SyncCtx *ctx = g_new0 (SyncCtx, 1);
+  ctx->focus_gamename = g_strdup (focus_gamename);
   ctx->library_dir = g_strdup (library_dir);
   ctx->library = library;
   ctx->on_done = on_done;

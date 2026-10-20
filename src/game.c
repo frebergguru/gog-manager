@@ -32,6 +32,7 @@ struct _GogGame
   GPtrArray *installers; /* GogInstallerInfo* */
   GPtrArray *extras;     /* GogExtraInfo* */
 
+  gboolean downloaded;
   gboolean installed;
   gchar *install_path;
   GogRunnerKind runner_kind;
@@ -177,6 +178,19 @@ gog_game_init (GogGame *self)
   self->product_type = GOG_PRODUCT_GAME;
   self->runner_kind = GOG_RUNNER_NONE;
   self->product = gog_product_info_new ();
+  self->downloaded = TRUE;
+}
+
+gboolean
+gog_game_get_downloaded (GogGame *self)
+{
+  return self->downloaded;
+}
+
+void
+gog_game_set_downloaded (GogGame *self, gboolean downloaded)
+{
+  self->downloaded = downloaded;
 }
 
 GogGame *

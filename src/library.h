@@ -41,6 +41,12 @@ gboolean gog_library_language_from_installer_name (const char *filename, const c
 /* Look up a loaded game by product id, or NULL. Transfer none. */
 GogGame *gog_library_find_by_id (GogLibrary *self, gint64 id);
 
+/* Adds a not-downloaded game (gog_game_get_downloaded() FALSE) for each
+ * GOG_SYNC_NEW_GAME item of the last check (GogSyncItem*) that the library
+ * has no folder or product of, and takes away the ones added before that
+ * are no longer in items. */
+void gog_library_set_not_downloaded (GogLibrary *self, GPtrArray *items);
+
 G_END_DECLS
 
 #endif

@@ -163,6 +163,12 @@ void       gog_game_add_extra (GogGame *self, GogExtraInfo *info);
 
 guint64 gog_game_get_total_size (GogGame *self);
 
+/* FALSE for a game owned on GOG that has no folder in the library yet
+ * (from the last check of GOG): it has no files, only what GOG says about
+ * it, and can be downloaded. TRUE otherwise. */
+gboolean gog_game_get_downloaded (GogGame *self);
+void     gog_game_set_downloaded (GogGame *self, gboolean downloaded);
+
 /* Mutable install state (persisted separately in state.json). Changing
  * "installed" emits notify::installed so the UI can refresh live. */
 gboolean gog_game_get_installed (GogGame *self);

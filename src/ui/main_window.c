@@ -210,6 +210,16 @@ load_gog_updates (GogMainWindow *self)
   return changed;
 }
 
+/* Games owned on GOG with no folder yet, from the last check, join the
+ * library as not downloaded. */
+static void
+add_not_downloaded (GogMainWindow *self)
+{
+  GPtrArray *items = gog_sync_load_results (NULL);
+  gog_library_set_not_downloaded (self->library, items);
+  g_ptr_array_unref (items);
+}
+
 /* ---------------- filter / sort ---------------- */
 
 static gboolean
@@ -322,6 +332,8 @@ filter_func (gpointer item, gpointer user_data)
   if (status_idx == 2 && gog_game_get_installed (game))
     return FALSE;
   if (status_idx == 3 && !has_gog_update (self, game))
+    return FALSE;
+  if (status_idx == 4 && gog_game_get_downloaded (game))
     return FALSE;
 
   return TRUE;
@@ -569,6 +581,8 @@ update_card (CardWidgets *cw, GogGame *game)
     g_string_append (badges, "Mac ");
   if (gog_game_get_installed (game))
     g_string_append (badges, "· Installed ");
+  if (!gog_game_get_downloaded (game))
+    g_string_append (badges, "Not downloaded ");
   if (has_gog_update (cw->window, game))
     g_string_append (badges, "· Update on GOG");
   gtk_label_set_label (cw->badges, badges->str);
@@ -815,6 +829,8 @@ text_status (GogMainWindow *self, GogGame *game)
 {
   gboolean installed = gog_game_get_installed (game);
   gboolean update = has_gog_update (self, game);
+  if (!gog_game_get_downloaded (game))
+    return g_strdup ("Not downloaded");
   if (installed && update)
     return g_strdup ("Installed · Update on GOG");
   if (update)
@@ -1910,6 +1926,8 @@ on_scan_done (GObject *source, GAsyncResult *res, gpointer user_data)
       gog_state_apply_to_game (self->state, g);
       g_object_unref (g);
     }
+  add_not_downloaded (self);
+  n = g_list_model_get_n_items (gog_library_get_model (self->library));
   rebuild_dlc_counts (self);
   on_filters_changed (NULL, self); /* the DLC filter needs the new counts */
 
@@ -2053,6 +2071,29 @@ on_gog_sync_done (gboolean downloaded, gpointer user_data)
   gboolean changed = load_gog_updates (self);
   if (downloaded || changed)
     start_scan (self); /* new files, or new "Update on GOG" marks on the cards */
+  else if (!self->scanning)
+    {
+      /* The check may have found games that aren't downloaded. */
+      add_not_downloaded (self);
+      apply_categories (self);
+      apply_gamesdb (self);
+      start_category_lookup (self);
+      on_filters_changed (NULL, self);
+      on_sort_changed (NULL, self);
+    }
+}
+
+/* A not-downloaded game's Download button: the download window, with
+ * that game chosen. */
+static void
+on_detail_download (GogGameDetail *detail, const char *gamename, gpointer user_data)
+{
+  (void) detail;
+  GogMainWindow *self = user_data;
+  gchar *library_dir = gog_config_effective_library_path (self->config);
+  gog_show_sync_dialog_for_game (GTK_WINDOW (self), library_dir, self->library, gamename,
+                                 on_gog_sync_done, self);
+  g_free (library_dir);
 }
 
 static void
@@ -2213,7 +2254,8 @@ build_sidebar (GogMainWindow *self)
   gtk_box_append (GTK_BOX (box), status_heading);
   GtkStringList *status_list = gtk_string_list_new ((const char *[]) { "All games", "Installed",
                                                                         "Not installed",
-                                                                        "New version on GOG", NULL });
+                                                                        "New version on GOG",
+                                                                        "Not downloaded", NULL });
   self->status_dropdown = GTK_DROP_DOWN (gtk_drop_down_new (G_LIST_MODEL (status_list), NULL));
   set_accessible_label (GTK_WIDGET (self->status_dropdown), "Status");
   gtk_box_append (GTK_BOX (box), GTK_WIDGET (self->status_dropdown));
@@ -2425,6 +2467,7 @@ gog_main_window_new (GtkApplication *app)
   /* detail page */
   self->detail = gog_game_detail_new (GTK_WINDOW (self), self->library, self->config, self->state);
   g_signal_connect (self->detail, GOG_GAME_DETAIL_SIGNAL_CHANGED, G_CALLBACK (on_detail_changed), self);
+  g_signal_connect (self->detail, GOG_GAME_DETAIL_SIGNAL_DOWNLOAD, G_CALLBACK (on_detail_download), self);
   AdwNavigationPage *detail_page =
       adw_navigation_page_new_with_tag (GTK_WIDGET (self->detail), "Details", "detail");
   adw_navigation_view_add (self->nav_view, detail_page);

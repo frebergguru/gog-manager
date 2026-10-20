@@ -48,6 +48,8 @@ typedef struct
   guint n_files;   /* files missing or differing */
   GPtrArray *files; /* GogSyncFile*, the files counted in n_files */
   guint languages_offered; /* union of the languages of all the game's installers */
+  gchar *title;     /* GOG's title, from --list j; NULL if not known */
+  gint64 product_id; /* GOG's product id, from --list j; 0 if not known */
 } GogSyncItem;
 
 void gog_sync_item_free (GogSyncItem *item);
@@ -121,7 +123,7 @@ GPtrArray *gog_sync_parse_status (const char *output, const char *library_dir,
                                   const char *const *base_names);
 
 /* Fills in each pending file's part, language, size and label, and each
- * item's languages_offered, from `lgogdownloader --list j` output (other
+ * item's languages_offered, title and product_id, from `lgogdownloader --list j` output (other
  * lines before the JSON are skipped). Files not found keep part GAME (DLC
  * if their gamename is not the item's), language 0 and size 0. */
 void gog_sync_apply_details (GPtrArray *items, const char *list_output);

@@ -28,6 +28,10 @@ void gog_game_detail_set_game (GogGameDetail *self, GogGame *game);
  * re-sort/re-filter the grid (install status is a filter/sort key). */
 #define GOG_GAME_DETAIL_SIGNAL_CHANGED "changed"
 
+/* Emitted (gchar *gamename) when Download is pressed on a game that is not
+ * downloaded, so the owner can open the download window for it. */
+#define GOG_GAME_DETAIL_SIGNAL_DOWNLOAD "download"
+
 G_END_DECLS
 
 #endif

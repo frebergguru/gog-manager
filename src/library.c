@@ -5,6 +5,7 @@
 #include "library.h"
 #include "json_util.h"
 #include "text_util.h"
+#include "gog_sync.h"
 #include <glib/gstdio.h>
 #include <string.h>
 
@@ -811,4 +812,45 @@ gog_library_scan_finish (GogLibrary *self, GAsyncResult *result, GError **error)
     }
 
   return TRUE;
+}
+
+void
+gog_library_set_not_downloaded (GogLibrary *self, GPtrArray *items)
+{
+  /* Those of an earlier call go first, so this can run again. */
+  for (guint i = g_list_model_get_n_items (G_LIST_MODEL (self->store)); i > 0; i--)
+    {
+      GogGame *g = g_list_model_get_item (G_LIST_MODEL (self->store), i - 1);
+      if (!gog_game_get_downloaded (g))
+        g_list_store_remove (self->store, i - 1);
+      g_object_unref (g);
+    }
+
+  GHashTable *folders = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+  guint n = g_list_model_get_n_items (G_LIST_MODEL (self->store));
+  for (guint i = 0; i < n; i++)
+    {
+      GogGame *g = g_list_model_get_item (G_LIST_MODEL (self->store), i);
+      const char *folder = gog_game_get_folder_path (g);
+      if (folder)
+        g_hash_table_add (folders, g_path_get_basename (folder));
+      g_object_unref (g);
+    }
+  for (guint i = 0; items && i < items->len; i++)
+    {
+      GogSyncItem *item = g_ptr_array_index (items, i);
+      if (item->kind != GOG_SYNC_NEW_GAME || g_hash_table_contains (folders, item->gamename) ||
+          (item->product_id > 0 && gog_library_find_by_id (self, item->product_id)))
+        continue;
+      GogGame *game = gog_game_new ();
+      gog_game_set_downloaded (game, FALSE);
+      gog_game_set_id (game, item->product_id);
+      gog_game_set_slug (game, item->gamename);
+      gchar *title = item->title ? g_strdup (item->title) : gog_sync_pretty_name (item->gamename);
+      gog_game_set_title (game, title);
+      g_free (title);
+      g_list_store_append (self->store, game);
+      g_object_unref (game);
+    }
+  g_hash_table_unref (folders);
 }

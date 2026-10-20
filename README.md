@@ -37,6 +37,9 @@ your GOG login.
   example HTTP 404 or 500, or a network error), it says which file and why,
   keeps the game's old version, and asks whether to try again later or ignore
   the file (until GOG puts out a new version of it).
+- **Games not downloaded yet** — the games you own on GOG but haven't
+  downloaded are in the library as well (after a check in the download
+  window), with their box art and details and a **Download…** button.
 - **One-click install** — installs Linux-native games directly, and drives
   Windows installers unattended through Wine or Proton, laying down a portable
   `c:\game` prefix that keeps game files outside the Wine prefix.

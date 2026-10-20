@@ -312,7 +312,7 @@ test_gog_sync_parse_status (void)
       "    { \"gamename\": \"fallout_4\", \"language\": 1, \"size\": \"7\", \"type\": 1,\n"
       "      \"path\": \"/fallout_4/setup_fallout_4.exe\" } ],\n"
       "  \"dlcs\": [] },\n"
-      "{ \"gamename\": \"new_game\", \"title\": \"New Game\",\n"
+      "{ \"gamename\": \"new_game\", \"title\": \"New Game\", \"product_id\": \"1207\",\n"
       "  \"installers\": [], \"extras\": [\n"
       "    { \"gamename\": \"new_game\", \"language\": 1, \"size\": \"300\", \"type\": 2,\n"
       "      \"name\": \"Manual\", \"path\": \"/new_game/new_game_manual.zip\" } ],\n"
@@ -332,6 +332,26 @@ test_gog_sync_parse_status (void)
   g_assert_cmpint (manual->part, ==, GOG_SYNC_PART_EXTRA);
   g_assert_cmpstr (manual->label, ==, "Manual");
   g_assert_true (gog_sync_file_wanted (manual, 2)); /* extras have no language */
+  g_assert_cmpstr (c->title, ==, "New Game");
+  g_assert_cmpint (c->product_id, ==, 1207);
+  g_assert_cmpint (b->product_id, ==, 0);
+
+  /* Owned but not downloaded: a game of its own in the library, once. */
+  GogLibrary *library = gog_library_new ();
+  gog_library_set_not_downloaded (library, items);
+  gog_library_set_not_downloaded (library, items);
+  GListModel *model = gog_library_get_model (library);
+  g_assert_cmpuint (g_list_model_get_n_items (model), ==, 1);
+  GogGame *remote = gog_library_find_by_id (library, 1207);
+  g_assert_nonnull (remote);
+  g_assert_false (gog_game_get_downloaded (remote));
+  g_assert_cmpstr (gog_game_get_title (remote), ==, "New Game");
+  g_assert_cmpstr (gog_game_get_slug (remote), ==, "new_game");
+  /* Downloaded since: gone again. */
+  c->kind = GOG_SYNC_UPDATE;
+  gog_library_set_not_downloaded (library, items);
+  g_assert_cmpuint (g_list_model_get_n_items (model), ==, 0);
+  g_object_unref (library);
   g_ptr_array_unref (items);
 
   gchar *langs = gog_sync_describe_languages (1 | 65536);

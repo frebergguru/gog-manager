@@ -39,6 +39,14 @@ All notable changes to GOG Manager are listed here. The format follows
   Forum buttons that open the game's pages on gog.com, the short
   description when the full one is empty, and its screenshots and videos
   for games the games database has none for.
+- Games you own on GOG that aren't downloaded yet are in the library too,
+  marked "Not downloaded" (on the card, in the lists and at the top of
+  their page), with their box art and details. Their page has a
+  **Download…** button that opens the download window with that game
+  chosen and opened, to pick its languages, DLC and extras. A "Not
+  downloaded" status filter shows only them. They come from the last check
+  in the download window ("Check Now"), which now also keeps each game's
+  title and GOG product id.
 
 ### Changed
 - Details cached by 0.5.0 are fetched again once, to get the new fields.
