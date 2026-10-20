@@ -46,8 +46,9 @@ API ourselves: it holds the login and handles GOG's quirks.
 
 ### Through lgogdownloader
 
-- [ ] **Changelogs**: `--save-changelogs` when downloading, and show the
-      changelog on the game page and with installer updates.
+- [ ] **Changelogs with updates**: the game page shows the changelog from
+      the product JSON; show it in the download window too, next to a
+      game's new version.
 - [ ] **Updated / new flags**: `--updated` and `--new` to show which games
       changed before a full `--status`; `--clear-update-flags` afterwards.
 - [ ] **Notifications**: `--notifications`.
@@ -72,14 +73,6 @@ API ourselves: it holds the login and handles GOG's quirks.
 - [ ] **Galaxy builds**: `--galaxy-show-builds` and `--galaxy-install`
       for a build history, per-file updates and rolling back to an older
       version.
-
-### Product JSON (already saved, not read yet)
-
-- [ ] `description.lead` as a short summary in list views.
-- [ ] `images` (background, logo, icon variants) for a nicer game page.
-- [ ] `links` to the store, forum and support pages.
-- [ ] `in_development` (early access) and `is_pre_order`.
-- [ ] `downloads.patches` and `downloads.language_packs` (see above).
 
 ### api.gog.com (no login needed)
 
