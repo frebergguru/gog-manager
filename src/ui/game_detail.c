@@ -471,6 +471,19 @@ clear_box (GtkBox *box)
     gtk_box_remove (box, child);
 }
 
+/* For people; gog_os_to_string() is the id kept in files. */
+static const char *
+os_label (GogOs os)
+{
+  switch (os)
+    {
+    case GOG_OS_WINDOWS: return "Windows";
+    case GOG_OS_LINUX: return "Linux";
+    case GOG_OS_MAC: return "macOS";
+    default: return "Unknown system";
+    }
+}
+
 static void
 build_action_row (GogGameDetail *self)
 {
@@ -533,7 +546,7 @@ build_action_row (GogGameDetail *self)
 
       gchar *size_str = text_format_size (info->size);
       gchar *lang = text_language_label (info->language_full ? info->language_full : "?");
-      gchar *label = g_strdup_printf ("Install (%s, %s, %s)", gog_os_to_string (info->os), lang,
+      gchar *label = g_strdup_printf ("Install (%s, %s, %s)", os_label (info->os), lang,
                                        size_str);
       g_free (lang);
       GtkWidget *btn = gtk_button_new_with_label (label);
