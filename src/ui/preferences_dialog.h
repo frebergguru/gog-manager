@@ -15,7 +15,7 @@ G_BEGIN_DECLS
  * caller can trigger a rescan. */
 typedef void (*GogLibraryPathChangedFunc) (const char *new_path, gpointer user_data);
 
-/* Called when "Fetch Categories Again" is pressed. */
+/* Called when "Fetch All Details Again" is pressed. */
 typedef void (*GogRefetchCategoriesFunc) (gpointer user_data);
 
 /* library and state are used to move installed games off GE-Proton

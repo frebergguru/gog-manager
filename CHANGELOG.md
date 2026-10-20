@@ -6,6 +6,16 @@ All notable changes to GOG Manager are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- Preferences is easier to read: each group says in one line what it is
+  for, and row subtitles are short enough to stay on one line next to
+  their buttons. Folders have a labelled Change button and show the home
+  folder as `~`. Fetching details again and adding Wine or Proton are
+  full-width buttons under their group instead of being squeezed into a
+  row or the group header. "Other Languages" is now "Also Download". The
+  pages can be switched with Alt+L, Alt+R and Alt+D, and the window opens
+  taller so the Runners page fits.
+
 ## [0.5.0] - 2026-10-20
 
 ### Added
