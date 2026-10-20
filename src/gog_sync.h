@@ -169,6 +169,11 @@ GogSyncJob *gog_sync_job_new_check (const char *library_dir);
  * results. */
 GogSyncJob *gog_sync_job_new_check_games (const char *library_dir, const char *const *gamenames);
 
+/* The same for the games GOG has flagged as updated or new (`--list games
+ * --updated` and `--new`), which is much faster than a full check; the
+ * other games keep their saved results. GOG's flags stay as they are. */
+GogSyncJob *gog_sync_job_new_quick_check (const char *library_dir);
+
 typedef struct
 {
   const char *gamename;

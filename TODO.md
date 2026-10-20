@@ -49,8 +49,9 @@ API ourselves: it holds the login and handles GOG's quirks.
 - [x] **Changelogs**: on the game page (from the product JSON) and in the
       download window (from the check's `--list j`, so for the version on
       GOG).
-- [ ] **Updated / new flags**: `--updated` and `--new` to show which games
-      changed before a full `--status`; `--clear-update-flags` afterwards.
+- [x] **Updated / new flags**: Quick Check runs `--status` only for the games
+      `--list games --updated` and `--new` give. `--clear-update-flags` is
+      not used: it clears the flags for the whole account (and Galaxy).
 - [x] **Notifications**: `--notifications` with a full check, shown in the
       download window.
 - [ ] **Repair**: `--repair` to check downloaded files against GOG's hashes

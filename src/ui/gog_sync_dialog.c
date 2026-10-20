@@ -67,6 +67,7 @@ struct _SyncCtx
   GtkWidget *log_scroll;
   GtkTextView *log_view;
   GtkButton *check_button;
+  GtkButton *quick_button;
   GtkButton *select_all_button;
   GtkButton *download_button;
   GtkButton *cancel_button;
@@ -175,6 +176,7 @@ static void
 set_busy (SyncCtx *ctx, gboolean busy)
 {
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->check_button), !busy);
+  gtk_widget_set_sensitive (GTK_WIDGET (ctx->quick_button), !busy);
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->select_all_button), !busy && ctx->items->len > 0);
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->download_button), !busy && any_checked (ctx));
   gtk_widget_set_sensitive (ctx->results_box, !busy);
@@ -904,6 +906,16 @@ on_check_clicked (GtkButton *button, gpointer user_data)
   start_job (ctx, job);
 }
 
+static void
+on_quick_check_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  SyncCtx *ctx = user_data;
+  GogSyncJob *job = gog_sync_job_new_quick_check (ctx->library_dir);
+  g_signal_connect (job, "finished", G_CALLBACK (on_check_finished), ctx);
+  start_job (ctx, job);
+}
+
 /* Results saved by an older version have no file lists, so their games
  * can't show their files. A check of just those games gets them. */
 static void
@@ -1267,13 +1279,21 @@ show_dialog (GtkWindow *parent, const char *library_dir, GogLibrary *library,
   g_signal_connect (ctx->cancel_button, "clicked", G_CALLBACK (on_cancel_clicked), ctx);
   ctx->select_all_button = GTK_BUTTON (gtk_button_new_with_label ("Select All"));
   g_signal_connect (ctx->select_all_button, "clicked", G_CALLBACK (on_select_all_clicked), ctx);
+  ctx->quick_button = GTK_BUTTON (gtk_button_new_with_label ("Quick Check"));
+  gtk_widget_set_tooltip_text (GTK_WIDGET (ctx->quick_button),
+                               "Check only the games GOG marks as updated or new: much faster "
+                               "than Check Now, which looks at every game");
+  g_signal_connect (ctx->quick_button, "clicked", G_CALLBACK (on_quick_check_clicked), ctx);
   ctx->check_button = GTK_BUTTON (gtk_button_new_with_label ("Check Now"));
+  gtk_widget_set_tooltip_text (GTK_WIDGET (ctx->check_button),
+                               "Check every game you own (takes a few minutes)");
   g_signal_connect (ctx->check_button, "clicked", G_CALLBACK (on_check_clicked), ctx);
   ctx->download_button = GTK_BUTTON (gtk_button_new_with_label ("Download Selected"));
   gtk_widget_add_css_class (GTK_WIDGET (ctx->download_button), "suggested-action");
   g_signal_connect (ctx->download_button, "clicked", G_CALLBACK (on_download_clicked), ctx);
   gtk_box_append (GTK_BOX (btn_box), GTK_WIDGET (ctx->cancel_button));
   gtk_box_append (GTK_BOX (btn_box), GTK_WIDGET (ctx->select_all_button));
+  gtk_box_append (GTK_BOX (btn_box), GTK_WIDGET (ctx->quick_button));
   gtk_box_append (GTK_BOX (btn_box), GTK_WIDGET (ctx->check_button));
   gtk_box_append (GTK_BOX (btn_box), GTK_WIDGET (ctx->download_button));
   gtk_box_append (GTK_BOX (outer), btn_box);
@@ -1297,6 +1317,7 @@ show_dialog (GtkWindow *parent, const char *library_dir, GogLibrary *library,
                           "terminal, and open this again.");
       gtk_widget_set_visible (ctx->results_scroll, FALSE);
       gtk_widget_set_sensitive (GTK_WIDGET (ctx->check_button), FALSE);
+      gtk_widget_set_sensitive (GTK_WIDGET (ctx->quick_button), FALSE);
       gtk_widget_set_sensitive (GTK_WIDGET (ctx->select_all_button), FALSE);
       gtk_widget_set_sensitive (GTK_WIDGET (ctx->download_button), FALSE);
     }

@@ -929,6 +929,7 @@ struct _GogSyncJob
   GPtrArray *failures; /* GogSyncFailure*, after a download */
   GPtrArray *items;   /* check result */
   GStrv only_games;   /* check only these, NULL for all */
+  gboolean quick;          /* check only what GOG flags as updated or new */
   gboolean include_hidden; /* --include-hidden-products, as set when the job was made */
   guint rate_limit;        /* --limit-rate for downloads, 0 for none */
 
@@ -1018,6 +1019,14 @@ gog_sync_job_new_check_games (const char *library_dir, const char *const *gamena
 {
   GogSyncJob *self = gog_sync_job_new_check (library_dir);
   self->only_games = g_strdupv ((gchar **) gamenames);
+  return self;
+}
+
+GogSyncJob *
+gog_sync_job_new_quick_check (const char *library_dir)
+{
+  GogSyncJob *self = gog_sync_job_new_check (library_dir);
+  self->quick = TRUE;
   return self;
 }
 
@@ -1659,6 +1668,51 @@ check_sync (GogSyncJob *job, GError **error)
           g_clear_error (&notes_error);
         }
       g_string_free (notes, TRUE);
+    }
+
+  if (job->quick)
+    {
+      /* The games GOG flags; lgogdownloader prints one name a line. */
+      job_progress (job, -1, "Asking GOG which games changed…");
+      GStrvBuilder *flagged = g_strv_builder_new ();
+      GHashTable *seen = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+      const char *flags[] = { "--updated", "--new" };
+      for (guint f = 0; f < G_N_ELEMENTS (flags); f++)
+        {
+          gchar *flag_argv[] = { LGOG, "--list", "games", (gchar *) flags[f], NULL };
+          GString *names_out = g_string_new (NULL);
+          if (!run_streaming (job, flag_argv, collect_line, names_out, error))
+            {
+              g_string_free (names_out, TRUE);
+              g_hash_table_unref (seen);
+              g_strv_builder_unref (flagged);
+              return FALSE;
+            }
+          gchar **lines = g_strsplit (names_out->str, "\n", -1);
+          for (gchar **l = lines; *l; l++)
+            {
+              gchar *name = g_strstrip (*l);
+              if (*name && !g_hash_table_contains (seen, name))
+                {
+                  g_hash_table_add (seen, g_strdup (name));
+                  g_strv_builder_add (flagged, name);
+                }
+            }
+          g_strfreev (lines);
+          g_string_free (names_out, TRUE);
+        }
+      g_strfreev (job->only_games);
+      job->only_games = g_strv_builder_end (flagged);
+      g_strv_builder_unref (flagged);
+      g_hash_table_unref (seen);
+      if (!job->only_games[0])
+        {
+          /* Nothing flagged: what the last check found stands. */
+          job_log (job, "GOG has no game flagged as updated or new.");
+          g_clear_pointer (&job->items, g_ptr_array_unref);
+          job->items = gog_sync_load_results (NULL);
+          return TRUE;
+        }
     }
 
   gchar **base_names;

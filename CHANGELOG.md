@@ -58,6 +58,10 @@ All notable changes to GOG Manager are listed here. The format follows
 - A full check also gets your GOG notifications (lgogdownloader's
   `--notifications`), and the download window lists the ones that aren't
   zero, e.g. "On GOG: 2 new forum replies · 1 unread chat message".
+- **Quick Check** in the download window: checks only the games GOG has
+  flagged as updated or new (lgogdownloader's `--list games --updated` and
+  `--new`), which takes seconds instead of minutes; the other games keep
+  what the last full check found. GOG's flags are left as they are.
 
 ### Changed
 - Details cached by 0.5.0 are fetched again once, to get the new fields.
