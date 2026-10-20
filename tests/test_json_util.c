@@ -72,6 +72,16 @@ test_strip_html_list (void)
   g_free (out);
 }
 
+/* GOG's placeholders for feature images aren't text. */
+static void
+test_strip_html_feature_placeholder (void)
+{
+  gchar *out = text_strip_html ("<p>Single-player only.</p>\n\n<br>\n"
+                                "<ul><li>product_feature_1390579243</li></ul>");
+  g_assert_cmpstr (out, ==, "Single-player only.");
+  g_free (out);
+}
+
 /* GOG's HTML indents lines and double-spaces words. */
 static void
 test_strip_html_whitespace (void)
@@ -172,6 +182,8 @@ main (int argc, char *argv[])
   g_test_add_func ("/text_util/strip_html_repeated_list", test_strip_html_repeated_list);
   g_test_add_func ("/text_util/strip_html_numeric_entities", test_strip_html_numeric_entities);
   g_test_add_func ("/text_util/strip_html_invalid_utf8", test_strip_html_invalid_utf8);
+  g_test_add_func ("/text_util/strip_html_feature_placeholder",
+                   test_strip_html_feature_placeholder);
   g_test_add_func ("/text_util/language_label", test_language_label);
   return g_test_run ();
 }

@@ -31,6 +31,11 @@ All notable changes to GOG Manager are listed here. The format follows
 ### Fixed
 - An extra or DLC whose name has "&" in it (such as "guides & reference")
   showed an empty row.
+- A game's About text took a thin column under a screen of empty space
+  when the game had many screenshots (the tabs were all as tall as the
+  tallest); it fills the page's width again, right under the tabs.
+- Descriptions no longer end in "• product_feature_1390579243" and the
+  like: GOG's names for its store page's feature images (DOOM (2016)).
 
 ## [0.5.0] - 2026-10-20
 

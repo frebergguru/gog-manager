@@ -143,6 +143,9 @@ text_strip_html (const char *html)
     { "\r", "" },
     { "[ \t]+", " " },
     { " ?\n ?", "\n" },
+    /* A list item that is only "product_feature_1390579243": the name of
+     * a feature image GOG's store page shows, not text (DOOM (2016)). */
+    { "(?m)^(" BULLET ")?product_feature_[0-9]+$", "" },
     { "\n{3,}", "\n\n" },
   };
   gchar *collapsed = valid;

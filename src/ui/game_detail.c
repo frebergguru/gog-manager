@@ -1331,6 +1331,9 @@ gog_game_detail_new (GtkWindow *parent_window, GogLibrary *library, GogConfig *c
 
   AdwViewStack *stack = ADW_VIEW_STACK (adw_view_stack_new ());
   self->stack = stack;
+  /* Each tab as tall as its own content: a long screenshot gallery mustn't
+   * leave a short description under a screen of empty space. */
+  adw_view_stack_set_vhomogeneous (stack, FALSE);
   GtkWidget *switcher = adw_view_switcher_new ();
   adw_view_switcher_set_stack (ADW_VIEW_SWITCHER (switcher), stack);
   adw_view_switcher_set_policy (ADW_VIEW_SWITCHER (switcher), ADW_VIEW_SWITCHER_POLICY_WIDE);
@@ -1339,7 +1342,11 @@ gog_game_detail_new (GtkWindow *parent_window, GogLibrary *library, GogConfig *c
   self->description_label = GTK_LABEL (gtk_label_new (NULL));
   gtk_label_set_wrap (self->description_label, TRUE);
   gtk_label_set_xalign (self->description_label, 0.0);
-  gtk_widget_set_halign (GTK_WIDGET (self->description_label), GTK_ALIGN_START);
+  gtk_label_set_yalign (self->description_label, 0.0);
+  /* The page's full width, top aligned: with GTK_ALIGN_START it took the
+   * narrowest width that fit the tallest tab's height, a thin column under
+   * a gap. */
+  gtk_widget_set_valign (GTK_WIDGET (self->description_label), GTK_ALIGN_START);
   adw_view_stack_add_titled_with_icon (stack, GTK_WIDGET (self->description_label),
                                        "about", "About", "help-about-symbolic");
 
