@@ -42,6 +42,25 @@ typedef struct
   gchar *pending_library_path;
 } PrefsCtx;
 
+/* Callbacks that can outlive the window (file choosers, the Proton
+ * windows) get a ref on it and find ctx through it; NULL once it is gone. */
+#define CTX_KEY "gog-prefs-ctx"
+
+static gpointer
+ref_window (PrefsCtx *ctx)
+{
+  return g_object_ref (ctx->window);
+}
+
+/* Takes the ref from ref_window(). */
+static PrefsCtx *
+live_ctx (gpointer window)
+{
+  PrefsCtx *ctx = g_object_get_data (G_OBJECT (window), CTX_KEY);
+  g_object_unref (window);
+  return ctx;
+}
+
 static void
 save_and_close (PrefsCtx *ctx)
 {
@@ -75,8 +94,10 @@ save_and_close (PrefsCtx *ctx)
 static void
 on_choose_library_response (GObject *source, GAsyncResult *res, gpointer user_data)
 {
-  PrefsCtx *ctx = user_data;
   GFile *folder = gtk_file_dialog_select_folder_finish (GTK_FILE_DIALOG (source), res, NULL);
+  PrefsCtx *ctx = live_ctx (user_data);
+  if (folder && !ctx)
+    g_clear_object (&folder);
   if (folder)
     {
       gchar *path = g_file_get_path (folder);
@@ -94,15 +115,17 @@ on_choose_library_clicked (GtkButton *button, gpointer user_data)
   PrefsCtx *ctx = user_data;
   GtkFileDialog *dialog = gtk_file_dialog_new ();
   gtk_file_dialog_set_title (dialog, "Choose GOG Games Directory");
-  gtk_file_dialog_select_folder (dialog, ctx->parent, NULL, on_choose_library_response, ctx);
+  gtk_file_dialog_select_folder (dialog, ctx->parent, NULL, on_choose_library_response, ref_window (ctx));
   g_object_unref (dialog);
 }
 
 static void
 on_choose_install_root_response (GObject *source, GAsyncResult *res, gpointer user_data)
 {
-  PrefsCtx *ctx = user_data;
   GFile *folder = gtk_file_dialog_select_folder_finish (GTK_FILE_DIALOG (source), res, NULL);
+  PrefsCtx *ctx = live_ctx (user_data);
+  if (folder && !ctx)
+    g_clear_object (&folder);
   if (folder)
     {
       gchar *path = g_file_get_path (folder);
@@ -120,7 +143,7 @@ on_choose_install_root_clicked (GtkButton *button, gpointer user_data)
   PrefsCtx *ctx = user_data;
   GtkFileDialog *dialog = gtk_file_dialog_new ();
   gtk_file_dialog_set_title (dialog, "Choose Default Install Directory");
-  gtk_file_dialog_select_folder (dialog, ctx->parent, NULL, on_choose_install_root_response, ctx);
+  gtk_file_dialog_select_folder (dialog, ctx->parent, NULL, on_choose_install_root_response, ref_window (ctx));
   g_object_unref (dialog);
 }
 
@@ -241,9 +264,12 @@ static void
 on_add_wine_response (GObject *source, GAsyncResult *res, gpointer user_data)
 {
   GFile *file = gtk_file_dialog_open_finish (GTK_FILE_DIALOG (source), res, NULL);
+  PrefsCtx *ctx = live_ctx (user_data);
+  if (file && !ctx)
+    g_clear_object (&file);
   if (file)
     {
-      add_custom_runner (user_data, "wine=", file);
+      add_custom_runner (ctx, "wine=", file);
       g_object_unref (file);
     }
 }
@@ -255,7 +281,7 @@ on_add_wine_clicked (GtkButton *button, gpointer user_data)
   PrefsCtx *ctx = user_data;
   GtkFileDialog *dialog = gtk_file_dialog_new ();
   gtk_file_dialog_set_title (dialog, "Choose a Wine Binary");
-  gtk_file_dialog_open (dialog, ctx->parent, NULL, on_add_wine_response, ctx);
+  gtk_file_dialog_open (dialog, ctx->parent, NULL, on_add_wine_response, ref_window (ctx));
   g_object_unref (dialog);
 }
 
@@ -263,9 +289,12 @@ static void
 on_add_proton_response (GObject *source, GAsyncResult *res, gpointer user_data)
 {
   GFile *folder = gtk_file_dialog_select_folder_finish (GTK_FILE_DIALOG (source), res, NULL);
+  PrefsCtx *ctx = live_ctx (user_data);
+  if (folder && !ctx)
+    g_clear_object (&folder);
   if (folder)
     {
-      add_custom_runner (user_data, "proton=", folder);
+      add_custom_runner (ctx, "proton=", folder);
       g_object_unref (folder);
     }
 }
@@ -277,7 +306,7 @@ on_add_proton_clicked (GtkButton *button, gpointer user_data)
   PrefsCtx *ctx = user_data;
   GtkFileDialog *dialog = gtk_file_dialog_new ();
   gtk_file_dialog_set_title (dialog, "Choose a Proton Folder");
-  gtk_file_dialog_select_folder (dialog, ctx->parent, NULL, on_add_proton_response, ctx);
+  gtk_file_dialog_select_folder (dialog, ctx->parent, NULL, on_add_proton_response, ref_window (ctx));
   g_object_unref (dialog);
 }
 
@@ -338,8 +367,8 @@ on_latest_checked (GObject *source, GAsyncResult *res, gpointer user_data)
 static void
 on_proton_fetch_done (gboolean success, const char *result, gpointer user_data)
 {
-  PrefsCtx *ctx = user_data;
-  if (success)
+  PrefsCtx *ctx = live_ctx (user_data);
+  if (success && ctx)
     {
       refresh_runner_dropdown (ctx);
       refresh_manage_proton_row (ctx);
@@ -351,8 +380,8 @@ on_proton_fetch_done (gboolean success, const char *result, gpointer user_data)
 static void
 on_proton_manage_done (gboolean changed, gpointer user_data)
 {
-  PrefsCtx *ctx = user_data;
-  if (changed)
+  PrefsCtx *ctx = live_ctx (user_data);
+  if (changed && ctx)
     {
       refresh_runner_dropdown (ctx);
       refresh_manage_proton_row (ctx);
@@ -366,7 +395,7 @@ on_manage_proton_clicked (GtkButton *button, gpointer user_data)
   (void) button;
   PrefsCtx *ctx = user_data;
   gog_show_proton_manage_dialog (ctx->parent, ctx->config, ctx->library, ctx->state,
-                                 on_proton_manage_done, ctx);
+                                 on_proton_manage_done, ref_window (ctx));
 }
 
 static void
@@ -375,7 +404,7 @@ on_download_proton_clicked (GtkButton *button, gpointer user_data)
   (void) button;
   PrefsCtx *ctx = user_data;
   gog_show_proton_fetch_dialog (ctx->parent, ctx->config, ctx->library, on_proton_fetch_done,
-                                ctx);
+                                ref_window (ctx));
 }
 
 /* ---- default download languages ---- */
@@ -471,8 +500,8 @@ on_close_request (GtkWindow *window, gpointer user_data)
 static void
 on_window_destroy (GtkWidget *window, gpointer user_data)
 {
-  (void) window;
   PrefsCtx *ctx = user_data;
+  g_object_set_data (G_OBJECT (window), CTX_KEY, NULL);
   if (ctx->checking)
     {
       g_cancellable_cancel (ctx->checking);
@@ -647,5 +676,6 @@ gog_show_preferences_dialog (GtkWindow *parent, GogConfig *config, GogLibrary *l
 
   g_signal_connect (ctx->window, "close-request", G_CALLBACK (on_close_request), ctx);
   g_signal_connect (ctx->window, "destroy", G_CALLBACK (on_window_destroy), ctx);
+  g_object_set_data (G_OBJECT (ctx->window), CTX_KEY, ctx);
   gtk_window_present (ctx->window);
 }

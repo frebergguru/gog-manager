@@ -33,7 +33,10 @@ typedef struct
   GStrv pending;     /* builds being removed */
   gboolean busy;
   gboolean changed;
+  gboolean gone; /* the window was destroyed while a removal ran */
 } ManageCtx;
+
+static void manage_ctx_free (ManageCtx *ctx);
 
 static void rebuild_list (ManageCtx *ctx);
 
@@ -250,6 +253,14 @@ on_remove_finished (GObject *source, GAsyncResult *res, gpointer user_data)
   ManageCtx *ctx = user_data;
   GError *error = NULL;
   gboolean ok = proton_fetch_remove_finish (res, &error);
+  /* The window went with its parent mid-removal; the config, state and
+   * widgets may be gone too. */
+  if (ctx->gone)
+    {
+      g_clear_error (&error);
+      manage_ctx_free (ctx);
+      return;
+    }
 
   /* Even after a partial failure some builds may be gone; recompute what
    * is actually left before moving games over. */
@@ -511,6 +522,18 @@ on_window_destroy (GtkWidget *window, gpointer user_data)
   ManageCtx *ctx = user_data;
   if (ctx->on_done)
     ctx->on_done (ctx->changed, ctx->user_data);
+  if (ctx->busy)
+    {
+      /* on_remove_finished() still needs ctx; it frees it. */
+      ctx->gone = TRUE;
+      return;
+    }
+  manage_ctx_free (ctx);
+}
+
+static void
+manage_ctx_free (ManageCtx *ctx)
+{
   if (ctx->measuring)
     {
       g_cancellable_cancel (ctx->measuring);
