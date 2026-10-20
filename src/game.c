@@ -21,6 +21,7 @@ struct _GogGame
   gboolean supports_os[3];
   GStrv languages;
   GStrv categories;
+  gint64 release_date;
 
   GogProductType product_type;
   GArray *related_ids; /* gint64 */
@@ -41,6 +42,7 @@ enum
 {
   PROP_0,
   PROP_INSTALLED,
+  PROP_CATEGORIES,
   N_PROPS,
 };
 
@@ -119,6 +121,9 @@ gog_game_get_property (GObject *object, guint prop_id, GValue *value, GParamSpec
     case PROP_INSTALLED:
       g_value_set_boolean (value, self->installed);
       break;
+    case PROP_CATEGORIES:
+      g_value_set_boxed (value, self->categories);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
     }
@@ -134,6 +139,9 @@ gog_game_class_init (GogGameClass *klass)
   properties[PROP_INSTALLED] =
       g_param_spec_boolean ("installed", "Installed", "Whether the game is installed",
                              FALSE, G_PARAM_READABLE);
+  properties[PROP_CATEGORIES] =
+      g_param_spec_boxed ("categories", "Categories", "GOG's genres for the game",
+                          G_TYPE_STRV, G_PARAM_READABLE);
   g_object_class_install_properties (object_class, N_PROPS, properties);
 }
 
@@ -290,8 +298,26 @@ gog_game_get_categories (GogGame *self)
 void
 gog_game_set_categories (GogGame *self, GStrv categories)
 {
+  gboolean same = (!self->categories && !categories) ||
+                  (self->categories && categories &&
+                   g_strv_equal ((const char *const *) self->categories,
+                                 (const char *const *) categories));
   g_strfreev (self->categories);
   self->categories = categories;
+  if (!same)
+    g_object_notify_by_pspec (G_OBJECT (self), properties[PROP_CATEGORIES]);
+}
+
+gint64
+gog_game_get_release_date (GogGame *self)
+{
+  return self->release_date;
+}
+
+void
+gog_game_set_release_date (GogGame *self, gint64 unix_time)
+{
+  self->release_date = unix_time;
 }
 
 GogProductType

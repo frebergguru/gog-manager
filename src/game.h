@@ -91,9 +91,15 @@ void                gog_game_set_languages (GogGame *self, GStrv languages);
 
 /* GOG's genres for the game, main one first (e.g. "Role-playing",
  * "Action", "Fantasy"), from the categories cache; NULL if not known.
- * NULL-terminated, owned by self; set takes ownership. */
+ * NULL-terminated, owned by self; set takes ownership and emits
+ * notify::categories when they changed. */
 const char *const *gog_game_get_categories (GogGame *self);
 void                gog_game_set_categories (GogGame *self, GStrv categories);
+
+/* When GOG first released the game (the product json's release_date), as
+ * Unix time; 0 if not known. */
+gint64 gog_game_get_release_date (GogGame *self);
+void   gog_game_set_release_date (GogGame *self, gint64 unix_time);
 
 GogProductType gog_game_get_product_type (GogGame *self);
 void           gog_game_set_product_type (GogGame *self, GogProductType type);

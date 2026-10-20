@@ -6,6 +6,7 @@
 #include "install_dialog.h"
 #include "../installer_engine.h"
 #include "../launch.h"
+#include "../shortcut.h"
 #include "../runner.h"
 #include "dialog_window.h"
 #include "../text_util.h"
@@ -157,6 +158,16 @@ on_uninstall_response (const char *response, gpointer user_data)
       return;
     }
   gog_state_remove (self->state, gog_game_get_id (self->game));
+  /* Its menu entry would start a game that is gone. */
+  if (!is_dlc_record)
+    {
+      GError *shortcut_err = NULL;
+      if (!gog_shortcut_remove (self->game, &shortcut_err))
+        {
+          g_warning ("%s", shortcut_err->message);
+          g_clear_error (&shortcut_err);
+        }
+    }
 
   /* DLC installed into this game's directory went with it. */
   if (!is_dlc_record && removed_path)
@@ -191,6 +202,33 @@ on_uninstall_response (const char *response, gpointer user_data)
   toast (self, is_dlc_record ? "DLC marked as not installed" : "Uninstalled");
   refresh (self);
   emit_changed (self);
+}
+
+/* Label and tooltip for the menu-entry button; changed in place so it keeps
+ * keyboard focus. */
+static void
+set_shortcut_button (GtkWidget *button, gboolean has_entry)
+{
+  gtk_button_set_label (GTK_BUTTON (button), has_entry ? "Remove from Menu" : "Add to Menu");
+  gtk_widget_set_tooltip_text (button, has_entry ? "Remove the game from the Applications menu"
+                                                 : "Put the game in the Applications menu; it "
+                                                   "starts without gog-manager");
+}
+
+static void
+on_shortcut_clicked (GtkButton *button, gpointer user_data)
+{
+  GogGameDetail *self = user_data;
+  GError *error = NULL;
+  gboolean remove = gog_shortcut_exists (self->game);
+  if (remove ? gog_shortcut_remove (self->game, &error) : gog_shortcut_create (self->game, &error))
+    toast (self, remove ? "Removed from the Applications menu" : "Added to the Applications menu");
+  else
+    {
+      toast (self, error->message);
+      g_clear_error (&error);
+    }
+  set_shortcut_button (GTK_WIDGET (button), gog_shortcut_exists (self->game));
 }
 
 static void
@@ -442,6 +480,16 @@ build_action_row (GogGameDetail *self)
       g_signal_connect (reveal, "clicked", G_CALLBACK (on_reveal_clicked), self);
       gtk_box_append (self->action_box, reveal);
 
+      /* DLC starts through its game, which has the entry. */
+      if (!gog_game_get_base_game (self->game))
+        {
+          GtkWidget *shortcut = gtk_button_new ();
+          gtk_widget_add_css_class (shortcut, "pill");
+          set_shortcut_button (shortcut, gog_shortcut_exists (self->game));
+          g_signal_connect (shortcut, "clicked", G_CALLBACK (on_shortcut_clicked), self);
+          gtk_box_append (self->action_box, shortcut);
+        }
+
       if (gog_game_get_runner_kind (self->game) == GOG_RUNNER_WINE)
         {
           GtkWidget *winecfg = gtk_button_new_with_label ("winecfg");
@@ -609,6 +657,17 @@ refresh (GogGameDetail *self)
       g_free (joined);
     }
   g_strfreev (installer_langs);
+  gint64 released = gog_game_get_release_date (self->game);
+  if (released > 0)
+    {
+      GDateTime *dt = g_date_time_new_from_unix_utc (released);
+      gchar *date = dt ? g_date_time_format (dt, "%Y-%m-%d") : NULL;
+      if (date)
+        g_string_append_printf (badges, "\nReleased %s", date);
+      g_free (date);
+      if (dt)
+        g_date_time_unref (dt);
+    }
   const char *const *categories = gog_game_get_categories (self->game);
   if (categories && categories[0])
     {

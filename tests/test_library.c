@@ -44,7 +44,8 @@ test_scan_reads_serials (void)
   gchar *without = g_build_filename (root, "without_keys", NULL);
   g_assert_cmpint (g_mkdir (with, 0755), ==, 0);
   g_assert_cmpint (g_mkdir (without, 0755), ==, 0);
-  write_file (with, "product_with_keys.json", "{\"id\": 1, \"title\": \"With Keys\"}");
+  write_file (with, "product_with_keys.json",
+              "{\"id\": 1, \"title\": \"With Keys\", \"release_date\": \"2021-09-29T17:50:00+0200\"}");
   write_file (with, "serials.txt", "Game A:\r\nAAAA-BBBB-CCCC\r\n\r\n");
   write_file (without, "product_without_keys.json", "{\"id\": 2, \"title\": \"No Keys\"}");
 
@@ -60,6 +61,9 @@ test_scan_reads_serials (void)
   g_assert_nonnull (b);
   g_assert_cmpstr (gog_game_get_serials (a), ==, "Game A:\nAAAA-BBBB-CCCC");
   g_assert_null (gog_game_get_serials (b));
+  /* GOG writes the offset without a colon. */
+  g_assert_cmpint (gog_game_get_release_date (a), ==, 1632930600);
+  g_assert_cmpint (gog_game_get_release_date (b), ==, 0);
 
   /* let pending progress idles run before the library goes away */
   while (g_main_context_iteration (NULL, FALSE))

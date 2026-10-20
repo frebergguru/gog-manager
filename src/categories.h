@@ -26,6 +26,10 @@ gboolean gog_categories_lookup (const gint64 *ids, guint n_ids, GCancellable *ca
                                 GogCategoriesProgress progress, gpointer user_data,
                                 guint *looked_up, GError **error);
 
+/* Empties the cache, so the next lookup asks GOG about every game again.
+ * Waits for a lookup in progress to finish first. */
+void gog_categories_forget (void);
+
 /* The cache: product id as a decimal string -> GStrv (empty when GOG
  * listed none). Transfer full. */
 GHashTable *gog_categories_load (void);

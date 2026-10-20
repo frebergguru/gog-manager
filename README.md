@@ -56,10 +56,15 @@ your GOG login.
   on a game's existing prefix for Wine installs. Every installed game also
   gets a `play.sh` in its folder that starts it the same way without
   gog-manager (or the library disk) — kept up to date when the runner changes.
-- **Categories** — filter and sort the library by GOG's genres (Action,
-  Role-playing, Strategy…). gog-manager fetches them from GOG once per game
-  in the background after a scan and keeps them in
-  `gog-manager-categories.json` next to the app, so they work offline.
+- **Categories** — filter by one or several of GOG's genres (any or all of
+  them) and sort by the main one, which each card shows. gog-manager fetches
+  them from GOG once per game in the background after a scan and keeps them
+  in `gog-manager-categories.json` next to the app, so they work offline;
+  Preferences can fetch them all again.
+- **Release dates** — sort the library newest or oldest first.
+- **Applications menu** — an installed game's page can add it to the
+  Applications menu; the entry starts its `play.sh`, so it runs without
+  gog-manager or the library disk.
 - **Persistent state** — install records live in `state.json`, kept separate
   from configuration so re-scanning or moving your library never loses them.
 

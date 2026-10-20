@@ -19,6 +19,7 @@ typedef struct
   GogLibrary *library;
   GogState *state;
   GogLibraryPathChangedFunc on_library_path_changed;
+  GogRefetchCategoriesFunc on_refetch_categories;
   gpointer user_data;
 
   AdwActionRow *library_row;
@@ -27,6 +28,7 @@ typedef struct
   AdwActionRow *no_runners_row;
   AdwActionRow *custom_runners_row;
   AdwActionRow *download_row;
+  AdwActionRow *categories_row;
   GCancellable *checking; /* the GitHub check for a newer GE-Proton */
   gchar *latest_tag;
   gchar *latest_dir;
@@ -459,10 +461,42 @@ on_window_destroy (GtkWidget *window, gpointer user_data)
   g_free (ctx);
 }
 
+static void
+on_refetch_clicked (GtkButton *button, gpointer user_data)
+{
+  PrefsCtx *ctx = user_data;
+  if (ctx->on_refetch_categories)
+    ctx->on_refetch_categories (ctx->user_data);
+  /* Once per visit is enough; the main window shows the progress. */
+  gtk_widget_set_sensitive (GTK_WIDGET (button), FALSE);
+  adw_action_row_set_subtitle (ctx->categories_row,
+                               "Fetching again in the background; the library shows the progress.");
+}
+
+static AdwPreferencesGroup *
+categories_group (PrefsCtx *ctx)
+{
+  AdwPreferencesGroup *group = ADW_PREFERENCES_GROUP (adw_preferences_group_new ());
+  adw_preferences_group_set_title (group, "Categories");
+  ctx->categories_row = ADW_ACTION_ROW (adw_action_row_new ());
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (ctx->categories_row), "Categories from GOG");
+  adw_action_row_set_subtitle (ctx->categories_row,
+                               "Fetched once per game for sorting and filtering. Fetch them "
+                               "again if GOG has changed a game's genres.");
+  GtkWidget *button = gtk_button_new_with_label ("Fetch Again");
+  gtk_widget_set_valign (button, GTK_ALIGN_CENTER);
+  gtk_accessible_update_property (GTK_ACCESSIBLE (button), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                  "Fetch categories again", -1);
+  g_signal_connect (button, "clicked", G_CALLBACK (on_refetch_clicked), ctx);
+  adw_action_row_add_suffix (ctx->categories_row, button);
+  adw_preferences_group_add (group, GTK_WIDGET (ctx->categories_row));
+  return group;
+}
+
 void
 gog_show_preferences_dialog (GtkWindow *parent, GogConfig *config, GogLibrary *library,
                               GogState *state, GogLibraryPathChangedFunc on_library_path_changed,
-                              gpointer user_data)
+                              GogRefetchCategoriesFunc on_refetch_categories, gpointer user_data)
 {
   PrefsCtx *ctx = g_new0 (PrefsCtx, 1);
   ctx->parent = parent;
@@ -470,6 +504,7 @@ gog_show_preferences_dialog (GtkWindow *parent, GogConfig *config, GogLibrary *l
   ctx->library = library;
   ctx->state = state;
   ctx->on_library_path_changed = on_library_path_changed;
+  ctx->on_refetch_categories = on_refetch_categories;
   ctx->user_data = user_data;
 
   ctx->window = gog_dialog_window_new (parent, "Preferences", 640, 600, 360, 300);
@@ -577,6 +612,7 @@ gog_show_preferences_dialog (GtkWindow *parent, GogConfig *config, GogLibrary *l
 
   adw_preferences_page_add (page, install_group);
   adw_preferences_page_add (page, download_languages_group ());
+  adw_preferences_page_add (page, categories_group (ctx));
 
   GtkWidget *toolbar_view = adw_toolbar_view_new ();
   adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (toolbar_view), adw_header_bar_new ());

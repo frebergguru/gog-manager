@@ -500,6 +500,15 @@ parse_game_dir (const char *dir_path)
   gog_game_set_title (game, ju_get_string (root, "title", basename));
   gog_game_set_folder_path (game, dir_path);
 
+  /* e.g. "2021-09-29T17:50:00+0200"; missing or null for some games. */
+  const char *released = ju_get_string (root, "release_date", NULL);
+  GDateTime *released_dt = released ? g_date_time_new_from_iso8601 (released, NULL) : NULL;
+  if (released_dt)
+    {
+      gog_game_set_release_date (game, g_date_time_to_unix (released_dt));
+      g_date_time_unref (released_dt);
+    }
+
   const char *game_type = ju_get_string (root, "game_type", "game");
   gog_game_set_product_type (game, g_strcmp0 (game_type, "dlc") == 0 ? GOG_PRODUCT_DLC
                                                                       : GOG_PRODUCT_GAME);

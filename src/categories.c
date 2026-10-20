@@ -6,6 +6,7 @@
 #include "config.h"
 #include "json_util.h"
 #include <glib/gstdio.h>
+#include <errno.h>
 #include <string.h>
 
 #define CACHE_FILE "gog-manager-categories.json"
@@ -75,6 +76,17 @@ gog_categories_load (void)
   json_object_put (root);
   G_UNLOCK (cache);
   return table;
+}
+
+void
+gog_categories_forget (void)
+{
+  G_LOCK (cache);
+  gchar *path = gog_config_app_file (CACHE_FILE);
+  if (g_remove (path) != 0 && errno != ENOENT)
+    g_warning ("Could not remove %s: %s", path, g_strerror (errno));
+  g_free (path);
+  G_UNLOCK (cache);
 }
 
 GStrv

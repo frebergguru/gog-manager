@@ -51,8 +51,11 @@ struct _GogMainWindow
   GtkDropDown *language_dropdown;
   GStrv language_names;        /* GOG's names, for the dropdown's entries after "Any" */
   GtkDropDown *status_dropdown;
-  GtkDropDown *category_dropdown;
-  GStrv category_names;        /* the dropdown's entries after "Any category" */
+  GtkMenuButton *category_button;
+  GtkBox *category_list;       /* the picker's check buttons */
+  GtkToggleButton *category_match_all;
+  GHashTable *category_selected; /* chosen category names (owned) */
+  gboolean category_rebuilding;  /* check buttons being made, not toggled */
   GtkLabel *category_status;   /* progress or failure of the category lookup */
   GtkDropDown *sort_dropdown;
 
@@ -70,6 +73,7 @@ struct _GogMainWindow
 
   gboolean categories_running; /* a category lookup is in flight */
   gboolean categories_pending; /* a scan finished during it; look again after */
+  gboolean categories_refetch; /* Preferences asked to fetch them all again */
   GCancellable *categories_cancellable;
 };
 
@@ -83,6 +87,7 @@ typedef struct
   GtkLabel *badges;
   GtkLabel *languages;
   GtkLabel *content;
+  GtkLabel *category;
 } CardWidgets;
 
 static void start_scan (GogMainWindow *self);
@@ -232,15 +237,16 @@ filter_func (gpointer item, gpointer user_data)
         return FALSE;
     }
 
-  guint cat_idx = gtk_drop_down_get_selected (self->category_dropdown);
-  if (cat_idx != GTK_INVALID_LIST_POSITION && cat_idx != 0)
+  if (g_hash_table_size (self->category_selected) > 0)
     {
-      const char *wanted = self->category_names &&
-                                   cat_idx - 1 < g_strv_length (self->category_names)
-                               ? self->category_names[cat_idx - 1]
-                               : NULL;
+      /* Any of the chosen categories, or (Match all) every one of them. */
+      gboolean all = gtk_toggle_button_get_active (self->category_match_all);
       const char *const *cats = gog_game_get_categories (game);
-      if (!wanted || !cats || !g_strv_contains (cats, wanted))
+      guint matched = 0;
+      for (const char *const *c = cats; c && *c; c++)
+        if (g_hash_table_contains (self->category_selected, *c))
+          matched++;
+      if (all ? matched < g_hash_table_size (self->category_selected) : matched == 0)
         return FALSE;
     }
 
@@ -327,6 +333,18 @@ sort_func (gconstpointer a, gconstpointer b, gpointer user_data)
         gint by_category = compare_main_category (ga, gb);
         if (by_category != 0)
           return by_category;
+        return g_utf8_collate (gog_game_get_title (ga), gog_game_get_title (gb));
+      }
+    case 6: /* Release date, newest first */
+    case 7: /* Release date, oldest first */
+      {
+        /* Unknown dates last either way. */
+        gint64 ra = gog_game_get_release_date (ga);
+        gint64 rb = gog_game_get_release_date (gb);
+        if ((ra > 0) != (rb > 0))
+          return ra > 0 ? -1 : 1;
+        if (ra != rb)
+          return (mode == 6) == (ra > rb) ? -1 : 1;
         return g_utf8_collate (gog_game_get_title (ga), gog_game_get_title (gb));
       }
     default: /* Title A-Z */
@@ -465,6 +483,10 @@ update_card (CardWidgets *cw, GogGame *game)
   gtk_widget_set_visible (GTK_WIDGET (cw->content), content->len > 0);
   g_string_free (content, TRUE);
 
+  const char *const *cats = gog_game_get_categories (game);
+  gtk_label_set_label (cw->category, cats && cats[0] ? cats[0] : "");
+  gtk_widget_set_visible (GTK_WIDGET (cw->category), cats && cats[0]);
+
   if (gog_game_get_icon_path (game))
     gtk_picture_set_filename (cw->cover, gog_game_get_icon_path (game));
   else
@@ -524,6 +546,13 @@ on_factory_setup (GtkSignalListItemFactory *factory, GtkListItem *list_item, gpo
   gtk_label_set_xalign (GTK_LABEL (content), 0.0);
   gtk_box_append (GTK_BOX (box), content);
 
+  GtkWidget *category = gtk_label_new (NULL);
+  gtk_widget_add_css_class (category, "dim-label");
+  gtk_widget_add_css_class (category, "caption");
+  gtk_label_set_ellipsize (GTK_LABEL (category), PANGO_ELLIPSIZE_END);
+  gtk_label_set_xalign (GTK_LABEL (category), 0.0);
+  gtk_box_append (GTK_BOX (box), category);
+
   gtk_list_item_set_child (list_item, box);
 
   CardWidgets *cw = g_new0 (CardWidgets, 1);
@@ -533,6 +562,7 @@ on_factory_setup (GtkSignalListItemFactory *factory, GtkListItem *list_item, gpo
   cw->badges = GTK_LABEL (badges);
   cw->languages = GTK_LABEL (languages);
   cw->content = GTK_LABEL (content);
+  cw->category = GTK_LABEL (category);
   g_object_set_data_full (G_OBJECT (list_item), "cw", cw, g_free);
 }
 
@@ -548,6 +578,10 @@ on_factory_bind (GtkSignalListItemFactory *factory, GtkListItem *list_item, gpoi
   gulong handler = g_signal_connect (game, "notify::installed", G_CALLBACK (on_game_installed_notify),
                                       list_item);
   g_object_set_data (G_OBJECT (list_item), "notify-id", GSIZE_TO_POINTER (handler));
+  /* Categories arrive in the background, after the cards are made. */
+  gulong cat_handler = g_signal_connect (game, "notify::categories",
+                                         G_CALLBACK (on_game_installed_notify), list_item);
+  g_object_set_data (G_OBJECT (list_item), "notify-categories-id", GSIZE_TO_POINTER (cat_handler));
 }
 
 static void
@@ -559,6 +593,10 @@ on_factory_unbind (GtkSignalListItemFactory *factory, GtkListItem *list_item, gp
   gulong handler = (gulong) GPOINTER_TO_SIZE (g_object_get_data (G_OBJECT (list_item), "notify-id"));
   if (game && handler)
     g_signal_handler_disconnect (game, handler);
+  gulong cat_handler =
+      (gulong) GPOINTER_TO_SIZE (g_object_get_data (G_OBJECT (list_item), "notify-categories-id"));
+  if (game && cat_handler)
+    g_signal_handler_disconnect (game, cat_handler);
 }
 
 static void
@@ -603,17 +641,81 @@ collate_strings (gconstpointer a, gconstpointer b, gpointer user_data)
   return g_utf8_collate (*(const char *const *) a, *(const char *const *) b);
 }
 
-/* Every category among the games with a card of their own, sorted. */
+/* The picker button says what is chosen: "Any category", "Action", or
+ * "Action + 2 more". */
 static void
-populate_category_dropdown (GogMainWindow *self)
+update_category_button (GogMainWindow *self)
 {
-  /* Keep the chosen category across a rescan or a finished lookup. */
-  guint old_idx = gtk_drop_down_get_selected (self->category_dropdown);
-  gchar *old = self->category_names && old_idx != GTK_INVALID_LIST_POSITION && old_idx > 0 &&
-                       old_idx - 1 < g_strv_length (self->category_names)
-                   ? g_strdup (self->category_names[old_idx - 1])
-                   : NULL;
+  guint n = g_hash_table_size (self->category_selected);
+  gchar *label;
+  if (n == 0)
+    label = g_strdup ("Any category");
+  else
+    {
+      /* The first chosen one in the picker's (sorted) order. */
+      const char *first = NULL;
+      for (GtkWidget *c = gtk_widget_get_first_child (GTK_WIDGET (self->category_list));
+           c && !first; c = gtk_widget_get_next_sibling (c))
+        if (GTK_IS_CHECK_BUTTON (c) && gtk_check_button_get_active (GTK_CHECK_BUTTON (c)))
+          first = gtk_check_button_get_label (GTK_CHECK_BUTTON (c));
+      if (!first)
+        first = "?";
+      label = n == 1 ? g_strdup (first)
+                     : g_strdup_printf ("%s + %u more", first, n - 1);
+    }
+  gtk_menu_button_set_label (self->category_button, label);
+  gchar *accessible = g_strdup_printf ("Category: %s", label);
+  gtk_accessible_update_property (GTK_ACCESSIBLE (self->category_button),
+                                  GTK_ACCESSIBLE_PROPERTY_LABEL, accessible, -1);
+  g_free (accessible);
+  g_free (label);
+}
 
+static void
+on_category_toggled (GtkCheckButton *button, gpointer user_data)
+{
+  GogMainWindow *self = user_data;
+  if (self->category_rebuilding)
+    return;
+  const char *name = gtk_check_button_get_label (button);
+  if (gtk_check_button_get_active (button))
+    g_hash_table_add (self->category_selected, g_strdup (name));
+  else
+    g_hash_table_remove (self->category_selected, name);
+  update_category_button (self);
+  on_filters_changed (NULL, self);
+}
+
+static void
+on_category_match_toggled (GtkToggleButton *button, gpointer user_data)
+{
+  (void) button;
+  GogMainWindow *self = user_data;
+  if (g_hash_table_size (self->category_selected) > 1)
+    on_filters_changed (NULL, self);
+}
+
+static void
+on_category_clear_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  GogMainWindow *self = user_data;
+  self->category_rebuilding = TRUE;
+  for (GtkWidget *c = gtk_widget_get_first_child (GTK_WIDGET (self->category_list)); c;
+       c = gtk_widget_get_next_sibling (c))
+    if (GTK_IS_CHECK_BUTTON (c))
+      gtk_check_button_set_active (GTK_CHECK_BUTTON (c), FALSE);
+  self->category_rebuilding = FALSE;
+  g_hash_table_remove_all (self->category_selected);
+  update_category_button (self);
+  on_filters_changed (NULL, self);
+}
+
+/* One check button per category among the games with a card of their own,
+ * sorted. Choices that are still there are kept. */
+static void
+populate_category_picker (GogMainWindow *self)
+{
   GHashTable *seen = g_hash_table_new (g_str_hash, g_str_equal);
   GListModel *model = gog_library_get_model (self->library);
   guint n = g_list_model_get_n_items (model);
@@ -625,34 +727,45 @@ populate_category_dropdown (GogMainWindow *self)
           g_hash_table_add (seen, (gpointer) *c);
       g_object_unref (g);
     }
-  /* The keys point into the games' own lists; copy them. */
-  GPtrArray *names = g_ptr_array_new_with_free_func (g_free);
+  GPtrArray *names = g_ptr_array_new ();
   GHashTableIter iter;
   gpointer key;
   g_hash_table_iter_init (&iter, seen);
   while (g_hash_table_iter_next (&iter, &key, NULL))
-    g_ptr_array_add (names, g_strdup (key));
-  g_hash_table_unref (seen);
+    g_ptr_array_add (names, key);
   g_ptr_array_sort_with_data (names, collate_strings, NULL);
 
-  GtkStringList *list = gtk_string_list_new (NULL);
-  gtk_string_list_append (list, "Any category");
-  guint selected = 0;
+  /* A choice no game has any more can't be unticked; drop it. */
+  g_hash_table_iter_init (&iter, self->category_selected);
+  while (g_hash_table_iter_next (&iter, &key, NULL))
+    if (!g_hash_table_contains (seen, key))
+      g_hash_table_iter_remove (&iter);
+
+  self->category_rebuilding = TRUE;
+  GtkWidget *child;
+  while ((child = gtk_widget_get_first_child (GTK_WIDGET (self->category_list))))
+    gtk_box_remove (self->category_list, child);
   for (guint i = 0; i < names->len; i++)
     {
       const char *name = g_ptr_array_index (names, i);
-      gtk_string_list_append (list, name);
-      if (g_strcmp0 (name, old) == 0)
-        selected = i + 1;
+      GtkWidget *check = gtk_check_button_new_with_label (name);
+      gtk_check_button_set_active (GTK_CHECK_BUTTON (check),
+                                   g_hash_table_contains (self->category_selected, name));
+      g_signal_connect (check, "toggled", G_CALLBACK (on_category_toggled), self);
+      gtk_box_append (self->category_list, check);
     }
-  g_ptr_array_add (names, NULL);
-  g_strfreev (self->category_names);
-  self->category_names = (GStrv) g_ptr_array_free (names, FALSE);
-
-  gtk_drop_down_set_model (self->category_dropdown, G_LIST_MODEL (list));
-  gtk_drop_down_set_selected (self->category_dropdown, selected);
-  g_object_unref (list);
-  g_free (old);
+  if (names->len == 0)
+    {
+      GtkWidget *none = gtk_label_new ("No categories yet. They are fetched from GOG after a scan.");
+      gtk_label_set_wrap (GTK_LABEL (none), TRUE);
+      gtk_label_set_max_width_chars (GTK_LABEL (none), 28);
+      gtk_widget_add_css_class (none, "dim-label");
+      gtk_box_append (self->category_list, none);
+    }
+  self->category_rebuilding = FALSE;
+  g_ptr_array_unref (names);
+  g_hash_table_unref (seen);
+  update_category_button (self);
 }
 
 /* Gives every game its categories from the cache. */
@@ -672,7 +785,7 @@ apply_categories (GogMainWindow *self)
       g_object_unref (g);
     }
   g_hash_table_unref (cache);
-  populate_category_dropdown (self);
+  populate_category_picker (self);
 }
 
 static void
@@ -739,8 +852,22 @@ on_category_lookup_done (GObject *source, GAsyncResult *res, gpointer user_data)
   g_clear_object (&self->categories_cancellable);
   GError *error = NULL;
   gssize looked_up = g_task_propagate_int (G_TASK (res), &error);
-  if (gtk_widget_in_destruction (GTK_WIDGET (self)) ||
-      g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+  if (gtk_widget_in_destruction (GTK_WIDGET (self)))
+    {
+      g_clear_error (&error);
+      return;
+    }
+  if (self->categories_refetch)
+    {
+      /* Stopped so the cache could be emptied; start over. */
+      g_clear_error (&error);
+      self->categories_refetch = FALSE;
+      self->categories_pending = FALSE;
+      gog_categories_forget ();
+      start_category_lookup (self);
+      return;
+    }
+  if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
     {
       g_clear_error (&error);
       return;
@@ -807,6 +934,22 @@ start_category_lookup (GogMainWindow *self)
   g_task_set_task_data (task, ids, (GDestroyNotify) g_array_unref);
   g_task_run_in_thread (task, category_lookup_thread);
   g_object_unref (task);
+}
+
+/* Preferences: fetch every game's categories again. What is known now
+ * stays on the cards until the new answers are in. */
+static void
+on_refetch_categories (gpointer user_data)
+{
+  GogMainWindow *self = user_data;
+  if (self->categories_running)
+    {
+      self->categories_refetch = TRUE;
+      g_cancellable_cancel (self->categories_cancellable);
+      return;
+    }
+  gog_categories_forget ();
+  start_category_lookup (self);
 }
 
 static void
@@ -995,7 +1138,7 @@ on_preferences_clicked (GtkButton *button, gpointer user_data)
   (void) button;
   GogMainWindow *self = user_data;
   gog_show_preferences_dialog (GTK_WINDOW (self), self->config, self->library, self->state,
-                                on_library_path_changed_from_prefs, self);
+                                on_library_path_changed_from_prefs, on_refetch_categories, self);
 }
 
 static void
@@ -1144,10 +1287,50 @@ build_sidebar (GogMainWindow *self)
   gtk_widget_add_css_class (category_heading, "heading");
   gtk_widget_set_halign (category_heading, GTK_ALIGN_START);
   gtk_box_append (GTK_BOX (box), category_heading);
-  self->category_dropdown = GTK_DROP_DOWN (gtk_drop_down_new (NULL, NULL));
-  set_accessible_label (GTK_WIDGET (self->category_dropdown), "Category");
-  gtk_box_append (GTK_BOX (box), GTK_WIDGET (self->category_dropdown));
-  g_signal_connect (self->category_dropdown, "notify::selected", G_CALLBACK (on_filter_dropdown_changed), self);
+  /* Several can be chosen: a button with a list of check buttons. */
+  self->category_selected = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+  GtkWidget *picker = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
+  gtk_widget_set_margin_top (picker, 6);
+  gtk_widget_set_margin_bottom (picker, 6);
+  gtk_widget_set_margin_start (picker, 6);
+  gtk_widget_set_margin_end (picker, 6);
+  GtkWidget *match_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_add_css_class (match_box, "linked");
+  GtkWidget *match_any = gtk_toggle_button_new_with_label ("Any of them");
+  GtkWidget *match_all = gtk_toggle_button_new_with_label ("All of them");
+  gtk_toggle_button_set_group (GTK_TOGGLE_BUTTON (match_all), GTK_TOGGLE_BUTTON (match_any));
+  gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (match_any), TRUE);
+  gtk_widget_set_tooltip_text (match_any, "Games with at least one of the chosen categories");
+  gtk_widget_set_tooltip_text (match_all, "Only games with every chosen category");
+  gtk_widget_set_hexpand (match_any, TRUE);
+  gtk_widget_set_hexpand (match_all, TRUE);
+  gtk_box_append (GTK_BOX (match_box), match_any);
+  gtk_box_append (GTK_BOX (match_box), match_all);
+  gtk_box_append (GTK_BOX (picker), match_box);
+  self->category_match_all = GTK_TOGGLE_BUTTON (match_all);
+  g_signal_connect (match_all, "toggled", G_CALLBACK (on_category_match_toggled), self);
+
+  self->category_list = GTK_BOX (gtk_box_new (GTK_ORIENTATION_VERTICAL, 2));
+  GtkWidget *list_scroller = gtk_scrolled_window_new ();
+  gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (list_scroller), GTK_POLICY_NEVER,
+                                  GTK_POLICY_AUTOMATIC);
+  gtk_scrolled_window_set_propagate_natural_height (GTK_SCROLLED_WINDOW (list_scroller), TRUE);
+  gtk_scrolled_window_set_max_content_height (GTK_SCROLLED_WINDOW (list_scroller), 360);
+  gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (list_scroller),
+                                 GTK_WIDGET (self->category_list));
+  gtk_box_append (GTK_BOX (picker), list_scroller);
+
+  GtkWidget *clear = gtk_button_new_with_label ("Clear");
+  g_signal_connect (clear, "clicked", G_CALLBACK (on_category_clear_clicked), self);
+  gtk_box_append (GTK_BOX (picker), clear);
+
+  GtkWidget *popover = gtk_popover_new ();
+  gtk_popover_set_child (GTK_POPOVER (popover), picker);
+  self->category_button = GTK_MENU_BUTTON (gtk_menu_button_new ());
+  gtk_menu_button_set_popover (self->category_button, popover);
+  gtk_menu_button_set_label (self->category_button, "Any category");
+  set_accessible_label (GTK_WIDGET (self->category_button), "Category: Any category");
+  gtk_box_append (GTK_BOX (box), GTK_WIDGET (self->category_button));
   self->category_status = GTK_LABEL (gtk_label_new (NULL));
   gtk_label_set_wrap (self->category_status, TRUE);
   gtk_label_set_xalign (self->category_status, 0);
@@ -1174,7 +1357,7 @@ build_sidebar (GogMainWindow *self)
   gtk_box_append (GTK_BOX (box), sort_heading);
   GtkStringList *sort_list = gtk_string_list_new (
       (const char *[]) { "Title A–Z", "Title Z–A", "Installed first", "Size (largest)",
-                         "Language", "Category", NULL });
+                         "Language", "Category", "Newest first", "Oldest first", NULL });
   self->sort_dropdown = GTK_DROP_DOWN (gtk_drop_down_new (G_LIST_MODEL (sort_list), NULL));
   set_accessible_label (GTK_WIDGET (self->sort_dropdown), "Sort By");
   gtk_box_append (GTK_BOX (box), GTK_WIDGET (self->sort_dropdown));
@@ -1256,7 +1439,7 @@ gog_main_window_finalize (GObject *object)
   GogMainWindow *self = GOG_MAIN_WINDOW (object);
   g_clear_object (&self->library);
   g_strfreev (self->language_names);
-  g_strfreev (self->category_names);
+  g_clear_pointer (&self->category_selected, g_hash_table_unref);
   gog_config_free (self->config);
   gog_state_free (self->state);
   G_OBJECT_CLASS (gog_main_window_parent_class)->finalize (object);

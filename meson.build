@@ -38,6 +38,7 @@ common_sources = [
   'src/categories.c',
   'src/installer_engine.c',
   'src/launch.c',
+  'src/shortcut.c',
 ]
 
 ui_sources = [
@@ -98,3 +99,9 @@ test_categories_exe = executable('test-categories',
   dependencies : test_deps,
 )
 test('categories', test_categories_exe)
+
+test_shortcut_exe = executable('test-shortcut',
+  ['tests/test_shortcut.c', 'src/shortcut.c', 'src/launch.c'] + test_support_sources,
+  dependencies : test_deps,
+)
+test('shortcut', test_shortcut_exe)
