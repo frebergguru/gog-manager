@@ -7,6 +7,22 @@
 
 #define BULLET "\xE2\x80\xA2 "
 
+/* TRUE when out ends with a bullet and at most whitespace after it, which
+ * is then dropped, so the text that comes next stays on the bullet's line
+ * ("<li>\n<br>Text"). */
+static gboolean
+trim_to_bullet (GString *out)
+{
+  gsize len = out->len;
+  while (len > 0 && g_ascii_isspace (out->str[len - 1]))
+    len--;
+  if (len < 3 || memcmp (out->str + len - 3, BULLET, 3) != 0)
+    return FALSE;
+  g_string_truncate (out, len);
+  g_string_append_c (out, ' ');
+  return TRUE;
+}
+
 /* Drops paragraphs that repeat an earlier one word for word: some of
  * GOG's descriptions have their feature list twice. */
 static gchar *
@@ -74,7 +90,7 @@ text_strip_html (const char *html)
           const char *end = strchr (p, '>');
           gsize taglen = end ? (gsize) (end - p + 1) : strlen (p);
 
-          if (g_ascii_strncasecmp (p, "<br", 3) == 0 && g_str_has_suffix (out->str, BULLET))
+          if (g_ascii_strncasecmp (p, "<br", 3) == 0 && trim_to_bullet (out))
             ; /* "<li><br>Text": the text stays on the bullet's line */
           else if (g_ascii_strncasecmp (p, "<br", 3) == 0 ||
                    g_ascii_strncasecmp (p, "<li", 3) == 0)

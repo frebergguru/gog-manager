@@ -91,6 +91,11 @@ test_strip_html_repeated_list (void)
                                 "\n<br>\n<ul><li><b>One</b>:<br> First</li><li><br>Two</li></ul>");
   g_assert_cmpstr (out, ==, "Intro\n\n\u2022 One:\nFirst\n\u2022 Two");
   g_free (out);
+
+  /* The <br> on a line of its own after the <li>. */
+  out = text_strip_html ("<ul><li>\n  <br>One</li><li> <br/>Two</li></ul>");
+  g_assert_cmpstr (out, ==, "\u2022 One\n\u2022 Two");
+  g_free (out);
 }
 
 static void
