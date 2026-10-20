@@ -109,6 +109,16 @@ if grep -qE '^[[:space:]]*copy_lib_tree "\$gtk4_libdir" "\$APPDIR/"[[:space:]]*$
   exit 1
 fi
 
+# The gtk plugin's AppRun hook forces GTK_THEME=Adwaita:<variant>. That loads
+# GTK's own Adwaita theme over libadwaita's stylesheet, so preference rows lose
+# their padding and groups their spacing. libadwaita follows the system's dark
+# or light setting by itself, so drop the export. Idempotent: safe to re-run.
+sed -E -i 's|^export GTK_THEME="\$APPIMAGE_GTK_THEME".*$|# GTK_THEME not set: it overrides libadwaita'"'"'s stylesheet|' "$LD_GTK"
+if grep -qE '^export GTK_THEME=' "$LD_GTK"; then
+  echo "error: could not remove the GTK_THEME export in $LD_GTK" >&2
+  exit 1
+fi
+
 # linuxdeploy finds its gtk plugin and appimagetool on PATH.
 export PATH="$TOOLS:$PATH"
 export DEPLOY_GTK_VERSION=4
