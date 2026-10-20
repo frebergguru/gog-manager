@@ -24,6 +24,13 @@ G_BEGIN_DECLS
  * + error covers "could not even start it", not the game's own exit code. */
 gboolean gog_launch_game (GogGame *game, GError **error);
 
+/* Writes install_dir/play.sh, a shell script that starts the game the way
+ * gog_launch_game() does (same task, runner and prefix) without gog-manager
+ * running. Called after an install, after a runner change and on every
+ * launch. A play.sh gog-manager did not write is never overwritten (FALSE,
+ * G_IO_ERROR_EXISTS). Arguments given to the script are passed on. */
+gboolean gog_write_play_script (GogGame *game, GError **error);
+
 /* A launch whose Wine/Proton prefix has to be (re)built first returns TRUE
  * straight away and finishes on a thread; if it then fails, func gets the
  * message on the main thread. One handler at a time; NULL removes it. */

@@ -7,6 +7,7 @@
 #include "runner.h"
 #include <gio/gio.h>
 #include <glib/gstdio.h>
+#include <errno.h>
 #include <string.h>
 
 typedef struct
@@ -304,6 +305,50 @@ unix_slashes (const char *path)
   return copy;
 }
 
+/* What a game is started with: its manifest's primary task, or (no
+ * manifest) start.sh for a native game and the first non-uninstaller .exe
+ * for Wine/Proton, as a task with no working directory or arguments. NULL
+ * when there is nothing to run. */
+static PlayTask *
+resolve_play_task (GogGame *game, const char *install_dir)
+{
+  /* A DLC shares its base game's directory; launching it means launching
+   * the base game. */
+  GogGame *base = gog_game_get_base_game (game);
+  gint64 manifest_id = base ? gog_game_get_id (base) : gog_game_get_id (game);
+  PlayTask *task = find_install_task (install_dir, manifest_id);
+  if (task)
+    return task;
+
+  /* No manifest -- fall back to convention. */
+  gchar *path = NULL;
+  if (gog_game_get_runner_kind (game) == GOG_RUNNER_NATIVE)
+    {
+      gchar *start_sh = g_build_filename (install_dir, "start.sh", NULL);
+      if (g_file_test (start_sh, G_FILE_TEST_IS_REGULAR))
+        path = g_strdup ("start.sh");
+      g_free (start_sh);
+    }
+  else
+    path = find_final_resort_exe (install_dir);
+  if (!path)
+    return NULL;
+
+  task = g_new0 (PlayTask, 1);
+  task->path = path;
+  return task;
+}
+
+static void
+set_nothing_to_launch_error (GogGame *game, GError **error)
+{
+  g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+               gog_game_get_runner_kind (game) == GOG_RUNNER_NATIVE
+                 ? "Could not find a way to launch %s (no goggame-*.info or start.sh)"
+                 : "Could not find a way to launch %s (no goggame-*.info or .exe)",
+               gog_game_get_title (game));
+}
+
 gboolean
 gog_launch_game (GogGame *game, GError **error)
 {
@@ -320,95 +365,208 @@ gog_launch_game (GogGame *game, GError **error)
   if (kind != GOG_RUNNER_NATIVE && !check_runner (game, error))
     return FALSE;
 
-  /* A DLC shares its base game's directory; launching it means launching
-   * the base game. */
-  GogGame *base = gog_game_get_base_game (game);
-  gint64 manifest_id = base ? gog_game_get_id (base) : gog_game_get_id (game);
-  PlayTask *task = find_install_task (install_dir, manifest_id);
-
-  if (task)
+  PlayTask *task = resolve_play_task (game, install_dir);
+  if (!task)
     {
-      gboolean ok;
-      if (kind == GOG_RUNNER_NATIVE)
-        {
-          /* Both path and workingDir are relative to the install root. */
-          gchar *rel = unix_slashes (task->path);
-          gchar *full = g_build_filename (install_dir, rel, NULL);
-          g_free (rel);
-          if (g_chmod (full, 0755) != 0)
-            g_warning ("Failed to set execute permission on %s", full);
-          gchar *wd = unix_slashes (task->working_dir);
-          gchar *cwd = g_build_filename (install_dir, wd, NULL);
-          g_free (wd);
-
-          GPtrArray *argv = g_ptr_array_new_with_free_func (g_free);
-          g_ptr_array_add (argv, g_strdup (full));
-          if (task->arguments && *task->arguments)
-            {
-              gchar **split = NULL;
-              GError *parse_error = NULL;
-              if (g_shell_parse_argv (task->arguments, NULL, &split, &parse_error))
-                {
-                  for (gchar **a = split; *a; a++)
-                    g_ptr_array_add (argv, g_strdup (*a));
-                  g_strfreev (split);
-                }
-              else
-                {
-                  g_warning ("Failed to parse command arguments: %s", parse_error->message);
-                  g_error_free (parse_error);
-                }
-            }
-          g_ptr_array_add (argv, NULL);
-          ok = spawn_detached ((gchar **) argv->pdata, NULL, cwd, error);
-          g_ptr_array_unref (argv);
-          g_free (cwd);
-          g_free (full);
-        }
-      else
-        {
-          GogRunnerInfo runner = runner_from_game (game);
-          GogCommand *cmd = runner_build_launch_command (&runner, install_dir, task->path,
-                                                           task->working_dir, task->arguments);
-          ok = spawn_in_prefix (&runner, install_dir, cmd, error);
-        }
-      play_task_free (task);
-      return ok;
+      set_nothing_to_launch_error (game, error);
+      return FALSE;
     }
 
-  /* No manifest -- fall back to convention. */
+  gboolean ok;
   if (kind == GOG_RUNNER_NATIVE)
     {
-      gchar *start_sh = g_build_filename (install_dir, "start.sh", NULL);
-      if (g_file_test (start_sh, G_FILE_TEST_IS_REGULAR))
+      /* Both path and workingDir are relative to the install root. */
+      gchar *rel = unix_slashes (task->path);
+      gchar *full = g_build_filename (install_dir, rel, NULL);
+      g_free (rel);
+      if (g_chmod (full, 0755) != 0)
+        g_warning ("Failed to set execute permission on %s", full);
+      gchar *wd = unix_slashes (task->working_dir);
+      gchar *cwd = g_build_filename (install_dir, wd, NULL);
+      g_free (wd);
+
+      GPtrArray *argv = g_ptr_array_new_with_free_func (g_free);
+      g_ptr_array_add (argv, g_strdup (full));
+      if (task->arguments && *task->arguments)
         {
-          if (g_chmod (start_sh, 0755) != 0)
-            g_warning ("Failed to set execute permission on %s", start_sh);
-          gchar *argv[] = { start_sh, NULL };
-          gboolean ok = spawn_detached (argv, NULL, install_dir, error);
-          g_free (start_sh);
-          return ok;
+          gchar **split = NULL;
+          GError *parse_error = NULL;
+          if (g_shell_parse_argv (task->arguments, NULL, &split, &parse_error))
+            {
+              for (gchar **a = split; *a; a++)
+                g_ptr_array_add (argv, g_strdup (*a));
+              g_strfreev (split);
+            }
+          else
+            {
+              g_warning ("Failed to parse command arguments: %s", parse_error->message);
+              g_error_free (parse_error);
+            }
         }
-      g_free (start_sh);
-      g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-                   "Could not find a way to launch %s (no goggame-*.info or start.sh)",
+      g_ptr_array_add (argv, NULL);
+      ok = spawn_detached ((gchar **) argv->pdata, NULL, cwd, error);
+      g_ptr_array_unref (argv);
+      g_free (cwd);
+      g_free (full);
+    }
+  else
+    {
+      GogRunnerInfo runner = runner_from_game (game);
+      GogCommand *cmd = runner_build_launch_command (&runner, install_dir, task->path,
+                                                       task->working_dir, task->arguments);
+      ok = spawn_in_prefix (&runner, install_dir, cmd, error);
+    }
+  play_task_free (task);
+
+  /* Keeps play.sh in step with the runner, and gives games installed
+   * before it existed one. Never stands in the way of playing. */
+  GError *script_error = NULL;
+  if (ok && !gog_write_play_script (game, &script_error))
+    {
+      g_warning ("Could not write play.sh: %s", script_error->message);
+      g_clear_error (&script_error);
+    }
+  return ok;
+}
+
+#define PLAY_SCRIPT_MARKER "# Written by gog-manager"
+
+/* TRUE when path is missing or is a play.sh gog-manager wrote; a play.sh
+ * the game shipped or the user wrote is left alone. */
+static gboolean
+play_script_is_ours (const char *path)
+{
+  if (!g_file_test (path, G_FILE_TEST_EXISTS) && !g_file_test (path, G_FILE_TEST_IS_SYMLINK))
+    return TRUE;
+  if (g_file_test (path, G_FILE_TEST_IS_SYMLINK) || !g_file_test (path, G_FILE_TEST_IS_REGULAR))
+    return FALSE;
+  gchar *contents = NULL;
+  gboolean ours = g_file_get_contents (path, &contents, NULL, NULL) &&
+                  strstr (contents, "\n" PLAY_SCRIPT_MARKER) != NULL;
+  g_free (contents);
+  return ours;
+}
+
+gboolean
+gog_write_play_script (GogGame *game, GError **error)
+{
+  const char *install_dir = gog_game_get_install_path (game);
+  GogRunnerKind kind = gog_game_get_runner_kind (game);
+  if (!gog_game_get_installed (game) || !install_dir || !*install_dir)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "%s is not installed",
                    gog_game_get_title (game));
       return FALSE;
     }
-
-  gchar *exe = find_final_resort_exe (install_dir);
-  if (!exe)
+  if (kind != GOG_RUNNER_NATIVE && !gog_game_get_runner_path (game))
     {
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-                   "Could not find a way to launch %s (no goggame-*.info or .exe)",
-                   gog_game_get_title (game));
+                   "No Wine/Proton runner is recorded for %s", gog_game_get_title (game));
       return FALSE;
     }
 
-  GogRunnerInfo runner = runner_from_game (game);
-  GogCommand *cmd = runner_build_launch_command (&runner, install_dir, exe, NULL, NULL);
-  gboolean ok = spawn_in_prefix (&runner, install_dir, cmd, error);
-  g_free (exe);
+  gchar *script_path = g_build_filename (install_dir, "play.sh", NULL);
+  if (!play_script_is_ours (script_path))
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_EXISTS,
+                   "%s was not written by gog-manager; leaving it alone", script_path);
+      g_free (script_path);
+      return FALSE;
+    }
+
+  PlayTask *task = resolve_play_task (game, install_dir);
+  if (!task)
+    {
+      set_nothing_to_launch_error (game, error);
+      g_free (script_path);
+      return FALSE;
+    }
+
+  /* Paths inside the game folder are written relative to the script, so it
+   * keeps working if the folder is moved or seen from another mount. */
+  GString *s = g_string_new ("#!/bin/sh\n");
+  g_string_append_printf (s, PLAY_SCRIPT_MARKER " to start %s without it.\n",
+                          gog_game_get_title (game));
+  g_string_append (s, "# It is rewritten when the game is played or its runner changes there.\n"
+                      "# Delete the \"Written by gog-manager\" line to keep your own edits.\n"
+                      "here=$(cd \"$(dirname \"$0\")\" && pwd) || exit 1\n");
+
+  if (kind == GOG_RUNNER_NATIVE)
+    {
+      gchar *rel = unix_slashes (task->path);
+      gchar *wd = unix_slashes (task->working_dir);
+      gchar *q_rel = g_shell_quote (rel);
+      g_string_append (s, "cd \"$here\"");
+      if (*wd)
+        {
+          gchar *q_wd = g_shell_quote (wd);
+          g_string_append_printf (s, "/%s", q_wd);
+          g_free (q_wd);
+        }
+      g_string_append_printf (s, " || exit 1\nexec \"$here\"/%s", q_rel);
+      /* The manifest's argument string is already shell syntax; it is what
+       * gog_launch_game() splits with g_shell_parse_argv(). */
+      if (task->arguments && *task->arguments)
+        g_string_append_printf (s, " %s", task->arguments);
+      g_string_append (s, " \"$@\"\n");
+      g_free (q_rel);
+      g_free (wd);
+      g_free (rel);
+    }
+  else
+    {
+      GogRunnerInfo runner = runner_from_game (game);
+      GogCommand *cmd = runner_build_launch_command (&runner, install_dir, task->path,
+                                                       task->working_dir, task->arguments);
+      if (kind == GOG_RUNNER_PROTON)
+        {
+          gchar *client = g_build_filename (g_get_user_data_dir (), "gog-manager",
+                                             "steam-compat-client", NULL);
+          gchar *q_client = g_shell_quote (client);
+          g_string_append_printf (s,
+              "root=\"$here/proton-prefix/pfx\"\n"
+              "export STEAM_COMPAT_DATA_PATH=\"$here/proton-prefix\"\n"
+              "export STEAM_COMPAT_CLIENT_INSTALL_PATH=%s\n"
+              "mkdir -p \"$STEAM_COMPAT_CLIENT_INSTALL_PATH\"\n",
+              q_client);
+          g_free (q_client);
+          g_free (client);
+        }
+      else
+        g_string_append (s,
+            "root=\"$here/prefix\"\n"
+            "export WINEPREFIX=\"$root\"\n"
+            "export WINEDLLOVERRIDES=\"winemenubuilder.exe=d\"\n");
+      /* C:\game is a link gog-manager makes in the prefix; without it the
+       * game's paths lead nowhere. */
+      g_string_append (s,
+          "if [ ! -e \"$root/dosdevices/c:/game\" ]; then\n"
+          "  echo \"The Wine/Proton prefix is not set up; start the game once from gog-manager.\" >&2\n"
+          "  exit 1\n"
+          "fi\n"
+          "cd \"$here\" || exit 1\n"
+          "exec");
+      for (gchar **a = cmd->argv; *a; a++)
+        {
+          gchar *q = g_shell_quote (*a);
+          g_string_append_printf (s, " %s", q);
+          g_free (q);
+        }
+      g_string_append (s, " \"$@\"\n");
+      gog_command_free (cmd);
+    }
+  play_task_free (task);
+
+  gboolean ok = g_file_set_contents (script_path, s->str, s->len, error);
+  if (ok && g_chmod (script_path, 0755) != 0)
+    {
+      int saved_errno = errno;
+      g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (saved_errno),
+                   "Could not make %s executable: %s", script_path, g_strerror (saved_errno));
+      ok = FALSE;
+    }
+  g_string_free (s, TRUE);
+  g_free (script_path);
   return ok;
 }
 

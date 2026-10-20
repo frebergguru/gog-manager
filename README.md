@@ -53,7 +53,9 @@ your GOG login.
   (for games that need a CD key) on the game's page, with a copy button.
 - **Launch & maintenance** — launches installed games via their GOG manifest
   (with native `start.sh` / `*.exe` fallbacks), and offers `winecfg` / `regedit`
-  on a game's existing prefix for Wine installs.
+  on a game's existing prefix for Wine installs. Every installed game also
+  gets a `play.sh` in its folder that starts it the same way without
+  gog-manager (or the library disk) — kept up to date when the runner changes.
 - **Persistent state** — install records live in `state.json`, kept separate
   from configuration so re-scanning or moving your library never loses them.
 

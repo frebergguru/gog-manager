@@ -6,6 +6,7 @@
 #include "proton_fetch_dialog.h"
 #include "../runner.h"
 #include "../installer_engine.h"
+#include "../launch.h"
 #include "dialog_window.h"
 
 typedef struct
@@ -255,6 +256,13 @@ on_job_finished (GogInstallJob *job, gboolean success, const gchar *error_messag
           g_free (prefix);
         }
       gog_game_set_installed (ctx->game, TRUE);
+      GError *script_err = NULL;
+      if (!gog_write_play_script (ctx->game, &script_err))
+        {
+          append_log_line (ctx, "Warning: could not write play.sh:");
+          append_log_line (ctx, script_err->message);
+          g_clear_error (&script_err);
+        }
       gog_state_update_from_game (ctx->state, ctx->game);
       sync_rescanned_copy (ctx);
       GError *save_err = NULL;

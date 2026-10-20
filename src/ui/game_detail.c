@@ -346,6 +346,18 @@ build_runner_row (GogGameDetail *self)
                                                                     : "Wine used to run this game"));
 }
 
+/* play.sh bakes in the runner path, so it follows a runner change. */
+static void
+refresh_play_script (GogGame *game)
+{
+  GError *error = NULL;
+  if (!gog_write_play_script (game, &error))
+    {
+      g_warning ("Could not write play.sh: %s", error->message);
+      g_clear_error (&error);
+    }
+}
+
 static void
 on_runner_selected (GObject *row, GParamSpec *pspec, gpointer user_data)
 {
@@ -374,6 +386,8 @@ on_runner_selected (GObject *row, GParamSpec *pspec, gpointer user_data)
         {
           gog_game_set_runner_path (g, r->bin_path);
           gog_state_update_from_game (self->state, g);
+          if (g == self->game)
+            refresh_play_script (g);
         }
       g_object_unref (g);
     }

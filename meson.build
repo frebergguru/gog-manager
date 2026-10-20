@@ -85,3 +85,9 @@ test_library_exe = executable('test-library',
   dependencies : test_deps,
 )
 test('library', test_library_exe)
+
+test_play_script_exe = executable('test-play-script',
+  ['tests/test_play_script.c', 'src/launch.c'] + test_support_sources,
+  dependencies : test_deps,
+)
+test('play-script', test_play_script_exe)

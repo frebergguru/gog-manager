@@ -6,6 +6,7 @@
 #include "dialog_window.h"
 #include "../proton_fetch.h"
 #include "../game.h"
+#include "../launch.h"
 #include "../text_util.h"
 
 typedef struct
@@ -196,6 +197,16 @@ move_users_to (ManageCtx *ctx, const char *const *removed, const char *replaceme
             {
               gog_game_set_runner_path (g, new_path);
               gog_state_update_from_game (ctx->state, g);
+              /* A DLC's install_path is its base game's; one script there. */
+              if (!gog_game_get_base_game (g))
+                {
+                  GError *script_err = NULL;
+                  if (gog_game_get_installed (g) && !gog_write_play_script (g, &script_err))
+                    {
+                      g_warning ("Could not write play.sh: %s", script_err->message);
+                      g_clear_error (&script_err);
+                    }
+                }
               state_changed = TRUE;
               break;
             }
