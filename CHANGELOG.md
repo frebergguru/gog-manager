@@ -6,6 +6,11 @@ All notable changes to GOG Manager are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- The config, install state, download choices, last GOG check and caches are
+  kept in a hidden `.gog-manager-configs` folder next to the AppImage instead
+  of directly beside it. Files from an older version are moved there on start.
+
 ## [0.4.0] - 2026-10-20
 
 ### Added

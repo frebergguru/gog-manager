@@ -11,7 +11,7 @@ G_BEGIN_DECLS
 
 /* Each game's categories: the genres GOG lists for it, main one first
  * (api.gog.com/v2/games/<id>, _embedded.tags). Results, including "not on
- * GOG", are cached next to the app in gog-manager-categories.json, keyed
+ * GOG", are cached in the app's config folder in gog-manager-categories.json, keyed
  * by product id, so sorting and filtering work offline. */
 
 /* Called after each batch with how many of the games to look up are done. */

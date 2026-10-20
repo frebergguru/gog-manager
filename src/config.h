@@ -20,14 +20,15 @@ typedef struct
   gchar *library_view;        /* "grid" (default), "list" or "details" */
 } GogConfig;
 
-/* Loads $XDG_CONFIG_HOME/gog-manager/config.json. Returns a zero-valued
+/* Loads <app dir>/.gog-manager-configs/gog-manager.cfg. Returns a zero-valued
  * (all-NULL/defaults) config, never NULL, if the file doesn't exist yet or
  * fails to parse -- first-run and corrupt-file are handled the same way by
  * the caller (prompt for a library path). */
 GogConfig *gog_config_load (void);
 
-/* A file next to the app's own config and state (the AppImage's folder, or
- * the executable's). Transfer full. */
+/* A file in the app's config folder, .gog-manager-configs in the
+ * AppImage's folder (or the executable's), which is created if needed.
+ * Transfer full. */
 gchar *gog_config_app_file (const char *name);
 gboolean   gog_config_save (GogConfig *config, GError **error);
 void       gog_config_free (GogConfig *config);
@@ -43,7 +44,7 @@ gchar *gog_config_effective_library_path (GogConfig *config);
 gboolean gog_config_library_path_is_default (GogConfig *config);
 
 /* Per-game install state, keyed by product id. Stored separately from
- * gog-manager.cfg (in `<app dir>/gog-manager-state.json`) so that switching
+ * gog-manager.cfg (in `<app dir>/.gog-manager-configs/gog-manager-state.json`) so that switching
  * or re-scanning the library path never loses install records. */
 typedef struct _GogState GogState;
 

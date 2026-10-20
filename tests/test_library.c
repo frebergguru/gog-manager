@@ -9,6 +9,7 @@
 #include "../src/gog_sync.h"
 #include "../src/original_language.h"
 #include "../src/installer_engine.h"
+#include "../src/config.h"
 
 static void
 on_scan_done (GObject *source, GAsyncResult *res, gpointer user_data)
@@ -312,10 +313,12 @@ static void
 test_default_download_languages (void)
 {
   gchar *tmp = g_dir_make_tmp ("gog-langs-XXXXXX", NULL);
-  /* The app keeps its files next to the AppImage. */
+  /* The app keeps its files in .gog-manager-configs next to the AppImage. */
   gchar *fake = g_build_filename (tmp, "gog-manager.AppImage", NULL);
   g_setenv ("APPIMAGE", fake, TRUE);
-  gchar *cache = g_build_filename (tmp, "gog-manager-original-languages.json", NULL);
+  gchar *configs = g_build_filename (tmp, ".gog-manager-configs", NULL);
+  g_assert_cmpint (g_mkdir (configs, 0700), ==, 0);
+  gchar *cache = g_build_filename (configs, "gog-manager-original-languages.json", NULL);
   g_assert_true (g_file_set_contents (
       cache,
       "{\"among_the_sleep\": {\"languages\": \"no\", \"source\": \"made in Norway\", "
@@ -372,13 +375,15 @@ test_default_download_languages (void)
   g_assert_cmpuint (gog_sync_item_languages (&item), ==, BIT_NO);
   gog_sync_set_game_languages ("among_the_sleep", GOG_SYNC_LANGUAGES_DEFAULT);
 
-  gchar *settings = g_build_filename (tmp, "gog-manager-download.json", NULL);
+  gchar *settings = g_build_filename (configs, "gog-manager-download.json", NULL);
   g_remove (settings);
   g_remove (cache);
+  g_rmdir (configs);
   g_rmdir (tmp);
   g_unsetenv ("APPIMAGE");
   g_free (settings);
   g_free (cache);
+  g_free (configs);
   g_free (fake);
   g_free (tmp);
 }
@@ -484,6 +489,55 @@ test_uninstall_protects_folders (void)
   g_free (tmp);
 }
 
+/* Files an older version kept next to the AppImage move into
+ * .gog-manager-configs; one already there is not overwritten. */
+static void
+test_config_files_move_to_config_folder (void)
+{
+  gchar *tmp = g_dir_make_tmp ("gog-configs-XXXXXX", NULL);
+  gchar *fake = g_build_filename (tmp, "gog-manager.AppImage", NULL);
+  g_setenv ("APPIMAGE", fake, TRUE);
+  gchar *old_state = g_build_filename (tmp, "gog-manager-state.json", NULL);
+  gchar *old_cfg = g_build_filename (tmp, "gog-manager.cfg", NULL);
+  gchar *configs = g_build_filename (tmp, ".gog-manager-configs", NULL);
+  gchar *new_state = g_build_filename (configs, "gog-manager-state.json", NULL);
+  gchar *new_cfg = g_build_filename (configs, "gog-manager.cfg", NULL);
+  g_assert_true (g_file_set_contents (old_state, "{\"old\": 1}", -1, NULL));
+  g_assert_true (g_file_set_contents (old_cfg, "{\"old\": 1}", -1, NULL));
+  g_assert_cmpint (g_mkdir (configs, 0700), ==, 0);
+  g_assert_true (g_file_set_contents (new_cfg, "{\"new\": 1}", -1, NULL));
+
+  gchar *path = gog_config_app_file ("gog-manager-categories.json");
+  gchar *expected = g_build_filename (configs, "gog-manager-categories.json", NULL);
+  g_assert_cmpstr (path, ==, expected);
+
+  g_assert_false (g_file_test (old_state, G_FILE_TEST_EXISTS));
+  gchar *text = NULL;
+  g_assert_true (g_file_get_contents (new_state, &text, NULL, NULL));
+  g_assert_cmpstr (text, ==, "{\"old\": 1}");
+  g_free (text);
+  g_assert_true (g_file_test (old_cfg, G_FILE_TEST_EXISTS));
+  g_assert_true (g_file_get_contents (new_cfg, &text, NULL, NULL));
+  g_assert_cmpstr (text, ==, "{\"new\": 1}");
+  g_free (text);
+
+  g_remove (new_state);
+  g_remove (new_cfg);
+  g_remove (old_cfg);
+  g_rmdir (configs);
+  g_rmdir (tmp);
+  g_unsetenv ("APPIMAGE");
+  g_free (expected);
+  g_free (path);
+  g_free (new_cfg);
+  g_free (new_state);
+  g_free (configs);
+  g_free (old_cfg);
+  g_free (old_state);
+  g_free (fake);
+  g_free (tmp);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -496,5 +550,6 @@ main (int argc, char *argv[])
   g_test_add_func ("/gog_sync/default_download_languages", test_default_download_languages);
   g_test_add_func ("/gog_sync/version_blind_names", test_version_blind_names);
   g_test_add_func ("/install/uninstall_protects_folders", test_uninstall_protects_folders);
+  g_test_add_func ("/config/files_move_to_config_folder", test_config_files_move_to_config_folder);
   return g_test_run ();
 }

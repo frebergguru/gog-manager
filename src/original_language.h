@@ -14,7 +14,7 @@ G_BEGIN_DECLS
  * if set, otherwise the main language of its country of origin (P495),
  * otherwise of its developer's country (P178 -> P17). So a game made in
  * Norway counts as Norwegian. Results, including "not found", are cached
- * next to the app in gog-manager-original-languages.json. */
+ * in the app's config folder in gog-manager-original-languages.json. */
 
 /* Looks up the games not in the cache yet, and those not found more than
  * a month ago. Blocking (runs curl): call it from a worker thread. It

@@ -59,7 +59,7 @@ your GOG login.
 - **Categories** — filter by one or several of GOG's genres (any or all of
   them) and sort by the main one, which each card shows. gog-manager fetches
   them from GOG once per game in the background after a scan and keeps them
-  in `gog-manager-categories.json` next to the app, so they work offline;
+  in `gog-manager-categories.json` in the app's config folder, so they work offline;
   Preferences can fetch them all again.
 - **Views** — show the library as a grid of covers, a simple list or a
   detailed table (categories, platforms, status, size, release date,
@@ -171,15 +171,16 @@ drop the executable (or AppImage) into your `GOG/Games` folder and just run it.
 Set a fixed library folder in **Preferences** to override that; once set, it is
 always used regardless of where you launch from.
 
-The config file lives **next to the executable** so it travels with a portable
-copy:
+The config files live in a hidden `.gog-manager-configs` folder **next to the
+executable**, so they travel with a portable copy. Files an older version kept
+directly next to the executable are moved there on start:
 
 | Path | Purpose |
 |------|---------|
-| `<app dir>/gog-manager.cfg` | Library path (if set), install root, and configured runners |
-| `<app dir>/gog-manager-state.json` | Per-game install state (keyed by product id) |
-| `<app dir>/gog-manager-updates.json` | The last GOG check: what each game has to download |
-| `<app dir>/gog-manager-download.json` | Download choices: files at the same time, and each game's languages |
+| `<app dir>/.gog-manager-configs/gog-manager.cfg` | Library path (if set), install root, and configured runners |
+| `<app dir>/.gog-manager-configs/gog-manager-state.json` | Per-game install state (keyed by product id) |
+| `<app dir>/.gog-manager-configs/gog-manager-updates.json` | The last GOG check: what each game has to download |
+| `<app dir>/.gog-manager-configs/gog-manager-download.json` | Download choices: files at the same time, and each game's languages |
 | `$XDG_DATA_HOME/gog-manager/proton/<tag>/` | Downloaded GE-Proton builds |
 
 The GOG check and downloads use lgogdownloader's own settings in

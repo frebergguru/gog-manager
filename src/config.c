@@ -5,6 +5,7 @@
 #include "config.h"
 #include "json_util.h"
 #include <json-c/json.h>
+#include <glib/gstdio.h>
 #include <errno.h>
 
 /* Directory the app is running from. For an AppImage the executing binary
@@ -29,12 +30,59 @@ app_dir (void)
   return g_get_current_dir ();
 }
 
-/* The config lives next to the executable (portable), e.g.
- * .../GOG/Games/gog-manager.cfg, so it travels with the app. */
+/* The app's files live in a hidden folder next to the executable (portable),
+ * e.g. .../GOG/Games/.gog-manager-configs/gog-manager.cfg, so they travel
+ * with the app without cluttering the folder it sits in. */
+#define CONFIG_SUBDIR ".gog-manager-configs"
+
+/* Files older versions kept directly in the app's folder. */
+static const char *const app_files[] = {
+  "gog-manager.cfg",
+  "gog-manager-state.json",
+  "gog-manager-updates.json",
+  "gog-manager-download.json",
+  "gog-manager-categories.json",
+  "gog-manager-original-languages.json",
+};
+
+G_LOCK_DEFINE_STATIC (migrate);
+
+/* Moves the files of an older version from the app's folder into the
+ * config folder, once per folder. A file already in the config folder wins. */
+static void
+migrate_app_files (const char *old_dir, const char *new_dir)
+{
+  static gchar *migrated;
+
+  G_LOCK (migrate);
+  if (g_strcmp0 (migrated, new_dir) != 0)
+    {
+      for (gsize i = 0; i < G_N_ELEMENTS (app_files); i++)
+        {
+          gchar *from = g_build_filename (old_dir, app_files[i], NULL);
+          gchar *to = g_build_filename (new_dir, app_files[i], NULL);
+          if (g_file_test (from, G_FILE_TEST_IS_REGULAR) && !g_file_test (to, G_FILE_TEST_EXISTS)
+              && g_rename (from, to) != 0)
+            g_warning ("Could not move %s to %s: %s", from, new_dir, g_strerror (errno));
+          g_free (from);
+          g_free (to);
+        }
+      g_free (migrated);
+      migrated = g_strdup (new_dir);
+    }
+  G_UNLOCK (migrate);
+}
+
+/* The config folder, created (and older files moved into it) if needed. */
 static gchar *
 config_dir (void)
 {
-  return app_dir ();
+  gchar *app = app_dir ();
+  gchar *dir = g_build_filename (app, CONFIG_SUBDIR, NULL);
+  if (g_mkdir_with_parents (dir, 0700) == 0)
+    migrate_app_files (app, dir);
+  g_free (app);
+  return dir;
 }
 
 static gchar *
@@ -46,12 +94,12 @@ config_file (void)
   return path;
 }
 
-/* Per-game install state lives next to the executable too, so a portable copy
+/* Per-game install state lives in the config folder too, so a portable copy
  * carries its install records with it. */
 static gchar *
 state_file (void)
 {
-  gchar *dir = app_dir ();
+  gchar *dir = config_dir ();
   gchar *path = g_build_filename (dir, "gog-manager-state.json", NULL);
   g_free (dir);
   return path;
@@ -60,7 +108,7 @@ state_file (void)
 gchar *
 gog_config_app_file (const char *name)
 {
-  gchar *dir = app_dir ();
+  gchar *dir = config_dir ();
   gchar *path = g_build_filename (dir, name, NULL);
   g_free (dir);
   return path;
@@ -219,7 +267,7 @@ gog_state_load (void)
 gboolean
 gog_state_save (GogState *state, GError **error)
 {
-  gchar *dir = app_dir ();
+  gchar *dir = config_dir ();
   if (g_mkdir_with_parents (dir, 0700) != 0)
     {
       g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (errno),
