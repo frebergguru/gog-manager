@@ -28,6 +28,22 @@ void           gog_runner_info_free (GogRunnerInfo *info);
  * GogRunnerInfo*, transfer full (g_ptr_array_unref frees everything). */
 GPtrArray *runner_discover_all (GogConfig *config);
 
+/* Stored as config->default_runner_path (kind Proton) for "Newest Proton":
+ * the newest Proton found at install time, whichever that is then. */
+#define GOG_RUNNER_NEWEST_PROTON "newest-proton"
+
+/* The newest Proton among runners, by the version each build's "version"
+ * file names (Heroic's "GE-Proton-latest" folder is often an older build),
+ * else by folder name; GE-Proton before other builds. NULL if there is no
+ * Proton. Borrowed from runners. */
+GogRunnerInfo *runner_find_newest_proton (GPtrArray *runners);
+
+/* The runner new installs should use: Newest Proton when that is the
+ * default or no default is set yet (falling back to the first runner),
+ * otherwise the one the default names; NULL when it isn't among runners
+ * or there are none. Borrowed from runners. */
+GogRunnerInfo *runner_pick_default (GogConfig *config, GPtrArray *runners);
+
 /* A ready-to-spawn command: argv[0] is the program, argv is NULL-terminated
  * (as required by GSubprocessLauncher/g_spawn); envp is a full environment
  * (base process environment plus any overrides), also NULL-terminated. */

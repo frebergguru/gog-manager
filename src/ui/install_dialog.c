@@ -307,6 +307,13 @@ populate_runner_dropdown (InstallCtx *ctx)
     g_ptr_array_unref (ctx->runners);
   ctx->runners = runner_discover_all (ctx->config);
   guint select_idx = G_MAXUINT;
+  if (!ctx->runner_locked)
+    {
+      /* "Newest Proton" or the runner Preferences names. */
+      GogRunnerInfo *pick = runner_pick_default (ctx->config, ctx->runners);
+      want_kind = pick ? pick->kind : GOG_RUNNER_NONE;
+      want_path = pick ? pick->bin_path : NULL;
+    }
   if (ctx->runner_locked && want_path)
     {
       /* Keep the base game's runner available even if discovery no longer

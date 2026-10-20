@@ -61,7 +61,14 @@ your GOG login.
   them from GOG once per game in the background after a scan and keeps them
   in `gog-manager-categories.json` next to the app, so they work offline;
   Preferences can fetch them all again.
+- **Views** — show the library as a grid of covers, a simple list or a
+  detailed table (categories, platforms, status, size, release date,
+  languages, DLC and extras); the choice is remembered.
 - **Release dates** — sort the library newest or oldest first.
+- **Newest Proton** — the default runner for new installs is the newest
+  Proton on the computer (by the version each build records, so Heroic's
+  older "GE-Proton-latest" folder isn't mistaken for it); a specific runner
+  can still be chosen in Preferences. An installed game keeps its runner.
 - **Applications menu** — an installed game's page can add it to the
   Applications menu; the entry starts its `play.sh`, so it runs without
   gog-manager or the library disk.

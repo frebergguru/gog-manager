@@ -88,6 +88,8 @@ gog_config_load (void)
   cfg->default_runner_kind = gog_runner_kind_from_string (ju_get_string (root, "default_runner_kind", ""));
   cfg->default_runner_path = g_strdup (ju_get_string (root, "default_runner_path", NULL));
 
+  cfg->library_view = g_strdup (ju_get_string (root, "library_view", NULL));
+
   json_object *custom = ju_get_array (root, "custom_runner_paths");
   if (custom)
     {
@@ -135,6 +137,8 @@ gog_config_save (GogConfig *config, GError **error)
     for (GStrv p = config->custom_runner_paths; *p; p++)
       json_object_array_add (custom, json_object_new_string (*p));
   json_object_object_add (root, "custom_runner_paths", custom);
+  if (config->library_view)
+    json_object_object_add (root, "library_view", json_object_new_string (config->library_view));
 
   const char *path = json_object_to_json_string_ext (root, JSON_C_TO_STRING_PRETTY);
   gchar *file = config_file ();
@@ -167,6 +171,7 @@ gog_config_free (GogConfig *config)
   g_free (config->install_root);
   g_free (config->default_runner_path);
   g_strfreev (config->custom_runner_paths);
+  g_free (config->library_view);
   g_free (config);
 }
 

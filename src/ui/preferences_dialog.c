@@ -131,16 +131,35 @@ refresh_runner_dropdown (PrefsCtx *ctx)
     g_ptr_array_unref (ctx->runners);
   ctx->runners = runner_discover_all (ctx->config);
 
+  /* First, when there is a Proton: "Newest Proton", which follows new
+   * GE-Proton downloads. Its entry stands for no runner of its own. */
+  GogRunnerInfo *newest = runner_find_newest_proton (ctx->runners);
+  if (newest)
+    {
+      gchar *label = g_strdup_printf ("Newest Proton (now %s)", newest->name);
+      g_ptr_array_insert (ctx->runners, 0,
+                          gog_runner_info_new (GOG_RUNNER_PROTON, label, GOG_RUNNER_NEWEST_PROTON));
+      g_free (label);
+    }
+
   /* Keep showing what was picked here, not yet saved, over the saved one. */
   GogRunnerKind want_kind = ctx->picked ? ctx->picked->kind : ctx->config->default_runner_kind;
   const char *want_path = ctx->picked ? ctx->picked->bin_path : ctx->config->default_runner_path;
+  /* No default yet means Newest Proton. */
+  if (newest && (want_kind == GOG_RUNNER_NONE || !want_path))
+    {
+      want_kind = GOG_RUNNER_PROTON;
+      want_path = GOG_RUNNER_NEWEST_PROTON;
+    }
   GtkStringList *list = gtk_string_list_new (NULL);
   guint select_idx = 0;
   for (guint i = 0; i < ctx->runners->len; i++)
     {
       GogRunnerInfo *r = g_ptr_array_index (ctx->runners, i);
-      gchar *label = g_strdup_printf ("%s (%s)", r->name,
-                                       r->kind == GOG_RUNNER_PROTON ? "Proton" : "Wine");
+      gchar *label = newest && i == 0
+                         ? g_strdup (r->name)
+                         : g_strdup_printf ("%s (%s)", r->name,
+                                            r->kind == GOG_RUNNER_PROTON ? "Proton" : "Wine");
       gtk_string_list_append (list, label);
       if (r->kind == want_kind && g_strcmp0 (r->bin_path, want_path) == 0)
         select_idx = i;

@@ -40,6 +40,8 @@ struct _GogMainWindow
   GtkCustomSorter *sorter;
   GtkSingleSelection *selection;
   GtkGridView *grid_view;
+  GtkStack *view_stack;        /* "grid" | "list" | "details" */
+  GtkToggleButton *view_buttons[3];
   GtkLabel *count_label;
 
   GtkSearchEntry *search_entry;
@@ -93,6 +95,8 @@ typedef struct
 static void start_scan (GogMainWindow *self);
 static void on_filters_changed (GtkWidget *widget, gpointer user_data);
 static void on_sort_changed (GtkWidget *widget, gpointer user_data);
+static void set_accessible_label (GtkWidget *widget, const char *label);
+static void card_item_update (GtkListItem *item, GogGame *game);
 
 /* Whether the last GOG check found a new version of game. The library
  * folder of a game is named after its lgogdownloader game name. */
@@ -494,16 +498,6 @@ update_card (CardWidgets *cw, GogGame *game)
 }
 
 static void
-on_game_installed_notify (GObject *game, GParamSpec *pspec, gpointer user_data)
-{
-  (void) pspec;
-  GtkListItem *list_item = user_data;
-  CardWidgets *cw = g_object_get_data (G_OBJECT (list_item), "cw");
-  if (cw)
-    update_card (cw, GOG_GAME (game));
-}
-
-static void
 on_factory_setup (GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointer user_data)
 {
   (void) factory;
@@ -526,6 +520,14 @@ on_factory_setup (GtkSignalListItemFactory *factory, GtkListItem *list_item, gpo
   gtk_label_set_xalign (GTK_LABEL (title), 0.0);
   gtk_box_append (GTK_BOX (box), title);
 
+  GtkWidget *category = gtk_label_new (NULL);
+  gtk_widget_add_css_class (category, "dim-label");
+  gtk_widget_add_css_class (category, "caption");
+  gtk_label_set_ellipsize (GTK_LABEL (category), PANGO_ELLIPSIZE_END);
+  gtk_label_set_xalign (GTK_LABEL (category), 0.0);
+  /* The main category goes before the platforms. */
+  gtk_box_append (GTK_BOX (box), category);
+
   GtkWidget *badges = gtk_label_new (NULL);
   gtk_widget_add_css_class (badges, "dim-label");
   gtk_widget_add_css_class (badges, "caption");
@@ -546,13 +548,6 @@ on_factory_setup (GtkSignalListItemFactory *factory, GtkListItem *list_item, gpo
   gtk_label_set_xalign (GTK_LABEL (content), 0.0);
   gtk_box_append (GTK_BOX (box), content);
 
-  GtkWidget *category = gtk_label_new (NULL);
-  gtk_widget_add_css_class (category, "dim-label");
-  gtk_widget_add_css_class (category, "caption");
-  gtk_label_set_ellipsize (GTK_LABEL (category), PANGO_ELLIPSIZE_END);
-  gtk_label_set_xalign (GTK_LABEL (category), 0.0);
-  gtk_box_append (GTK_BOX (box), category);
-
   gtk_list_item_set_child (list_item, box);
 
   CardWidgets *cw = g_new0 (CardWidgets, 1);
@@ -564,45 +559,78 @@ on_factory_setup (GtkSignalListItemFactory *factory, GtkListItem *list_item, gpo
   cw->content = GTK_LABEL (content);
   cw->category = GTK_LABEL (category);
   g_object_set_data_full (G_OBJECT (list_item), "cw", cw, g_free);
+  g_object_set_data (G_OBJECT (list_item), "update", (gpointer) card_item_update);
+}
+
+/* ---------------- items shared by the three views ---------------- */
+
+/* Each view's items keep an "update" function that fills them in from the
+ * game; it runs on bind and again whenever the game's install state or
+ * categories change (categories arrive in the background, after the items
+ * are made). */
+typedef void (*ItemUpdateFunc) (GtkListItem *item, GogGame *game);
+
+static void
+on_item_game_notify (GObject *game, GParamSpec *pspec, gpointer user_data)
+{
+  (void) pspec;
+  ItemUpdateFunc update = g_object_get_data (G_OBJECT (user_data), "update");
+  if (update)
+    update (GTK_LIST_ITEM (user_data), GOG_GAME (game));
 }
 
 static void
-on_factory_bind (GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointer user_data)
+on_item_bind (GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointer user_data)
 {
   (void) factory;
   (void) user_data;
   GogGame *game = gtk_list_item_get_item (list_item);
-  CardWidgets *cw = g_object_get_data (G_OBJECT (list_item), "cw");
-  update_card (cw, game);
-
-  gulong handler = g_signal_connect (game, "notify::installed", G_CALLBACK (on_game_installed_notify),
-                                      list_item);
-  g_object_set_data (G_OBJECT (list_item), "notify-id", GSIZE_TO_POINTER (handler));
-  /* Categories arrive in the background, after the cards are made. */
-  gulong cat_handler = g_signal_connect (game, "notify::categories",
-                                         G_CALLBACK (on_game_installed_notify), list_item);
-  g_object_set_data (G_OBJECT (list_item), "notify-categories-id", GSIZE_TO_POINTER (cat_handler));
+  on_item_game_notify (G_OBJECT (game), NULL, list_item);
+  gulong installed = g_signal_connect (game, "notify::installed", G_CALLBACK (on_item_game_notify),
+                                        list_item);
+  gulong categories = g_signal_connect (game, "notify::categories",
+                                         G_CALLBACK (on_item_game_notify), list_item);
+  g_object_set_data (G_OBJECT (list_item), "notify-id", GSIZE_TO_POINTER (installed));
+  g_object_set_data (G_OBJECT (list_item), "notify-categories-id", GSIZE_TO_POINTER (categories));
 }
 
 static void
-on_factory_unbind (GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointer user_data)
+on_item_unbind (GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointer user_data)
 {
   (void) factory;
   (void) user_data;
   GogGame *game = gtk_list_item_get_item (list_item);
-  gulong handler = (gulong) GPOINTER_TO_SIZE (g_object_get_data (G_OBJECT (list_item), "notify-id"));
-  if (game && handler)
-    g_signal_handler_disconnect (game, handler);
-  gulong cat_handler =
-      (gulong) GPOINTER_TO_SIZE (g_object_get_data (G_OBJECT (list_item), "notify-categories-id"));
-  if (game && cat_handler)
-    g_signal_handler_disconnect (game, cat_handler);
+  const char *keys[] = { "notify-id", "notify-categories-id" };
+  for (guint i = 0; i < G_N_ELEMENTS (keys); i++)
+    {
+      gulong handler = (gulong) GPOINTER_TO_SIZE (g_object_get_data (G_OBJECT (list_item), keys[i]));
+      if (game && handler)
+        g_signal_handler_disconnect (game, handler);
+      g_object_set_data (G_OBJECT (list_item), keys[i], NULL);
+    }
+}
+
+static GtkListItemFactory *
+item_factory (GogMainWindow *self, GCallback setup, gpointer setup_data)
+{
+  GtkListItemFactory *factory = gtk_signal_list_item_factory_new ();
+  g_signal_connect (factory, "setup", setup, setup_data ? setup_data : self);
+  g_signal_connect (factory, "bind", G_CALLBACK (on_item_bind), self);
+  g_signal_connect (factory, "unbind", G_CALLBACK (on_item_unbind), self);
+  return factory;
 }
 
 static void
-on_grid_activate (GtkGridView *grid_view, guint position, gpointer user_data)
+card_item_update (GtkListItem *item, GogGame *game)
 {
-  (void) grid_view;
+  update_card (g_object_get_data (G_OBJECT (item), "cw"), game);
+}
+
+/* Opens the game's page; the same for all three views. */
+static void
+on_item_activate (GtkWidget *view, guint position, gpointer user_data)
+{
+  (void) view;
   GogMainWindow *self = user_data;
   GogGame *game = g_list_model_get_item (G_LIST_MODEL (self->selection), position);
   if (!game)
@@ -610,6 +638,383 @@ on_grid_activate (GtkGridView *grid_view, guint position, gpointer user_data)
   gog_game_detail_set_game (self->detail, game);
   adw_navigation_view_push_by_tag (self->nav_view, "detail");
   g_object_unref (game);
+}
+
+/* Texts the lists show. All transfer full. */
+
+static gchar *
+text_main_category (GogMainWindow *self, GogGame *game)
+{
+  (void) self;
+  const char *const *cats = gog_game_get_categories (game);
+  return g_strdup (cats && cats[0] ? cats[0] : "");
+}
+
+static gchar *
+text_categories (GogMainWindow *self, GogGame *game)
+{
+  (void) self;
+  const char *const *cats = gog_game_get_categories (game);
+  return cats ? g_strjoinv (", ", (GStrv) cats) : g_strdup ("");
+}
+
+static gchar *
+text_platforms (GogMainWindow *self, GogGame *game)
+{
+  (void) self;
+  GPtrArray *parts = g_ptr_array_new ();
+  if (gog_game_get_supports_os (game, GOG_OS_WINDOWS))
+    g_ptr_array_add (parts, "Windows");
+  if (gog_game_get_supports_os (game, GOG_OS_LINUX))
+    g_ptr_array_add (parts, "Linux");
+  if (gog_game_get_supports_os (game, GOG_OS_MAC))
+    g_ptr_array_add (parts, "macOS");
+  g_ptr_array_add (parts, NULL);
+  gchar *out = g_strjoinv (", ", (GStrv) parts->pdata);
+  g_ptr_array_unref (parts);
+  return out;
+}
+
+static gchar *
+text_status (GogMainWindow *self, GogGame *game)
+{
+  gboolean installed = gog_game_get_installed (game);
+  gboolean update = has_gog_update (self, game);
+  if (installed && update)
+    return g_strdup ("Installed · Update on GOG");
+  if (update)
+    return g_strdup ("Update on GOG");
+  return g_strdup (installed ? "Installed" : "");
+}
+
+static gchar *
+text_size (GogMainWindow *self, GogGame *game)
+{
+  (void) self;
+  return text_format_size (gog_game_get_total_size (game));
+}
+
+static gchar *
+text_released (GogMainWindow *self, GogGame *game)
+{
+  (void) self;
+  gint64 released = gog_game_get_release_date (game);
+  GDateTime *dt = released > 0 ? g_date_time_new_from_unix_utc (released) : NULL;
+  gchar *out = dt ? g_date_time_format (dt, "%Y-%m-%d") : g_strdup ("");
+  if (dt)
+    g_date_time_unref (dt);
+  return out;
+}
+
+static gchar *
+text_languages (GogMainWindow *self, GogGame *game)
+{
+  (void) self;
+  GStrv names = gog_game_dup_installer_languages (game);
+  for (gchar **l = names; *l; l++)
+    {
+      gchar *label = text_language_label (*l);
+      g_free (*l);
+      *l = label;
+    }
+  gchar *out = g_strjoinv (", ", names);
+  g_strfreev (names);
+  return out;
+}
+
+static gchar *
+text_content (GogMainWindow *self, GogGame *game)
+{
+  guint n_dlc = dlc_count (self, game);
+  guint n_extras = gog_game_get_extras (game)->len;
+  GString *content = g_string_new (NULL);
+  if (n_dlc > 0)
+    g_string_append_printf (content, "%u DLC", n_dlc);
+  if (n_extras > 0)
+    g_string_append_printf (content, "%s%u %s", content->len ? " · " : "", n_extras,
+                            n_extras == 1 ? "extra" : "extras");
+  return g_string_free (content, FALSE);
+}
+
+static void
+set_icon (GtkPicture *picture, GogGame *game)
+{
+  gtk_picture_set_filename (picture, gog_game_get_icon_path (game));
+}
+
+static GtkWidget *
+small_icon (int size)
+{
+  GtkWidget *icon = gtk_picture_new ();
+  gtk_widget_set_size_request (icon, size, size);
+  gtk_picture_set_content_fit (GTK_PICTURE (icon), GTK_CONTENT_FIT_COVER);
+  gtk_widget_set_valign (icon, GTK_ALIGN_CENTER);
+  gtk_widget_add_css_class (icon, "gog-list-icon");
+  return icon;
+}
+
+static GtkWidget *
+row_label (gboolean dim, int width_chars)
+{
+  GtkWidget *label = gtk_label_new (NULL);
+  gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+  gtk_label_set_ellipsize (GTK_LABEL (label), PANGO_ELLIPSIZE_END);
+  if (width_chars > 0)
+    {
+      gtk_label_set_width_chars (GTK_LABEL (label), width_chars);
+      gtk_label_set_max_width_chars (GTK_LABEL (label), width_chars);
+    }
+  if (dim)
+    gtk_widget_add_css_class (label, "dim-label");
+  return label;
+}
+
+/* ---------------- simple list ---------------- */
+
+typedef struct
+{
+  GogMainWindow *window;
+  GtkPicture *icon;
+  GtkLabel *title;
+  GtkLabel *category;
+  GtkLabel *platforms;
+  GtkLabel *status;
+} RowWidgets;
+
+static void
+set_text (GtkLabel *label, gchar *text)
+{
+  gtk_label_set_label (label, text);
+  gtk_widget_set_tooltip_text (GTK_WIDGET (label), *text ? text : NULL);
+  g_free (text);
+}
+
+static void
+row_item_update (GtkListItem *item, GogGame *game)
+{
+  RowWidgets *rw = g_object_get_data (G_OBJECT (item), "rw");
+  set_icon (rw->icon, game);
+  gtk_label_set_label (rw->title, gog_game_get_title (game));
+  set_text (rw->category, text_main_category (rw->window, game));
+  set_text (rw->platforms, text_platforms (rw->window, game));
+  set_text (rw->status, text_status (rw->window, game));
+}
+
+static void
+on_row_setup (GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointer user_data)
+{
+  (void) factory;
+  GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
+  gtk_widget_set_margin_top (row, 4);
+  gtk_widget_set_margin_bottom (row, 4);
+  gtk_widget_set_margin_start (row, 8);
+  gtk_widget_set_margin_end (row, 8);
+  RowWidgets *rw = g_new0 (RowWidgets, 1);
+  rw->window = user_data;
+  rw->icon = GTK_PICTURE (small_icon (32));
+  rw->title = GTK_LABEL (row_label (FALSE, 0));
+  gtk_widget_set_hexpand (GTK_WIDGET (rw->title), TRUE);
+  /* The main category goes before the platforms. */
+  rw->category = GTK_LABEL (row_label (TRUE, 16));
+  rw->platforms = GTK_LABEL (row_label (TRUE, 20));
+  rw->status = GTK_LABEL (row_label (TRUE, 14));
+  gtk_box_append (GTK_BOX (row), GTK_WIDGET (rw->icon));
+  gtk_box_append (GTK_BOX (row), GTK_WIDGET (rw->title));
+  gtk_box_append (GTK_BOX (row), GTK_WIDGET (rw->category));
+  gtk_box_append (GTK_BOX (row), GTK_WIDGET (rw->platforms));
+  gtk_box_append (GTK_BOX (row), GTK_WIDGET (rw->status));
+  gtk_list_item_set_child (list_item, row);
+  g_object_set_data_full (G_OBJECT (list_item), "rw", rw, g_free);
+  g_object_set_data (G_OBJECT (list_item), "update", (gpointer) row_item_update);
+}
+
+/* ---------------- detailed list ---------------- */
+
+typedef gchar *(*CellTextFunc) (GogMainWindow *self, GogGame *game);
+
+typedef struct
+{
+  GogMainWindow *window;
+  CellTextFunc text;
+} ColumnDef;
+
+static void
+cell_item_update (GtkListItem *item, GogGame *game)
+{
+  ColumnDef *def = g_object_get_data (G_OBJECT (item), "def");
+  set_text (GTK_LABEL (gtk_list_item_get_child (item)), def->text (def->window, game));
+}
+
+static void
+on_cell_setup (GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointer user_data)
+{
+  (void) factory;
+  gtk_list_item_set_child (list_item, row_label (FALSE, 0));
+  g_object_set_data (G_OBJECT (list_item), "def", user_data);
+  g_object_set_data (G_OBJECT (list_item), "update", (gpointer) cell_item_update);
+}
+
+static void
+title_cell_update (GtkListItem *item, GogGame *game)
+{
+  GtkWidget *box = gtk_list_item_get_child (item);
+  set_icon (GTK_PICTURE (gtk_widget_get_first_child (box)), game);
+  gtk_label_set_label (GTK_LABEL (gtk_widget_get_last_child (box)), gog_game_get_title (game));
+}
+
+static void
+on_title_cell_setup (GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointer user_data)
+{
+  (void) factory;
+  (void) user_data;
+  GtkWidget *box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+  gtk_box_append (GTK_BOX (box), small_icon (24));
+  gtk_box_append (GTK_BOX (box), row_label (FALSE, 0));
+  gtk_list_item_set_child (list_item, box);
+  g_object_set_data (G_OBJECT (list_item), "update", (gpointer) title_cell_update);
+}
+
+static void
+add_text_column (GogMainWindow *self, GtkColumnView *view, const char *title, CellTextFunc text,
+                 int fixed_width)
+{
+  ColumnDef *def = g_new0 (ColumnDef, 1);
+  def->window = self;
+  def->text = text;
+  GtkListItemFactory *factory = item_factory (self, G_CALLBACK (on_cell_setup), def);
+  GtkColumnViewColumn *column = gtk_column_view_column_new (title, factory);
+  g_object_set_data_full (G_OBJECT (column), "def", def, g_free);
+  gtk_column_view_column_set_resizable (column, TRUE);
+  if (fixed_width > 0)
+    gtk_column_view_column_set_fixed_width (column, fixed_width);
+  gtk_column_view_append_column (view, column);
+  g_object_unref (column);
+}
+
+static GtkWidget *
+build_details_view (GogMainWindow *self)
+{
+  GtkColumnView *view = GTK_COLUMN_VIEW (gtk_column_view_new (NULL));
+  gtk_column_view_set_model (view, GTK_SELECTION_MODEL (self->selection));
+  gtk_column_view_set_single_click_activate (view, TRUE);
+  gtk_column_view_set_show_column_separators (view, TRUE);
+  gtk_widget_add_css_class (GTK_WIDGET (view), "data-table");
+  set_accessible_label (GTK_WIDGET (view), "Library");
+  g_signal_connect (view, "activate", G_CALLBACK (on_item_activate), self);
+
+  GtkColumnViewColumn *title =
+      gtk_column_view_column_new ("Title", item_factory (self, G_CALLBACK (on_title_cell_setup), NULL));
+  gtk_column_view_column_set_resizable (title, TRUE);
+  /* Room for the title first; the table scrolls sideways when the window
+   * is narrow. */
+  gtk_column_view_column_set_fixed_width (title, 300);
+  gtk_column_view_column_set_expand (title, TRUE);
+  gtk_column_view_append_column (view, title);
+  g_object_unref (title);
+
+  /* The categories, main one first, go before the platforms. */
+  add_text_column (self, view, "Categories", text_categories, 220);
+  add_text_column (self, view, "Platforms", text_platforms, 160);
+  add_text_column (self, view, "Status", text_status, 120);
+  add_text_column (self, view, "Size", text_size, 85);
+  add_text_column (self, view, "Released", text_released, 95);
+  add_text_column (self, view, "Languages", text_languages, 160);
+  add_text_column (self, view, "DLC & extras", text_content, 120);
+
+  GtkWidget *scroller = gtk_scrolled_window_new ();
+  gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scroller), GTK_WIDGET (view));
+  return scroller;
+}
+
+static GtkWidget *
+build_list_view (GogMainWindow *self)
+{
+  GtkListView *view = GTK_LIST_VIEW (gtk_list_view_new (
+      GTK_SELECTION_MODEL (g_object_ref (self->selection)),
+      item_factory (self, G_CALLBACK (on_row_setup), NULL)));
+  gtk_list_view_set_single_click_activate (view, TRUE);
+  gtk_list_view_set_show_separators (view, TRUE);
+  gtk_widget_add_css_class (GTK_WIDGET (view), "rich-list");
+  set_accessible_label (GTK_WIDGET (view), "Library");
+  g_signal_connect (view, "activate", G_CALLBACK (on_item_activate), self);
+  GtkWidget *scroller = gtk_scrolled_window_new ();
+  gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scroller), GTK_WIDGET (view));
+  return scroller;
+}
+
+/* ---------------- view switcher ---------------- */
+
+static const struct
+{
+  const char *name;
+  const char *icons[3];
+  const char *label;
+} views[] = {
+  { "grid", { "view-grid-symbolic", NULL }, "Show as Grid" },
+  { "list", { "view-list-symbolic", NULL }, "Show as List" },
+  /* Breeze has a details icon; the Adwaita bundled in the AppImage doesn't. */
+  { "details", { "view-list-details-symbolic", "view-list-bullet-symbolic", NULL },
+    "Show as Detailed List" },
+};
+
+static void
+on_view_toggled (GtkToggleButton *button, gpointer user_data)
+{
+  GogMainWindow *self = user_data;
+  if (!gtk_toggle_button_get_active (button))
+    return;
+  for (guint i = 0; i < G_N_ELEMENTS (views); i++)
+    if (self->view_buttons[i] == button)
+      {
+        gtk_stack_set_visible_child_name (self->view_stack, views[i].name);
+        if (g_strcmp0 (self->config->library_view, views[i].name) != 0)
+          {
+            g_free (self->config->library_view);
+            self->config->library_view = g_strdup (views[i].name);
+            GError *error = NULL;
+            if (!gog_config_save (self->config, &error))
+              {
+                g_warning ("Could not save the library view: %s", error->message);
+                g_clear_error (&error);
+              }
+          }
+      }
+}
+
+static GtkWidget *
+build_view_switcher (GogMainWindow *self)
+{
+  GtkWidget *box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_add_css_class (box, "linked");
+  for (guint i = 0; i < G_N_ELEMENTS (views); i++)
+    {
+      GtkWidget *button = gtk_toggle_button_new ();
+      GIcon *icon = g_themed_icon_new_from_names ((char **) views[i].icons, -1);
+      gtk_button_set_child (GTK_BUTTON (button), gtk_image_new_from_gicon (icon));
+      g_object_unref (icon);
+      gtk_widget_set_tooltip_text (button, views[i].label);
+      set_accessible_label (button, views[i].label);
+      if (i > 0)
+        gtk_toggle_button_set_group (GTK_TOGGLE_BUTTON (button), self->view_buttons[0]);
+      self->view_buttons[i] = GTK_TOGGLE_BUTTON (button);
+      gtk_box_append (GTK_BOX (box), button);
+    }
+  return box;
+}
+
+/* Shows the view saved in the config; the grid by default. Connected after
+ * the views exist, so the first toggle doesn't save anything. */
+static void
+apply_saved_view (GogMainWindow *self)
+{
+  guint chosen = 0;
+  for (guint i = 0; i < G_N_ELEMENTS (views); i++)
+    if (g_strcmp0 (self->config->library_view, views[i].name) == 0)
+      chosen = i;
+  gtk_toggle_button_set_active (self->view_buttons[chosen], TRUE);
+  gtk_stack_set_visible_child_name (self->view_stack, views[chosen].name);
+  for (guint i = 0; i < G_N_ELEMENTS (views); i++)
+    g_signal_connect (self->view_buttons[i], "toggled", G_CALLBACK (on_view_toggled), self);
 }
 
 /* ---------------- scan lifecycle ---------------- */
@@ -1383,6 +1788,7 @@ build_header_bar (GogMainWindow *self)
   set_accessible_label (sidebar_toggle, "Show or Hide Filters");
   g_signal_connect (sidebar_toggle, "clicked", G_CALLBACK (on_sidebar_toggle_clicked), self);
   adw_header_bar_pack_start (ADW_HEADER_BAR (header), sidebar_toggle);
+  adw_header_bar_pack_start (ADW_HEADER_BAR (header), build_view_switcher (self));
 
   self->search_entry = GTK_SEARCH_ENTRY (gtk_search_entry_new ());
   gtk_widget_set_size_request (GTK_WIDGET (self->search_entry), 260, -1);
@@ -1528,19 +1934,24 @@ gog_main_window_new (GtkApplication *app)
   gtk_single_selection_set_autoselect (self->selection, FALSE);
   gtk_single_selection_set_can_unselect (self->selection, TRUE);
 
-  GtkListItemFactory *factory = gtk_signal_list_item_factory_new ();
-  g_signal_connect (factory, "setup", G_CALLBACK (on_factory_setup), self);
-  g_signal_connect (factory, "bind", G_CALLBACK (on_factory_bind), self);
-  g_signal_connect (factory, "unbind", G_CALLBACK (on_factory_unbind), self);
+  GtkListItemFactory *factory = item_factory (self, G_CALLBACK (on_factory_setup), NULL);
 
   self->grid_view = GTK_GRID_VIEW (gtk_grid_view_new (GTK_SELECTION_MODEL (self->selection), factory));
   g_object_set (self->grid_view, "single-click-activate", TRUE, NULL);
-  g_signal_connect (self->grid_view, "activate", G_CALLBACK (on_grid_activate), self);
+  set_accessible_label (GTK_WIDGET (self->grid_view), "Library");
+  g_signal_connect (self->grid_view, "activate", G_CALLBACK (on_item_activate), self);
 
   GtkWidget *grid_scroller = gtk_scrolled_window_new ();
   gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (grid_scroller), GTK_WIDGET (self->grid_view));
 
-  AdwNavigationPage *library_page = adw_navigation_page_new_with_tag (grid_scroller, "Library", "library");
+  self->view_stack = GTK_STACK (gtk_stack_new ());
+  gtk_stack_add_named (self->view_stack, grid_scroller, "grid");
+  gtk_stack_add_named (self->view_stack, build_list_view (self), "list");
+  gtk_stack_add_named (self->view_stack, build_details_view (self), "details");
+  apply_saved_view (self);
+
+  AdwNavigationPage *library_page =
+      adw_navigation_page_new_with_tag (GTK_WIDGET (self->view_stack), "Library", "library");
   adw_navigation_view_add (self->nav_view, library_page);
 
   /* detail page */

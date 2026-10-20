@@ -348,6 +348,74 @@ test_proton_list_and_remove (void)
   g_free (tools_dir);
 }
 
+static gchar *
+fake_proton (const char *parent, const char *dir_name, const char *version)
+{
+  gchar *dir = g_build_filename (parent, dir_name, NULL);
+  g_assert_cmpint (g_mkdir_with_parents (dir, 0755), ==, 0);
+  gchar *bin = g_build_filename (dir, "proton", NULL);
+  g_assert_true (g_file_set_contents (bin, "#!/bin/sh\n", -1, NULL));
+  g_free (bin);
+  if (version)
+    {
+      gchar *file = g_build_filename (dir, "version", NULL);
+      g_assert_true (g_file_set_contents (file, version, -1, NULL));
+      g_free (file);
+    }
+  return dir;
+}
+
+static void
+test_newest_proton_goes_by_version_file (void)
+{
+  gchar *root = g_dir_make_tmp ("gog-newest-proton-XXXXXX", NULL);
+  /* Like Heroic's: "GE-Proton-latest" is really an older build. */
+  gchar *latest = fake_proton (root, "GE-Proton-latest", "1774238111 GE-Proton10-34\n");
+  gchar *heroic = fake_proton (root, "GE-Proton11-6", "1787951532 GE-Proton11-6\n");
+  gchar *own = fake_proton (root, "GE-Proton11-9-x86_64", "1791936695 GE-Proton11-9\n");
+  gchar *plain = fake_proton (root, "Proton-9.0", NULL);
+
+  GPtrArray *runners = g_ptr_array_new_with_free_func ((GDestroyNotify) gog_runner_info_free);
+  g_ptr_array_add (runners, gog_runner_info_new (GOG_RUNNER_WINE, "System Wine", "/usr/bin/wine"));
+  g_ptr_array_add (runners, gog_runner_info_new (GOG_RUNNER_PROTON, "GE-Proton-latest", latest));
+  g_ptr_array_add (runners, gog_runner_info_new (GOG_RUNNER_PROTON, "Proton-9.0", plain));
+  g_ptr_array_add (runners, gog_runner_info_new (GOG_RUNNER_PROTON, "GE-Proton11-9-x86_64", own));
+  g_ptr_array_add (runners, gog_runner_info_new (GOG_RUNNER_PROTON, "GE-Proton11-6", heroic));
+
+  GogRunnerInfo *newest = runner_find_newest_proton (runners);
+  g_assert_nonnull (newest);
+  g_assert_cmpstr (newest->bin_path, ==, own);
+
+  /* No default yet, or "Newest Proton": the newest. */
+  GogConfig config = { 0 };
+  g_assert_true (runner_pick_default (&config, runners) == newest);
+  config.default_runner_kind = GOG_RUNNER_PROTON;
+  config.default_runner_path = (gchar *) GOG_RUNNER_NEWEST_PROTON;
+  g_assert_true (runner_pick_default (&config, runners) == newest);
+
+  /* A runner chosen by path stays that runner. */
+  config.default_runner_kind = GOG_RUNNER_WINE;
+  config.default_runner_path = (gchar *) "/usr/bin/wine";
+  g_assert_cmpstr (runner_pick_default (&config, runners)->name, ==, "System Wine");
+  config.default_runner_path = (gchar *) "/gone/wine";
+  g_assert_null (runner_pick_default (&config, runners));
+
+  /* Without any Proton, Newest Proton falls back to the first runner. */
+  g_ptr_array_set_size (runners, 1);
+  g_assert_null (runner_find_newest_proton (runners));
+  config.default_runner_kind = GOG_RUNNER_NONE;
+  g_assert_cmpstr (runner_pick_default (&config, runners)->name, ==, "System Wine");
+
+  g_ptr_array_unref (runners);
+  gchar *argv[] = { (gchar *) "rm", (gchar *) "-rf", root, NULL };
+  g_spawn_sync (NULL, argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL, NULL, NULL);
+  g_free (latest);
+  g_free (heroic);
+  g_free (own);
+  g_free (plain);
+  g_free (root);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -365,5 +433,6 @@ main (int argc, char *argv[])
   g_test_add_func ("/runner/link_c_game", test_link_c_game_resolves_to_install_dir);
   g_test_add_func ("/proton/names_sort_newest_first", test_proton_names_sort_newest_first);
   g_test_add_func ("/proton/list_and_remove", test_proton_list_and_remove);
+  g_test_add_func ("/runner/newest_proton_by_version_file", test_newest_proton_goes_by_version_file);
   return g_test_run ();
 }

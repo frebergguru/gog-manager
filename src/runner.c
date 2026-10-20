@@ -125,6 +125,75 @@ runner_discover_all (GogConfig *config)
   return out;
 }
 
+/* "GE-Proton11-9" from a build's version file ("1791936695 GE-Proton11-9"),
+ * or its folder name. Transfer full. */
+static gchar *
+proton_version_name (GogRunnerInfo *runner)
+{
+  gchar *file = g_build_filename (runner->bin_path, "version", NULL);
+  gchar *contents = NULL;
+  gchar *name = NULL;
+  if (g_file_get_contents (file, &contents, NULL, NULL))
+    {
+      gchar **parts = g_strsplit_set (g_strstrip (contents), " \t\n", -1);
+      for (gchar **p = parts; *p && !name; p++)
+        if (g_str_has_prefix (*p, "GE-Proton") || g_str_has_prefix (*p, "Proton"))
+          name = g_strdup (*p);
+      g_strfreev (parts);
+    }
+  g_free (contents);
+  g_free (file);
+  return name ? name : g_path_get_basename (runner->bin_path);
+}
+
+GogRunnerInfo *
+runner_find_newest_proton (GPtrArray *runners)
+{
+  GogRunnerInfo *best = NULL;
+  gchar *best_name = NULL;
+  for (guint i = 0; runners && i < runners->len; i++)
+    {
+      GogRunnerInfo *r = g_ptr_array_index (runners, i);
+      if (r->kind != GOG_RUNNER_PROTON)
+        continue;
+      gchar *name = proton_version_name (r);
+      if (!best || proton_fetch_compare_newest_first (name, best_name) < 0)
+        {
+          best = r;
+          g_free (best_name);
+          best_name = name;
+        }
+      else
+        g_free (name);
+    }
+  g_free (best_name);
+  return best;
+}
+
+GogRunnerInfo *
+runner_pick_default (GogConfig *config, GPtrArray *runners)
+{
+  if (!runners || runners->len == 0)
+    return NULL;
+  gboolean newest = !config || config->default_runner_kind == GOG_RUNNER_NONE ||
+                    !config->default_runner_path ||
+                    (config->default_runner_kind == GOG_RUNNER_PROTON &&
+                     g_strcmp0 (config->default_runner_path, GOG_RUNNER_NEWEST_PROTON) == 0);
+  if (newest)
+    {
+      GogRunnerInfo *proton = runner_find_newest_proton (runners);
+      return proton ? proton : g_ptr_array_index (runners, 0);
+    }
+  for (guint i = 0; i < runners->len; i++)
+    {
+      GogRunnerInfo *r = g_ptr_array_index (runners, i);
+      if (r->kind == config->default_runner_kind &&
+          g_strcmp0 (r->bin_path, config->default_runner_path) == 0)
+        return r;
+    }
+  return NULL;
+}
+
 gchar *
 runner_prefix_dir_for_install (GogRunnerKind kind, const char *install_dir)
 {

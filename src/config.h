@@ -17,6 +17,7 @@ typedef struct
   GogRunnerKind default_runner_kind;
   gchar *default_runner_path; /* wine binary or a proton dir, matching the kind above */
   GStrv custom_runner_paths;  /* user-added wine binaries / proton dirs */
+  gchar *library_view;        /* "grid" (default), "list" or "details" */
 } GogConfig;
 
 /* Loads $XDG_CONFIG_HOME/gog-manager/config.json. Returns a zero-valued
