@@ -56,14 +56,14 @@ API ourselves: it holds the login and handles GOG's quirks.
       (the update check uses `--size-only` today).
 - [ ] **Your GOG tags**: `--list tags` and `--tag` as an extra filter in the
       sidebar.
-- [ ] **Hidden games**: `--include-hidden-products`, or hide them in our list
-      too.
+- [x] **Hidden games**: `--include-hidden-products` as a download setting
+      (off by default).
 - [ ] **Game details JSON**: `--save-game-details-json` (the
       `account/gameDetails/<id>.json` data: changelog, messages, CD keys).
 - [x] **Free space**: checked by GOG Manager itself before downloading
       (lgogdownloader's `--check-free-space` counts files already on disk
       too) and before installing.
-- [ ] **Download speed limit**: `--limit-rate`.
+- [x] **Download speed limit**: `--limit-rate` as a download setting.
 - [ ] **Patches and language packs**: offer them, instead of always
       excluding patches.
 - [ ] **Galaxy cloud saves**: `--galaxy-show-cloud-saves`,

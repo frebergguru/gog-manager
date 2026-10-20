@@ -60,7 +60,10 @@ struct _SyncCtx
   GtkProgressBar *progress_bar;
   GtkWidget *files_heading;
   SlotView slots[N_SLOTS];
+  AdwExpanderRow *settings_row; /* folds the three below; its subtitle sums them up */
   AdwSpinRow *threads_row;
+  AdwSpinRow *rate_row;
+  AdwSwitchRow *hidden_row;
   GtkWidget *log_scroll;
   GtkTextView *log_view;
   GtkButton *check_button;
@@ -175,7 +178,7 @@ set_busy (SyncCtx *ctx, gboolean busy)
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->select_all_button), !busy && ctx->items->len > 0);
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->download_button), !busy && any_checked (ctx));
   gtk_widget_set_sensitive (ctx->results_box, !busy);
-  gtk_widget_set_sensitive (GTK_WIDGET (ctx->threads_row), !busy);
+  gtk_widget_set_sensitive (GTK_WIDGET (ctx->settings_row), !busy);
   gtk_widget_set_visible (GTK_WIDGET (ctx->cancel_button), busy);
   /* Closing mid-run would orphan the job; use Cancel instead (see
    * on_close_request). */
@@ -1016,12 +1019,46 @@ on_select_all_clicked (GtkButton *button, gpointer user_data)
     gtk_check_button_set_active (((GameRow *) g_ptr_array_index (ctx->games, i))->check, TRUE);
 }
 
+/* "3 at a time · No speed limit · Hidden games too" */
+static void
+update_settings_summary (SyncCtx *ctx)
+{
+  guint threads = (guint) adw_spin_row_get_value (ctx->threads_row);
+  guint rate = (guint) adw_spin_row_get_value (ctx->rate_row);
+  GString *text = g_string_new (NULL);
+  g_string_append_printf (text, "%u at a time · ", threads);
+  if (rate > 0)
+    g_string_append_printf (text, "At most %u kB/s", rate);
+  else
+    g_string_append (text, "No speed limit");
+  if (adw_switch_row_get_active (ctx->hidden_row))
+    g_string_append (text, " · Hidden games too");
+  adw_expander_row_set_subtitle (ctx->settings_row, text->str);
+  g_string_free (text, TRUE);
+}
+
 static void
 on_threads_changed (AdwSpinRow *row, GParamSpec *pspec, gpointer user_data)
 {
   (void) pspec;
-  (void) user_data;
   gog_sync_set_threads ((guint) adw_spin_row_get_value (row));
+  update_settings_summary (user_data);
+}
+
+static void
+on_rate_changed (AdwSpinRow *row, GParamSpec *pspec, gpointer user_data)
+{
+  (void) pspec;
+  gog_sync_set_rate_limit ((guint) adw_spin_row_get_value (row));
+  update_settings_summary (user_data);
+}
+
+static void
+on_hidden_changed (AdwSwitchRow *row, GParamSpec *pspec, gpointer user_data)
+{
+  (void) pspec;
+  gog_sync_set_include_hidden (adw_switch_row_get_active (row));
+  update_settings_summary (user_data);
 }
 
 static void
@@ -1183,12 +1220,34 @@ show_dialog (GtkWindow *parent, const char *library_dir, GogLibrary *library,
   GtkWidget *settings_list = gtk_list_box_new ();
   gtk_list_box_set_selection_mode (GTK_LIST_BOX (settings_list), GTK_SELECTION_NONE);
   gtk_widget_add_css_class (settings_list, "boxed-list");
+  ctx->settings_row = ADW_EXPANDER_ROW (adw_expander_row_new ());
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (ctx->settings_row), "Download Settings");
   ctx->threads_row = ADW_SPIN_ROW (adw_spin_row_new_with_range (1, N_SLOTS, 1));
   adw_preferences_row_set_title (ADW_PREFERENCES_ROW (ctx->threads_row),
                                  "Downloads at the same time");
   adw_spin_row_set_value (ctx->threads_row, gog_sync_get_threads ());
+  adw_expander_row_add_row (ctx->settings_row, GTK_WIDGET (ctx->threads_row));
+
+  ctx->rate_row = ADW_SPIN_ROW (adw_spin_row_new_with_range (0, 1000000, 100));
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (ctx->rate_row), "Speed limit (kB/s)");
+  adw_action_row_set_subtitle (ADW_ACTION_ROW (ctx->rate_row),
+                               "For all downloads together; 0 for no limit");
+  adw_spin_row_set_value (ctx->rate_row, gog_sync_get_rate_limit ());
+  adw_expander_row_add_row (ctx->settings_row, GTK_WIDGET (ctx->rate_row));
+
+  ctx->hidden_row = ADW_SWITCH_ROW (adw_switch_row_new ());
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (ctx->hidden_row),
+                                 "Include games hidden on GOG");
+  adw_action_row_set_subtitle (ADW_ACTION_ROW (ctx->hidden_row),
+                               "The ones you hid on your GOG account page; from the next check");
+  adw_switch_row_set_active (ctx->hidden_row, gog_sync_get_include_hidden ());
+  adw_expander_row_add_row (ctx->settings_row, GTK_WIDGET (ctx->hidden_row));
+
+  update_settings_summary (ctx);
   g_signal_connect (ctx->threads_row, "notify::value", G_CALLBACK (on_threads_changed), ctx);
-  gtk_list_box_append (GTK_LIST_BOX (settings_list), GTK_WIDGET (ctx->threads_row));
+  g_signal_connect (ctx->rate_row, "notify::value", G_CALLBACK (on_rate_changed), ctx);
+  g_signal_connect (ctx->hidden_row, "notify::active", G_CALLBACK (on_hidden_changed), ctx);
+  gtk_list_box_append (GTK_LIST_BOX (settings_list), GTK_WIDGET (ctx->settings_row));
   gtk_box_append (GTK_BOX (outer), settings_list);
 
   GtkWidget *btn_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);

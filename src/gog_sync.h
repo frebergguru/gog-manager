@@ -95,6 +95,14 @@ gboolean gog_sync_item_has_wanted_files (GogSyncItem *item);
 #define GOG_SYNC_LANGUAGES_DEFAULT G_MAXUINT
 guint gog_sync_get_threads (void);
 void  gog_sync_set_threads (guint threads);
+/* lgogdownloader's --limit-rate for downloads, in kB/s; 0 = no limit (the
+ * default). */
+guint gog_sync_get_rate_limit (void);
+void  gog_sync_set_rate_limit (guint kilobytes_per_second);
+/* Whether checks and downloads also take the games hidden on the GOG
+ * account page (--include-hidden-products); off by default. */
+gboolean gog_sync_get_include_hidden (void);
+void     gog_sync_set_include_hidden (gboolean include);
 guint gog_sync_get_game_languages (const char *gamename);
 void  gog_sync_set_game_languages (const char *gamename, guint languages);
 

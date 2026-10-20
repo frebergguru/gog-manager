@@ -201,6 +201,46 @@ gog_sync_set_threads (guint threads)
   json_object_put (root);
 }
 
+/* Up to 1 GB/s; lgogdownloader takes any number. */
+#define MAX_RATE_LIMIT 1000000
+
+guint
+gog_sync_get_rate_limit (void)
+{
+  json_object *root = load_settings ();
+  gint64 rate = ju_get_int64 (root, "rate_limit", 0);
+  json_object_put (root);
+  return (guint) CLAMP (rate, 0, MAX_RATE_LIMIT);
+}
+
+void
+gog_sync_set_rate_limit (guint kilobytes_per_second)
+{
+  json_object *root = load_settings ();
+  json_object_object_add (root, "rate_limit",
+                          json_object_new_int64 (MIN (kilobytes_per_second, MAX_RATE_LIMIT)));
+  save_settings (root);
+  json_object_put (root);
+}
+
+gboolean
+gog_sync_get_include_hidden (void)
+{
+  json_object *root = load_settings ();
+  gboolean include = ju_get_bool (root, "include_hidden", FALSE);
+  json_object_put (root);
+  return include;
+}
+
+void
+gog_sync_set_include_hidden (gboolean include)
+{
+  json_object *root = load_settings ();
+  json_object_object_add (root, "include_hidden", json_object_new_boolean (include));
+  save_settings (root);
+  json_object_put (root);
+}
+
 guint
 gog_sync_get_game_languages (const char *gamename)
 {
@@ -824,6 +864,8 @@ struct _GogSyncJob
   GPtrArray *failures; /* GogSyncFailure*, after a download */
   GPtrArray *items;   /* check result */
   GStrv only_games;   /* check only these, NULL for all */
+  gboolean include_hidden; /* --include-hidden-products, as set when the job was made */
+  guint rate_limit;        /* --limit-rate for downloads, 0 for none */
 
   GThread *thread;
   GMutex proc_mutex;
@@ -902,6 +944,7 @@ gog_sync_job_new_check (const char *library_dir)
   GogSyncJob *self = g_object_new (GOG_TYPE_SYNC_JOB, NULL);
   self->kind = JOB_CHECK;
   self->library_dir = g_strdup (library_dir);
+  self->include_hidden = gog_sync_get_include_hidden ();
   return self;
 }
 
@@ -921,6 +964,8 @@ gog_sync_job_new_download (const char *library_dir, const GogSyncRequest *reques
   self->kind = JOB_DOWNLOAD;
   self->library_dir = g_strdup (library_dir);
   self->threads = CLAMP (threads, 1, 8);
+  self->include_hidden = gog_sync_get_include_hidden ();
+  self->rate_limit = gog_sync_get_rate_limit ();
   self->requests = g_array_new (FALSE, FALSE, sizeof (GogSyncRequest));
   for (guint i = 0; i < n_requests; i++)
     {
@@ -1089,14 +1134,44 @@ flush_line (GogSyncJob *job, GString *buf, gboolean by_cr, LineFunc on_line, gpo
   g_string_truncate (buf, 0);
 }
 
+/* argv with the job's own options: hidden games for every listing and
+ * download, the speed limit for downloads. Only when they are set, so the
+ * commands are otherwise exactly the usual ones. The strings are argv's
+ * (and static ones); free the array only. */
+static gchar **
+with_job_options (GogSyncJob *job, gchar **argv, gchar *rate)
+{
+  GPtrArray *full = g_ptr_array_new ();
+  gboolean download = FALSE;
+  for (gchar **a = argv; *a; a++)
+    {
+      g_ptr_array_add (full, *a);
+      download = download || g_str_equal (*a, "--download");
+    }
+  gboolean login = argv[1] && g_str_equal (argv[1], "--check-login-status");
+  if (job->include_hidden && !login)
+    g_ptr_array_add (full, (gpointer) "--include-hidden-products");
+  if (download && job->rate_limit > 0)
+    {
+      g_snprintf (rate, 16, "%u", job->rate_limit);
+      g_ptr_array_add (full, (gpointer) "--limit-rate");
+      g_ptr_array_add (full, rate);
+    }
+  g_ptr_array_add (full, NULL);
+  return (gchar **) g_ptr_array_free (full, FALSE);
+}
+
 static gboolean
-run_streaming (GogSyncJob *job, gchar **argv, LineFunc on_line, gpointer data, GError **error)
+run_streaming (GogSyncJob *job, gchar **plain_argv, LineFunc on_line, gpointer data,
+               GError **error)
 {
   if (job->cancelled)
     {
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_CANCELLED, "Cancelled");
       return FALSE;
     }
+  gchar rate[16];
+  g_autofree gchar **argv = with_job_options (job, plain_argv, rate);
 
   GSubprocessLauncher *launcher = g_subprocess_launcher_new (G_SUBPROCESS_FLAGS_STDOUT_PIPE |
                                                              G_SUBPROCESS_FLAGS_STDERR_MERGE);

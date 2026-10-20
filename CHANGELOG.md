@@ -50,6 +50,11 @@ All notable changes to GOG Manager are listed here. The format follows
 - The download window shows each game's changelog, folded away under the
   game: for a new version, what changed up to it. It comes with the check
   (lgogdownloader's `--list j` already has it), so it costs nothing extra.
+- Download settings, folded into one row of the download window: besides
+  the downloads at the same time, a speed limit (lgogdownloader's
+  `--limit-rate`, off by default) and "Include games hidden on GOG"
+  (`--include-hidden-products`, off by default). Off, the commands are
+  exactly as before.
 
 ### Changed
 - Details cached by 0.5.0 are fetched again once, to get the new fields.
