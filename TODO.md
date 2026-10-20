@@ -51,11 +51,13 @@ API ourselves: it holds the login and handles GOG's quirks.
       GOG).
 - [ ] **Updated / new flags**: `--updated` and `--new` to show which games
       changed before a full `--status`; `--clear-update-flags` afterwards.
-- [ ] **Notifications**: `--notifications`.
+- [x] **Notifications**: `--notifications` with a full check, shown in the
+      download window.
 - [ ] **Repair**: `--repair` to check downloaded files against GOG's hashes
       (the update check uses `--size-only` today).
 - [ ] **Your GOG tags**: `--list tags` and `--tag` as an extra filter in the
-      sidebar.
+      sidebar. Low priority: in one library only GOG's default tags exist
+      (Next to play, Completed, Favorite, Backlog), with no games in them.
 - [x] **Hidden games**: `--include-hidden-products` as a download setting
       (off by default).
 - [ ] **Game details JSON**: `--save-game-details-json` (the

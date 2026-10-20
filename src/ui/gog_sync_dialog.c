@@ -653,6 +653,16 @@ show_items (SyncCtx *ctx, GPtrArray *items, gint64 checked_unix)
                                "Choose what to download, and open a game to choose its "
                                "languages, DLC and extras. Old versions are deleted afterwards.",
                                when, n_new, n_update);
+  /* GOG's own news from that check, for the forum, chat and friends
+   * aren't anywhere else in the app. */
+  gchar *notes = when ? gog_sync_get_notifications () : NULL;
+  if (notes)
+    {
+      gchar *with = g_strdup_printf ("%s\nOn GOG: %s.", summary, notes);
+      g_free (summary);
+      summary = with;
+    }
+  g_free (notes);
   gtk_label_set_text (ctx->summary_label, summary);
   gtk_widget_set_visible (ctx->results_scroll, items->len > 0);
   g_free (summary);

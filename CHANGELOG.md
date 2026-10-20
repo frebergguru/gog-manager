@@ -55,6 +55,9 @@ All notable changes to GOG Manager are listed here. The format follows
   `--limit-rate`, off by default) and "Include games hidden on GOG"
   (`--include-hidden-products`, off by default). Off, the commands are
   exactly as before.
+- A full check also gets your GOG notifications (lgogdownloader's
+  `--notifications`), and the download window lists the ones that aren't
+  zero, e.g. "On GOG: 2 new forum replies · 1 unread chat message".
 
 ### Changed
 - Details cached by 0.5.0 are fetched again once, to get the new fields.

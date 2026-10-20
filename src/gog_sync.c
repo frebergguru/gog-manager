@@ -201,6 +201,71 @@ gog_sync_set_threads (guint threads)
   json_object_put (root);
 }
 
+gchar *
+gog_sync_get_notifications (void)
+{
+  json_object *root = load_settings ();
+  gchar *text = g_strdup (ju_get_string (root, "notifications", NULL));
+  json_object_put (root);
+  return text;
+}
+
+static void
+set_notifications (const char *text)
+{
+  json_object *root = load_settings ();
+  if (text)
+    json_object_object_add (root, "notifications", json_object_new_string (text));
+  else
+    json_object_object_del (root, "notifications");
+  save_settings (root);
+  json_object_put (root);
+}
+
+gchar *
+gog_sync_describe_notifications (const char *output)
+{
+  /* lgogdownloader's labels, and how to say one and several. */
+  static const struct
+  {
+    const char *label, *one, *several;
+  } kinds[] = {
+    { "New forum replies", "new forum reply", "new forum replies" },
+    { "Updated games", "updated game", "updated games" },
+    { "Unread chat messages", "unread chat message", "unread chat messages" },
+    { "Pending friend requests", "pending friend request", "pending friend requests" },
+  };
+  GPtrArray *parts = g_ptr_array_new_with_free_func (g_free);
+  gchar **lines = g_strsplit (output ? output : "", "\n", -1);
+  for (gchar **l = lines; *l; l++)
+    {
+      gchar *line = g_strstrip (*l);
+      const char *colon = strrchr (line, ':');
+      if (!colon)
+        continue;
+      gchar *end = NULL;
+      guint64 n = g_ascii_strtoull (colon + 1, &end, 10);
+      if (end == colon + 1 || *g_strstrip (end) || n == 0)
+        continue;
+      gchar *label = g_strndup (line, (gsize) (colon - line));
+      const char *one = label, *several = label;
+      for (guint k = 0; k < G_N_ELEMENTS (kinds); k++)
+        if (g_str_equal (label, kinds[k].label))
+          {
+            one = kinds[k].one;
+            several = kinds[k].several;
+          }
+      g_ptr_array_add (parts, g_strdup_printf ("%" G_GUINT64_FORMAT " %s", n,
+                                               n == 1 ? one : several));
+      g_free (label);
+    }
+  g_strfreev (lines);
+  g_ptr_array_add (parts, NULL);
+  gchar *text = parts->len > 1 ? g_strjoinv (" · ", (gchar **) parts->pdata) : NULL;
+  g_ptr_array_unref (parts);
+  return text;
+}
+
 /* Up to 1 GB/s; lgogdownloader takes any number. */
 #define MAX_RATE_LIMIT 1000000
 
@@ -1567,6 +1632,34 @@ check_sync (GogSyncJob *job, GError **error)
   job_progress (job, -1, "Checking the GOG login…");
   if (!check_login (job, error))
     return FALSE;
+
+  /* GOG's notifications, with a full check. Not getting them isn't worth
+   * failing the check over. */
+  if (!job->only_games)
+    {
+      job_progress (job, -1, "Checking your GOG notifications…");
+      gchar *notify_argv[] = { LGOG, "--notifications", NULL };
+      GString *notes = g_string_new (NULL);
+      GError *notes_error = NULL;
+      if (run_streaming (job, notify_argv, collect_line, notes, &notes_error))
+        {
+          gchar *text = gog_sync_describe_notifications (notes->str);
+          set_notifications (text);
+          g_free (text);
+        }
+      else if (job->cancelled)
+        {
+          g_propagate_error (error, notes_error);
+          g_string_free (notes, TRUE);
+          return FALSE;
+        }
+      else
+        {
+          job_log (job, notes_error->message);
+          g_clear_error (&notes_error);
+        }
+      g_string_free (notes, TRUE);
+    }
 
   gchar **base_names;
   gchar *only_regex = NULL;

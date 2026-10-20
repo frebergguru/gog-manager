@@ -361,6 +361,14 @@ test_gog_sync_parse_status (void)
   g_assert_cmpstr (langs, ==, "English, Norwegian");
   g_free (langs);
 
+  gchar *notes = gog_sync_describe_notifications ("New forum replies: 2\nUpdated games: 0\n"
+                                                  "Unread chat messages: 1\n"
+                                                  "Pending friend requests: 0\n");
+  g_assert_cmpstr (notes, ==, "2 new forum replies · 1 unread chat message");
+  g_free (notes);
+  g_assert_null (gog_sync_describe_notifications ("New forum replies: 0\nUpdated games: 0\n"));
+  g_assert_null (gog_sync_describe_notifications (NULL));
+
   gchar *pretty = gog_sync_pretty_name ("broken_sword_4");
   g_assert_cmpstr (pretty, ==, "Broken Sword 4");
   g_free (pretty);

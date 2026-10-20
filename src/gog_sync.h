@@ -118,6 +118,16 @@ void     gog_sync_set_default_languages (guint languages);
  * file from a new one ("setup_x_#_(#)-#bin"). Transfer full. */
 gchar *gog_sync_version_blind_name (const char *name);
 
+/* GOG's notifications at the last full check (lgogdownloader
+ * --notifications), the ones that aren't zero, e.g. "2 new forum replies
+ * · 1 unread chat message"; NULL when all were zero or never checked.
+ * Transfer full. */
+gchar *gog_sync_get_notifications (void);
+
+/* That text from --notifications output ("New forum replies: 2" lines);
+ * NULL when all are zero. Exposed for tests. Transfer full. */
+gchar *gog_sync_describe_notifications (const char *output);
+
 /* TRUE if lgogdownloader is on PATH. */
 gboolean gog_sync_is_available (void);
 
