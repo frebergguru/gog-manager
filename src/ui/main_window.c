@@ -54,7 +54,7 @@ struct _GogMainWindow
   GtkDropDown *language_dropdown;
   GStrv language_names;        /* GOG's names, for the dropdown's entries after "Any" */
   GtkDropDown *status_dropdown;
-  struct _Picker *pickers[7];   /* by PickerKind */
+  struct _Picker *pickers[9];   /* by PickerKind */
   GtkWidget *status_bar;       /* bottom bar: progress or failure of the GOG lookups */
   GtkLabel *category_status;
   GtkWidget *status_dismiss;   /* shown for a failure, not while fetching */
@@ -96,6 +96,8 @@ typedef GStrv (*PickerValuesFunc) (GogGame *game); /* transfer full; NULL for no
 typedef enum
 {
   PICKER_CATEGORY,
+  PICKER_FEATURE,
+  PICKER_TAG,
   PICKER_GENRE,
   PICKER_THEME,
   PICKER_MODE,
@@ -104,7 +106,7 @@ typedef enum
   PICKER_PUBLISHER,
   N_PICKERS
 } PickerKind;
-G_STATIC_ASSERT (N_PICKERS == 7); /* the size of GogMainWindow.pickers */
+G_STATIC_ASSERT (N_PICKERS == 9); /* the size of GogMainWindow.pickers */
 
 typedef struct _Picker
 {
@@ -718,9 +720,12 @@ on_item_bind (GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointe
                                          G_CALLBACK (on_item_game_notify), list_item);
   gulong gamesdb = g_signal_connect (game, "notify::gamesdb", G_CALLBACK (on_item_game_notify),
                                       list_item);
+  gulong store = g_signal_connect (game, "notify::store", G_CALLBACK (on_item_game_notify),
+                                    list_item);
   g_object_set_data (G_OBJECT (list_item), "notify-id", GSIZE_TO_POINTER (installed));
   g_object_set_data (G_OBJECT (list_item), "notify-categories-id", GSIZE_TO_POINTER (categories));
   g_object_set_data (G_OBJECT (list_item), "notify-gamesdb-id", GSIZE_TO_POINTER (gamesdb));
+  g_object_set_data (G_OBJECT (list_item), "notify-store-id", GSIZE_TO_POINTER (store));
 }
 
 static void
@@ -729,7 +734,8 @@ on_item_unbind (GtkSignalListItemFactory *factory, GtkListItem *list_item, gpoin
   (void) factory;
   (void) user_data;
   GogGame *game = gtk_list_item_get_item (list_item);
-  const char *keys[] = { "notify-id", "notify-categories-id", "notify-gamesdb-id" };
+  const char *keys[] = { "notify-id", "notify-categories-id", "notify-gamesdb-id",
+                         "notify-store-id" };
   for (guint i = 0; i < G_N_ELEMENTS (keys); i++)
     {
       gulong handler = (gulong) GPOINTER_TO_SIZE (g_object_get_data (G_OBJECT (list_item), keys[i]));
@@ -885,6 +891,14 @@ text_developers (GogMainWindow *self, GogGame *game)
 {
   (void) self;
   return text_gamesdb_list (game, G_STRUCT_OFFSET (GogGamesdbInfo, developers));
+}
+
+static gchar *
+text_features (GogMainWindow *self, GogGame *game)
+{
+  (void) self;
+  const GogStoreInfo *store = gog_game_get_store_info (game);
+  return store ? g_strjoinv (", ", store->features) : g_strdup ("");
 }
 
 static gchar *
@@ -1088,6 +1102,7 @@ build_details_view (GogMainWindow *self)
   add_text_column (self, view, "Languages", text_languages, 160);
   add_text_column (self, view, "DLC & extras", text_content, 120);
   add_text_column (self, view, "Genres", text_genres, 160);
+  add_text_column (self, view, "Features", text_features, 200);
   add_text_column (self, view, "Developer", text_developers, 160);
   add_text_column (self, view, "Series", text_series, 140);
   add_text_column (self, view, "Rating", text_rating, 70);
@@ -1243,6 +1258,16 @@ GAMESDB_VALUES (theme_values, themes)
 GAMESDB_VALUES (mode_values, game_modes)
 GAMESDB_VALUES (developer_values, developers)
 GAMESDB_VALUES (publisher_values, publishers)
+
+#define STORE_VALUES(name, field)                                                        \
+  static GStrv name (GogGame *game)                                                      \
+  {                                                                                      \
+    const GogStoreInfo *store = gog_game_get_store_info (game);                          \
+    return store ? values_or_null ((const char *const *) store->field) : NULL;           \
+  }
+
+STORE_VALUES (feature_values, features)
+STORE_VALUES (tag_values, tags)
 
 static GStrv
 series_values (GogGame *game)
@@ -1527,7 +1552,23 @@ apply_categories (GogMainWindow *self)
       g_object_unref (g);
     }
   g_hash_table_unref (cache);
-  populate_picker (self->pickers[PICKER_CATEGORY]);
+
+  GHashTable *store = gog_store_info_load ();
+  for (guint i = 0; i < n; i++)
+    {
+      GogGame *g = g_list_model_get_item (model, i);
+      gchar *key = g_strdup_printf ("%" G_GINT64_FORMAT, gog_game_get_id (g));
+      gpointer stolen_key = NULL;
+      gpointer info = NULL;
+      g_hash_table_steal_extended (store, key, &stolen_key, &info);
+      gog_game_set_store_info (g, info);
+      g_free (stolen_key);
+      g_free (key);
+      g_object_unref (g);
+    }
+  g_hash_table_unref (store);
+  for (guint k = PICKER_CATEGORY; k <= PICKER_TAG; k++)
+    populate_picker (self->pickers[k]);
 }
 
 /* Gives every game what GOG's games database says about it. */
@@ -1645,10 +1686,25 @@ on_gamesdb_progress (guint done, guint total, gboolean images, gpointer user_dat
                  images, done, total, user_data);
 }
 
+typedef struct
+{
+  GArray *ids;
+  GStrv keep; /* screenshots from the product json, which pruning must leave */
+} LookupData;
+
+static void
+lookup_data_free (LookupData *d)
+{
+  g_array_unref (d->ids);
+  g_strfreev (d->keep);
+  g_free (d);
+}
+
 static void
 category_lookup_thread (GTask *task, gpointer source, gpointer task_data, GCancellable *cancellable)
 {
-  GArray *ids = task_data;
+  LookupData *data = task_data;
+  GArray *ids = data->ids;
   GError *error = NULL;
   guint looked_up = 0;
   guint details = 0;
@@ -1658,7 +1714,8 @@ category_lookup_thread (GTask *task, gpointer source, gpointer task_data, GCance
                                        cancellable, on_category_progress, source, &looked_up,
                                        &error);
   if (!g_cancellable_is_cancelled (cancellable))
-    ok = gog_gamesdb_lookup ((const gint64 *) (gpointer) ids->data, ids->len, cancellable,
+    ok = gog_gamesdb_lookup ((const gint64 *) (gpointer) ids->data, ids->len,
+                             (const char *const *) data->keep, cancellable,
                              on_gamesdb_progress, source, &details, ok ? &error : NULL) && ok;
   if (ok)
     g_task_return_int (task, looked_up + details);
@@ -1740,6 +1797,7 @@ start_category_lookup (GogMainWindow *self)
       return;
     }
   GArray *ids = g_array_new (FALSE, FALSE, sizeof (gint64));
+  GStrvBuilder *keep = g_strv_builder_new ();
   GListModel *model = gog_library_get_model (self->library);
   guint n = g_list_model_get_n_items (model);
   for (guint i = 0; i < n; i++)
@@ -1748,19 +1806,26 @@ start_category_lookup (GogMainWindow *self)
       gint64 id = gog_game_get_id (g);
       /* Only games with a card: DLC isn't sorted or filtered. */
       if (!gog_game_get_base_game (g) && id > 0)
-        g_array_append_val (ids, id);
+        {
+          g_array_append_val (ids, id);
+          g_strv_builder_addv (keep, (const char **) gog_game_get_product_info (g)->screenshots);
+        }
       g_object_unref (g);
     }
+  LookupData *data = g_new0 (LookupData, 1);
+  data->ids = ids;
+  data->keep = g_strv_builder_end (keep);
+  g_strv_builder_unref (keep);
   if (ids->len == 0)
     {
-      g_array_unref (ids);
+      lookup_data_free (data);
       return;
     }
 
   self->categories_running = TRUE;
   self->categories_cancellable = g_cancellable_new ();
   GTask *task = g_task_new (self, self->categories_cancellable, on_category_lookup_done, NULL);
-  g_task_set_task_data (task, ids, (GDestroyNotify) g_array_unref);
+  g_task_set_task_data (task, data, (GDestroyNotify) lookup_data_free);
   g_task_run_in_thread (task, category_lookup_thread);
   g_object_unref (task);
 }
@@ -2125,6 +2190,10 @@ build_sidebar (GogMainWindow *self)
   const char *later = "None yet. They are fetched from GOG after a scan.";
   self->pickers[PICKER_CATEGORY] = add_picker (self, GTK_BOX (box), "Category", "Any category",
                                                later, category_values, TRUE);
+  self->pickers[PICKER_FEATURE] = add_picker (self, GTK_BOX (box), "Feature", "Any feature",
+                                              later, feature_values, TRUE);
+  self->pickers[PICKER_TAG] =
+      add_picker (self, GTK_BOX (box), "Tag", "Any tag", later, tag_values, TRUE);
   self->pickers[PICKER_GENRE] =
       add_picker (self, GTK_BOX (box), "Genre", "Any genre", later, genre_values, TRUE);
   self->pickers[PICKER_THEME] =

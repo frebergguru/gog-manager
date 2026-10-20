@@ -24,9 +24,28 @@ All notable changes to GOG Manager are listed here. The format follows
   columns. The search box also finds games by series, developer and
   publisher.
 - The game page updates when GOG's details arrive while it is open.
+- The rest of GOG's store API (api.gog.com/v2/games, already asked for the
+  categories): the game page lists features (cloud saves, controller
+  support, achievements...), GOG's tags, the languages with audio and with
+  text, the age ratings (ESRB, PEGI, USK, GOG, with their reasons), what it
+  runs in (DOSBox, ScummVM) and the editions on sale, shows "In
+  development" for early access games and the copyright line under the
+  description, and has a **Requirements** tab with the minimum and
+  recommended system requirements per system. Feature and Tag filters, and
+  a Features column in the detailed table. Details cached by 0.5.0 are
+  fetched again once.
+- The rest of the product json lgogdownloader saves: a **Changelog** tab
+  (183 of 395 games in one library have one), Store Page, Support and
+  Forum buttons that open the game's pages on gog.com, the short
+  description when the full one is empty, and its screenshots and videos
+  for games the games database has none for.
 
 ### Changed
 - Details cached by 0.5.0 are fetched again once, to get the new fields.
+- The game page's tabs show their icon above the name, so up to seven fit
+  without cutting their names short.
+- Headings and rules in GOG's text (as in changelogs) start a new
+  paragraph.
 
 ### Fixed
 - An extra or DLC whose name has "&" in it (such as "guides & reference")

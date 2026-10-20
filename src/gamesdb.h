@@ -60,7 +60,10 @@ typedef void (*GogGamesdbProgress) (guint done, guint total, gboolean images, gp
  * runs on that thread too. It stops between batches once cancellable is
  * cancelled. A failed lookup is reported in error; what was found is
  * kept. *looked_up (may be NULL) gets how many games were asked for. */
-gboolean gog_gamesdb_lookup (const gint64 *ids, guint n_ids, GCancellable *cancellable,
+/* keep (may be NULL): more screenshot url_formats whose files must stay,
+ * e.g. those from the product json, which also live in gamesdb-images/. */
+gboolean gog_gamesdb_lookup (const gint64 *ids, guint n_ids, const char *const *keep,
+                             GCancellable *cancellable,
                              GogGamesdbProgress progress, gpointer user_data, guint *looked_up,
                              GError **error);
 

@@ -33,6 +33,13 @@ struct _GogGameDetail
   GPtrArray *runner_choices; /* GogRunnerInfo*, parallel to runner_row's model */
   gulong runner_handler;
   GtkLabel *description_label;
+  GtkLabel *copyright_label;
+  GtkBox *links_box;        /* Store Page, Support, Forum */
+  GtkBox *requirements_box; /* a group per system and level */
+  AdwViewStackPage *requirements_page;
+  GtkLabel *changelog_label;
+  AdwViewStackPage *changelog_page;
+  gulong store_handler;     /* notify::store on game */
   GtkWidget *serials_group;
   GtkLabel *serials_label;
   GtkBox *extras_box;
@@ -72,7 +79,10 @@ gog_game_detail_dispose (GObject *object)
   g_clear_object (&self->shots_cancellable);
   g_clear_pointer (&self->shots, g_strfreev);
   if (self->game)
-    g_clear_signal_handler (&self->gamesdb_handler, self->game);
+    {
+      g_clear_signal_handler (&self->gamesdb_handler, self->game);
+      g_clear_signal_handler (&self->store_handler, self->game);
+    }
   g_clear_object (&self->game);
   g_clear_pointer (&self->runner_choices, g_ptr_array_unref);
   G_OBJECT_CLASS (gog_game_detail_parent_class)->dispose (object);
@@ -1014,7 +1024,11 @@ on_shot_activated (GtkFlowBox *box, GtkFlowBoxChild *child, gpointer user_data)
 static void
 build_screenshots (GogGameDetail *self, const GogGamesdbInfo *db)
 {
+  /* The games database's, else the product json's. */
   GStrv shots = db && db->screenshots && db->screenshots[0] ? db->screenshots : NULL;
+  GStrv product = gog_game_get_product_info (self->game)->screenshots;
+  if (!shots && product[0])
+    shots = product;
   gboolean same = (!shots && !self->shots) ||
                   (shots && self->shots &&
                    g_strv_equal ((const char *const *) shots, (const char *const *) self->shots));
@@ -1059,19 +1073,31 @@ build_screenshots (GogGameDetail *self, const GogGamesdbInfo *db)
 /* ---------------- videos ---------------- */
 
 static void
-on_video_launched (GObject *source, GAsyncResult *res, gpointer user_data)
+on_uri_launched (GObject *source, GAsyncResult *res, gpointer user_data)
 {
   GogGameDetail *self = user_data;
   GError *error = NULL;
   if (!gtk_uri_launcher_launch_finish (GTK_URI_LAUNCHER (source), res, &error) &&
       !self->disposed && !g_error_matches (error, GTK_DIALOG_ERROR, GTK_DIALOG_ERROR_DISMISSED))
     {
-      gchar *msg = g_strdup_printf ("Could not open the video: %s", error->message);
+      gchar *msg = g_strdup_printf ("Could not open %s: %s",
+                                    gtk_uri_launcher_get_uri (GTK_URI_LAUNCHER (source)),
+                                    error->message);
       toast (self, msg);
       g_free (msg);
     }
   g_clear_error (&error);
   g_object_unref (self);
+}
+
+/* Opens a web page in the browser. */
+static void
+open_uri (GogGameDetail *self, const char *uri)
+{
+  GtkUriLauncher *launcher = gtk_uri_launcher_new (uri);
+  gtk_uri_launcher_launch (launcher, self->parent_window, NULL, on_uri_launched,
+                           g_object_ref (self));
+  g_object_unref (launcher);
 }
 
 static void
@@ -1083,10 +1109,7 @@ on_video_activated (GtkListBox *list, GtkListBoxRow *row, gpointer user_data)
   if (!id)
     return;
   gchar *uri = g_strdup_printf ("https://www.youtube.com/watch?v=%s", id);
-  GtkUriLauncher *launcher = gtk_uri_launcher_new (uri);
-  gtk_uri_launcher_launch (launcher, self->parent_window, NULL, on_video_launched,
-                           g_object_ref (self));
-  g_object_unref (launcher);
+  open_uri (self, uri);
   g_free (uri);
 }
 
@@ -1097,17 +1120,22 @@ build_videos (GogGameDetail *self, const GogGamesdbInfo *db)
   GtkWidget *old;
   while ((old = gtk_widget_get_first_child (GTK_WIDGET (self->videos_list))))
     gtk_list_box_remove (self->videos_list, old);
-  guint n = db && db->video_ids ? g_strv_length (db->video_ids) : 0;
+  /* The games database's (which has names), else the product json's. */
+  GStrv ids = db && db->video_ids && db->video_ids[0] ? db->video_ids : NULL;
+  GStrv names = ids ? db->video_names : NULL;
+  if (!ids)
+    ids = gog_game_get_product_info (self->game)->video_ids;
+  guint n = g_strv_length (ids);
   for (guint i = 0; i < n; i++)
     {
       GtkWidget *row = adw_action_row_new ();
       /* GOG calls most of them "Trailer": the ones that share a name are
        * numbered, so they can be told apart also by ear. */
-      const char *name = *db->video_names[i] ? db->video_names[i] : "Video";
+      const char *name = names && *names[i] ? names[i] : "Video";
       guint same = 0, before = 0;
       for (guint j = 0; j < n; j++)
         {
-          const char *other = *db->video_names[j] ? db->video_names[j] : "Video";
+          const char *other = names && *names[j] ? names[j] : "Video";
           if (g_strcmp0 (other, name) == 0)
             {
               same++;
@@ -1123,11 +1151,89 @@ build_videos (GogGameDetail *self, const GogGamesdbInfo *db)
       adw_action_row_add_suffix (ADW_ACTION_ROW (row),
                                  gtk_image_new_from_icon_name ("go-next-symbolic"));
       gtk_list_box_row_set_activatable (GTK_LIST_BOX_ROW (row), TRUE);
-      g_object_set_data_full (G_OBJECT (row), "video-id", g_strdup (db->video_ids[i]), g_free);
+      g_object_set_data_full (G_OBJECT (row), "video-id", g_strdup (ids[i]), g_free);
       gtk_list_box_append (self->videos_list, row);
       g_free (title);
     }
   adw_view_stack_page_set_visible (self->videos_page, n > 0);
+}
+
+/* ---------------- requirements, changelog, links ---------------- */
+
+/* A group per system and level ("Windows: Minimum"), a row per part. */
+static void
+build_requirements (GogGameDetail *self, const GogStoreInfo *store)
+{
+  GtkWidget *old;
+  while ((old = gtk_widget_get_first_child (GTK_WIDGET (self->requirements_box))))
+    gtk_box_remove (self->requirements_box, old);
+  guint n = store ? store->requirements->len : 0;
+  for (guint i = 0; i < n; i++)
+    {
+      GogRequirements *r = g_ptr_array_index (store->requirements, i);
+      GtkWidget *group = adw_preferences_group_new ();
+      gchar *title = g_strdup_printf ("%s: %s", r->os, r->level);
+      adw_preferences_group_set_title (ADW_PREFERENCES_GROUP (group), title);
+      g_free (title);
+      for (guint k = 0; r->names[k]; k++)
+        {
+          GtkWidget *row = adw_action_row_new ();
+          adw_preferences_row_set_use_markup (ADW_PREFERENCES_ROW (row), FALSE);
+          adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row), r->names[k]);
+          adw_action_row_set_subtitle (ADW_ACTION_ROW (row), r->values[k]);
+          /* The values are what matters here; they may be long. */
+          adw_action_row_set_subtitle_lines (ADW_ACTION_ROW (row), 0);
+          adw_action_row_set_subtitle_selectable (ADW_ACTION_ROW (row), TRUE);
+          gtk_widget_add_css_class (row, "property");
+          adw_preferences_group_add (ADW_PREFERENCES_GROUP (group), row);
+        }
+      gtk_box_append (self->requirements_box, group);
+    }
+  adw_view_stack_page_set_visible (self->requirements_page, n > 0);
+}
+
+static void
+on_link_clicked (GtkButton *button, gpointer user_data)
+{
+  const char *uri = g_object_get_data (G_OBJECT (button), "uri");
+  if (uri)
+    open_uri (user_data, uri);
+}
+
+static void
+add_link (GogGameDetail *self, const char *label, const char *what, const char *uri)
+{
+  if (!uri)
+    return;
+  GtkWidget *button = gtk_button_new_with_label (label);
+  gchar *tip = g_strdup_printf ("Open the game's %s on gog.com in your web browser", what);
+  gtk_widget_set_tooltip_text (button, tip);
+  g_free (tip);
+  g_object_set_data_full (G_OBJECT (button), "uri", g_strdup (uri), g_free);
+  g_signal_connect (button, "clicked", G_CALLBACK (on_link_clicked), self);
+  gtk_box_append (self->links_box, button);
+}
+
+/* The links, the changelog and the copyright line. */
+static void
+build_about_extras (GogGameDetail *self, const GogStoreInfo *store)
+{
+  const GogProductInfo *product = gog_game_get_product_info (self->game);
+  GtkWidget *old;
+  while ((old = gtk_widget_get_first_child (GTK_WIDGET (self->links_box))))
+    gtk_box_remove (self->links_box, old);
+  add_link (self, "Store Page", "store page", product->store_url);
+  add_link (self, "Support", "support page", product->support_url);
+  add_link (self, "Forum", "forum", product->forum_url);
+  gtk_widget_set_visible (GTK_WIDGET (self->links_box),
+                          gtk_widget_get_first_child (GTK_WIDGET (self->links_box)) != NULL);
+
+  const char *copyright = store ? store->copyright : NULL;
+  gtk_label_set_label (self->copyright_label, copyright ? copyright : "");
+  gtk_widget_set_visible (GTK_WIDGET (self->copyright_label), copyright != NULL);
+
+  gtk_label_set_label (self->changelog_label, product->changelog ? product->changelog : "");
+  adw_view_stack_page_set_visible (self->changelog_page, product->changelog != NULL);
 }
 
 /* What refresh() shows that GOG's details can change: refreshed alone when
@@ -1147,6 +1253,11 @@ refresh_details (GogGameDetail *self)
   g_ptr_array_add (badges, text_format_size (gog_game_get_total_size (self->game)));
   if (gog_game_get_installed (self->game))
     g_ptr_array_add (badges, g_strdup ("Installed"));
+  /* Early access: GOG still works on it. */
+  const GogStoreInfo *dev_store = gog_game_get_store_info (self->game);
+  if (gog_game_get_product_info (self->game)->in_development ||
+      (dev_store && dev_store->in_development))
+    g_ptr_array_add (badges, g_strdup ("In development"));
   g_ptr_array_add (badges, NULL);
   gchar *badge_text = g_strjoinv (" · ", (gchar **) badges->pdata);
   gtk_label_set_label (self->badges_label, badge_text);
@@ -1195,6 +1306,22 @@ refresh_details (GogGameDetail *self)
           g_free (rating);
         }
     }
+  const GogStoreInfo *store = gog_game_get_store_info (self->game);
+  if (store)
+    {
+      add_info_list (self->info_grid, &row, "Features", store->features);
+      add_info_list (self->info_grid, &row, "Tags", store->tags);
+      add_info_list (self->info_grid, &row, "Audio in", store->audio_languages);
+      add_info_list (self->info_grid, &row, "Text in", store->text_languages);
+      if (store->age_ratings[0])
+        {
+          gchar *ratings = g_strjoinv ("\n", store->age_ratings);
+          add_info (self->info_grid, &row, "Age ratings", ratings);
+          g_free (ratings);
+        }
+      add_info_list (self->info_grid, &row, "Runs in", store->technologies);
+      add_info_list (self->info_grid, &row, "Editions", store->editions);
+    }
   gtk_widget_set_visible (GTK_WIDGET (self->info_grid), row > 0);
 
   /* GOG's background art when it's there, else lgogdownloader's logo. */
@@ -1214,7 +1341,11 @@ refresh_details (GogGameDetail *self)
   gtk_label_set_label (self->serials_label, serials ? serials : "");
   gtk_widget_set_visible (self->serials_group, serials != NULL);
 
+  /* GOG's full description, else its short one, else the games
+   * database's summary. */
   const char *description = gog_game_get_description (self->game);
+  if (!description || !*description)
+    description = gog_game_get_product_info (self->game)->lead;
   if ((!description || !*description) && db)
     description = db->summary;
   /* GOG's text for some is only placeholders (DOOM I Enhanced), and
@@ -1229,6 +1360,8 @@ refresh_details (GogGameDetail *self)
 
   build_screenshots (self, db);
   build_videos (self, db);
+  build_requirements (self, store);
+  build_about_extras (self, store);
 }
 
 static void
@@ -1344,7 +1477,9 @@ gog_game_detail_new (GtkWindow *parent_window, GogLibrary *library, GogConfig *c
   adw_view_stack_set_vhomogeneous (stack, FALSE);
   GtkWidget *switcher = adw_view_switcher_new ();
   adw_view_switcher_set_stack (ADW_VIEW_SWITCHER (switcher), stack);
-  adw_view_switcher_set_policy (ADW_VIEW_SWITCHER (switcher), ADW_VIEW_SWITCHER_POLICY_WIDE);
+  /* Icons above the labels: up to seven tabs must fit the page's width
+   * without cutting their names short. */
+  adw_view_switcher_set_policy (ADW_VIEW_SWITCHER (switcher), ADW_VIEW_SWITCHER_POLICY_NARROW);
   gtk_box_append (GTK_BOX (content), switcher);
 
   self->description_label = GTK_LABEL (gtk_label_new (NULL));
@@ -1355,8 +1490,18 @@ gog_game_detail_new (GtkWindow *parent_window, GogLibrary *library, GogConfig *c
    * narrowest width that fit the tallest tab's height, a thin column under
    * a gap. */
   gtk_widget_set_valign (GTK_WIDGET (self->description_label), GTK_ALIGN_START);
-  adw_view_stack_add_titled_with_icon (stack, GTK_WIDGET (self->description_label),
-                                       "about", "About", "help-about-symbolic");
+  GtkWidget *about = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
+  gtk_widget_set_valign (about, GTK_ALIGN_START);
+  gtk_box_append (GTK_BOX (about), GTK_WIDGET (self->description_label));
+  self->links_box = GTK_BOX (gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8));
+  gtk_box_append (GTK_BOX (about), GTK_WIDGET (self->links_box));
+  self->copyright_label = GTK_LABEL (gtk_label_new (NULL));
+  gtk_label_set_wrap (self->copyright_label, TRUE);
+  gtk_label_set_xalign (self->copyright_label, 0.0);
+  gtk_widget_add_css_class (GTK_WIDGET (self->copyright_label), "dim-label");
+  gtk_widget_add_css_class (GTK_WIDGET (self->copyright_label), "caption");
+  gtk_box_append (GTK_BOX (about), GTK_WIDGET (self->copyright_label));
+  adw_view_stack_add_titled_with_icon (stack, about, "about", "About", "help-about-symbolic");
 
   self->extras_box = GTK_BOX (gtk_box_new (GTK_ORIENTATION_VERTICAL, 4));
   adw_view_stack_add_titled_with_icon (stack, GTK_WIDGET (self->extras_box),
@@ -1396,6 +1541,24 @@ gog_game_detail_new (GtkWindow *parent_window, GogLibrary *library, GogConfig *c
       stack, GTK_WIDGET (self->videos_list), "videos", "Videos", "video-x-generic-symbolic");
   adw_view_stack_page_set_visible (self->videos_page, FALSE);
 
+  self->requirements_box = GTK_BOX (gtk_box_new (GTK_ORIENTATION_VERTICAL, 18));
+  gtk_widget_set_valign (GTK_WIDGET (self->requirements_box), GTK_ALIGN_START);
+  self->requirements_page = adw_view_stack_add_titled_with_icon (
+      stack, GTK_WIDGET (self->requirements_box), "requirements", "Requirements",
+      "computer-symbolic");
+  adw_view_stack_page_set_visible (self->requirements_page, FALSE);
+
+  self->changelog_label = GTK_LABEL (gtk_label_new (NULL));
+  gtk_label_set_wrap (self->changelog_label, TRUE);
+  gtk_label_set_xalign (self->changelog_label, 0.0);
+  gtk_label_set_yalign (self->changelog_label, 0.0);
+  gtk_label_set_selectable (self->changelog_label, TRUE);
+  gtk_widget_set_valign (GTK_WIDGET (self->changelog_label), GTK_ALIGN_START);
+  self->changelog_page = adw_view_stack_add_titled_with_icon (
+      stack, GTK_WIDGET (self->changelog_label), "changelog", "Changelog",
+      "document-edit-symbolic");
+  adw_view_stack_page_set_visible (self->changelog_page, FALSE);
+
   g_signal_connect (stack, "notify::visible-child", G_CALLBACK (on_stack_child_changed), self);
 
   gtk_box_append (GTK_BOX (content), GTK_WIDGET (stack));
@@ -1415,10 +1578,17 @@ void
 gog_game_detail_set_game (GogGameDetail *self, GogGame *game)
 {
   if (self->game)
-    g_clear_signal_handler (&self->gamesdb_handler, self->game);
+    {
+      g_clear_signal_handler (&self->gamesdb_handler, self->game);
+      g_clear_signal_handler (&self->store_handler, self->game);
+    }
   g_set_object (&self->game, game);
   if (game)
-    self->gamesdb_handler = g_signal_connect (game, "notify::gamesdb",
+    {
+      self->gamesdb_handler = g_signal_connect (game, "notify::gamesdb",
+                                                G_CALLBACK (on_game_gamesdb_changed), self);
+      self->store_handler = g_signal_connect (game, "notify::store",
                                               G_CALLBACK (on_game_gamesdb_changed), self);
+    }
   refresh (self);
 }

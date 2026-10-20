@@ -72,6 +72,11 @@ your GOG login.
   config folder like the categories; screenshots are fetched the first time
   a game's Screenshots tab is opened. The page updates when the details
   arrive while it is open.
+- **Store details** — from GOG's store API and the product JSON: features
+  (cloud saves, controller support...), GOG's tags, audio and text
+  languages, age ratings, editions, DOSBox, a **Requirements** tab, a
+  **Changelog** tab, and buttons for the game's store page, support page and
+  forum. Filter by feature or tag.
 - **Views** — show the library as a grid of covers, a simple list or a
   detailed table (categories, platforms, status, size, release date,
   languages, DLC and extras, genres, developer, series, rating); the choice

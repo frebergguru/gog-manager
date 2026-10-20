@@ -8,6 +8,7 @@
 #include <glib-object.h>
 #include <gio/gio.h>
 #include "gamesdb.h"
+#include "categories.h"
 
 G_BEGIN_DECLS
 
@@ -62,6 +63,25 @@ typedef struct
 GogExtraInfo *gog_extra_info_new (void);
 void          gog_extra_info_free (GogExtraInfo *info);
 
+/* The rest of what the product json lgogdownloader saves says about a
+ * game. Left out: the images (lgogdownloader saves the icon and logo), the
+ * patches (not downloaded), and the DLC lists (related_products links
+ * them). */
+typedef struct
+{
+  gchar *lead;        /* the short description, plain text; NULL if none */
+  gchar *changelog;   /* plain text; NULL if none */
+  gchar *store_url;   /* https://www.gog.com/... pages; NULL if none */
+  gchar *support_url;
+  gchar *forum_url;
+  gboolean in_development;
+  GStrv screenshots;  /* url_formats as GogGamesdbInfo has them; never NULL */
+  GStrv video_ids;    /* YouTube video ids; never NULL */
+} GogProductInfo;
+
+GogProductInfo *gog_product_info_new (void);
+void            gog_product_info_free (GogProductInfo *info);
+
 GogGame *gog_game_new (void);
 
 /* Static metadata, set once during scan. */
@@ -102,6 +122,17 @@ void                gog_game_set_categories (GogGame *self, GStrv categories);
  * Owned by self; set takes ownership and emits notify::gamesdb. */
 const GogGamesdbInfo *gog_game_get_gamesdb (GogGame *self);
 void                  gog_game_set_gamesdb (GogGame *self, GogGamesdbInfo *info);
+
+/* The product json's other details; never NULL. Owned by self; set takes
+ * ownership. Set once during the scan. */
+const GogProductInfo *gog_game_get_product_info (GogGame *self);
+void                  gog_game_set_product_info (GogGame *self, GogProductInfo *info);
+
+/* The rest of GOG's store page (features, age ratings, requirements...),
+ * from the categories cache; NULL if not known. Owned by self; set takes
+ * ownership and emits notify::store. */
+const GogStoreInfo *gog_game_get_store_info (GogGame *self);
+void                gog_game_set_store_info (GogGame *self, GogStoreInfo *info);
 
 /* When GOG first released the game (the product json's release_date), as
  * Unix time; 0 if not known. */

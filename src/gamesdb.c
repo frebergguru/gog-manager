@@ -660,7 +660,18 @@ keep (GHashTable *used, const char *dir, const char *url)
 /* Removes images no game in the cache uses any more (old art, or the
  * cache was emptied and the game is gone). */
 static void
-prune_images (void)
+keep_screenshot (GHashTable *used, const char *dir, const char *url_format)
+{
+  for (int full = 0; full < 2; full++)
+    {
+      gchar *url = gog_gamesdb_screenshot_url (url_format, full);
+      keep (used, dir, url);
+      g_free (url);
+    }
+}
+
+static void
+prune_images (const char *const *extra)
 {
   gchar *dir = images_dir ();
   G_LOCK (cache);
@@ -674,14 +685,10 @@ prune_images (void)
       keep (used, dir, ju_get_string (entry, "background_url", NULL));
       json_object *shots = ju_get_array (entry, "screenshots");
       for (size_t i = 0; shots && i < json_object_array_length (shots); i++)
-        for (int full = 0; full < 2; full++)
-          {
-            gchar *url = gog_gamesdb_screenshot_url (
-                json_object_get_string (json_object_array_get_idx (shots, i)), full);
-            keep (used, dir, url);
-            g_free (url);
-          }
+        keep_screenshot (used, dir, json_object_get_string (json_object_array_get_idx (shots, i)));
     }
+  for (const char *const *f = extra; f && *f; f++)
+    keep_screenshot (used, dir, *f);
   json_object_put (cache);
 
   GDir *d = g_dir_open (dir, 0, NULL);
@@ -705,7 +712,8 @@ prune_images (void)
 }
 
 gboolean
-gog_gamesdb_lookup (const gint64 *ids, guint n_ids, GCancellable *cancellable,
+gog_gamesdb_lookup (const gint64 *ids, guint n_ids, const char *const *keep,
+                    GCancellable *cancellable,
                     GogGamesdbProgress progress, gpointer user_data, guint *looked_up,
                     GError **error)
 {
@@ -763,6 +771,6 @@ gog_gamesdb_lookup (const gint64 *ids, guint n_ids, GCancellable *cancellable,
   if (ok && !g_cancellable_is_cancelled (cancellable))
     ok = fetch_images (ids, n_ids, cancellable, progress, user_data, error);
   if (ok && !g_cancellable_is_cancelled (cancellable))
-    prune_images ();
+    prune_images (keep);
   return ok;
 }

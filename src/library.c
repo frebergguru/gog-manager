@@ -474,6 +474,80 @@ scan_extras (GogGame *game, const char *dir, json_object *root)
   g_free (extras_dir);
 }
 
+
+/* A page on GOG's own site; NULL for anything else. */
+static gchar *
+gog_page (json_object *links, const char *key)
+{
+  const char *url = ju_get_string (links, key, NULL);
+  return url && g_str_has_prefix (url, "https://www.gog.com/") ? g_strdup (url) : NULL;
+}
+
+static gboolean
+plain_id (const char *id, gboolean hex_only)
+{
+  if (!id || !*id)
+    return FALSE;
+  for (const char *c = id; *c; c++)
+    if (hex_only ? !g_ascii_isxdigit (*c) : !(g_ascii_isalnum (*c) || *c == '-' || *c == '_'))
+      return FALSE;
+  return TRUE;
+}
+
+/* The product json's details beyond what the scan uses itself. */
+static GogProductInfo *
+product_info (json_object *root)
+{
+  GogProductInfo *info = gog_product_info_new ();
+  gchar *lead = text_strip_html (ju_get_string (ju_get_obj (root, "description"), "lead", ""));
+  info->lead = *lead ? lead : (g_free (lead), NULL);
+  gchar *changelog = text_strip_html (ju_get_string (root, "changelog", ""));
+  info->changelog = *changelog ? changelog : (g_free (changelog), NULL);
+
+  json_object *links = ju_get_obj (root, "links");
+  info->store_url = gog_page (links, "product_card");
+  info->support_url = gog_page (links, "support");
+  info->forum_url = gog_page (links, "forum");
+  info->in_development = ju_get_bool (ju_get_obj (root, "in_development"), "active", FALSE);
+
+  /* {"image_id": "<hash>", ...}: GOG's image server makes any size of it,
+   * as for the games database's. */
+  GStrvBuilder *b = g_strv_builder_new ();
+  json_object *shots = ju_get_array (root, "screenshots");
+  for (size_t i = 0; shots && i < json_object_array_length (shots); i++)
+    {
+      const char *id = ju_get_string (json_object_array_get_idx (shots, i), "image_id", NULL);
+      if (plain_id (id, TRUE))
+        g_strv_builder_take (b, g_strdup_printf ("https://images.gog-statics.com/%s{formatter}.{ext}",
+                                                 id));
+    }
+  g_strfreev (info->screenshots);
+  info->screenshots = g_strv_builder_end (b);
+  g_strv_builder_unref (b);
+
+  /* "https://www.youtube.com/embed/<id>?wmode=opaque&rel=0" */
+  b = g_strv_builder_new ();
+  json_object *videos = ju_get_array (root, "videos");
+  for (size_t i = 0; videos && i < json_object_array_length (videos); i++)
+    {
+      json_object *video = json_object_array_get_idx (videos, i);
+      const char *url = ju_get_string (video, "video_url", NULL);
+      const char *embed = url ? strstr (url, "youtube.com/embed/") : NULL;
+      if (g_strcmp0 (ju_get_string (video, "provider", NULL), "youtube") != 0 || !embed)
+        continue;
+      embed += strlen ("youtube.com/embed/");
+      gchar *id = g_strndup (embed, strcspn (embed, "?&#/"));
+      if (plain_id (id, FALSE))
+        g_strv_builder_take (b, id);
+      else
+        g_free (id);
+    }
+  g_strfreev (info->video_ids);
+  info->video_ids = g_strv_builder_end (b);
+  g_strv_builder_unref (b);
+  return info;
+}
+
 static GogGame *
 parse_game_dir (const char *dir_path)
 {
@@ -528,6 +602,7 @@ parse_game_dir (const char *dir_path)
   gog_game_set_supports_os (game, GOG_OS_MAC, ju_get_bool (compat, "osx", FALSE));
 
   gog_game_set_languages (game, ju_get_languages (root));
+  gog_game_set_product_info (game, product_info (root));
 
   json_object *related = ju_get_array (root, "related_products");
   if (related)

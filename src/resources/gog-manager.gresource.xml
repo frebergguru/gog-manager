@@ -3,6 +3,8 @@
   <gresource prefix="/org/gogmanager/app">
     <file>style.css</file>
     <file>icons/scalable/actions/applications-games-symbolic.svg</file>
+    <file>icons/scalable/actions/computer-symbolic.svg</file>
+    <file>icons/scalable/actions/document-edit-symbolic.svg</file>
     <file>icons/scalable/actions/document-open-symbolic.svg</file>
     <file>icons/scalable/actions/edit-copy-symbolic.svg</file>
     <file>icons/scalable/actions/folder-download-symbolic.svg</file>

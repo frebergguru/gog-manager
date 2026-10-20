@@ -22,6 +22,8 @@ struct _GogGame
   GStrv languages;
   GStrv categories;
   GogGamesdbInfo *gamesdb;
+  GogStoreInfo *store;
+  GogProductInfo *product;
   gint64 release_date;
 
   GogProductType product_type;
@@ -45,6 +47,7 @@ enum
   PROP_INSTALLED,
   PROP_CATEGORIES,
   PROP_GAMESDB,
+  PROP_STORE,
   N_PROPS,
 };
 
@@ -103,6 +106,8 @@ gog_game_finalize (GObject *object)
   g_strfreev (self->languages);
   g_strfreev (self->categories);
   gog_gamesdb_info_free (self->gamesdb);
+  gog_store_info_free (self->store);
+  gog_product_info_free (self->product);
   if (self->related_ids)
     g_array_unref (self->related_ids);
   if (self->installers)
@@ -131,6 +136,9 @@ gog_game_get_property (GObject *object, guint prop_id, GValue *value, GParamSpec
     case PROP_GAMESDB:
       g_value_set_boolean (value, self->gamesdb != NULL);
       break;
+    case PROP_STORE:
+      g_value_set_boolean (value, self->store != NULL);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
     }
@@ -153,6 +161,10 @@ gog_game_class_init (GogGameClass *klass)
   properties[PROP_GAMESDB] =
       g_param_spec_boolean ("gamesdb", "Games database", "Whether GOG's games database knows the game",
                             FALSE, G_PARAM_READABLE);
+  /* Likewise, with gog_game_get_store_info(). */
+  properties[PROP_STORE] =
+      g_param_spec_boolean ("store", "Store details", "Whether GOG's store API knows the game",
+                            FALSE, G_PARAM_READABLE);
   g_object_class_install_properties (object_class, N_PROPS, properties);
 }
 
@@ -164,6 +176,7 @@ gog_game_init (GogGame *self)
   self->related_ids = g_array_new (FALSE, FALSE, sizeof (gint64));
   self->product_type = GOG_PRODUCT_GAME;
   self->runner_kind = GOG_RUNNER_NONE;
+  self->product = gog_product_info_new ();
 }
 
 GogGame *
@@ -317,6 +330,61 @@ gog_game_set_categories (GogGame *self, GStrv categories)
   self->categories = categories;
   if (!same)
     g_object_notify_by_pspec (G_OBJECT (self), properties[PROP_CATEGORIES]);
+}
+
+GogProductInfo *
+gog_product_info_new (void)
+{
+  GogProductInfo *info = g_new0 (GogProductInfo, 1);
+  info->screenshots = g_new0 (gchar *, 1);
+  info->video_ids = g_new0 (gchar *, 1);
+  return info;
+}
+
+void
+gog_product_info_free (GogProductInfo *info)
+{
+  if (!info)
+    return;
+  g_free (info->lead);
+  g_free (info->changelog);
+  g_free (info->store_url);
+  g_free (info->support_url);
+  g_free (info->forum_url);
+  g_strfreev (info->screenshots);
+  g_strfreev (info->video_ids);
+  g_free (info);
+}
+
+const GogProductInfo *
+gog_game_get_product_info (GogGame *self)
+{
+  return self->product;
+}
+
+void
+gog_game_set_product_info (GogGame *self, GogProductInfo *info)
+{
+  g_return_if_fail (info != NULL);
+  gog_product_info_free (self->product);
+  self->product = info;
+}
+
+const GogStoreInfo *
+gog_game_get_store_info (GogGame *self)
+{
+  return self->store;
+}
+
+void
+gog_game_set_store_info (GogGame *self, GogStoreInfo *info)
+{
+  GogStoreInfo *old = self->store;
+  gboolean same = gog_store_info_equal (old, info);
+  self->store = info;
+  gog_store_info_free (old);
+  if (!same)
+    g_object_notify_by_pspec (G_OBJECT (self), properties[PROP_STORE]);
 }
 
 const GogGamesdbInfo *

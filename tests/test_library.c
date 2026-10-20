@@ -82,6 +82,55 @@ test_scan_reads_serials (void)
   g_free (root);
 }
 
+/* The rest of the product json: changelog, links, screenshots, videos. */
+static void
+test_scan_reads_product_info (void)
+{
+  gchar *root = g_dir_make_tmp ("gog-library-test-XXXXXX", NULL);
+  gchar *dir = g_build_filename (root, "info", NULL);
+  g_assert_cmpint (g_mkdir (dir, 0755), ==, 0);
+  write_file (dir, "product_info.json",
+              "{\"id\": 5, \"title\": \"Info\","
+              " \"description\": {\"lead\": \"<p>Short.</p>\"},"
+              " \"changelog\": \"<h4>1.1</h4><ul><li>Fix</li></ul>\","
+              " \"in_development\": {\"active\": true, \"until\": null},"
+              " \"links\": {\"product_card\": \"https://www.gog.com/game/info\","
+              "             \"forum\": \"http://example.com/forum\"},"
+              " \"screenshots\": [{\"image_id\": \"eb3e88\"}, {\"image_id\": \"../x\"}],"
+              " \"videos\": [{\"provider\": \"youtube\","
+              "               \"video_url\": \"https://www.youtube.com/embed/B4J3TdI55MA?wmode=opaque\"},"
+              "              {\"provider\": \"vimeo\", \"video_url\": \"https://vimeo.com/1\"}]}");
+  GogLibrary *library = gog_library_new ();
+  gboolean done = FALSE;
+  gog_library_scan_async (library, root, NULL, on_scan_done, &done);
+  while (!done)
+    g_main_context_iteration (NULL, TRUE);
+
+  GogGame *g = gog_library_find_by_id (library, 5);
+  g_assert_nonnull (g);
+  const GogProductInfo *info = gog_game_get_product_info (g);
+  g_assert_cmpstr (info->lead, ==, "Short.");
+  g_assert_cmpstr (info->changelog, ==, "1.1\n\xE2\x80\xA2 Fix");
+  g_assert_true (info->in_development);
+  g_assert_cmpstr (info->store_url, ==, "https://www.gog.com/game/info");
+  /* Only GOG's own pages. */
+  g_assert_null (info->forum_url);
+  g_assert_null (info->support_url);
+  g_assert_cmpuint (g_strv_length (info->screenshots), ==, 1);
+  g_assert_cmpstr (info->screenshots[0], ==, "https://images.gog-statics.com/eb3e88{formatter}.{ext}");
+  g_assert_cmpuint (g_strv_length (info->video_ids), ==, 1);
+  g_assert_cmpstr (info->video_ids[0], ==, "B4J3TdI55MA");
+
+  while (g_main_context_iteration (NULL, FALSE))
+    ;
+  g_object_unref (library);
+  remove_file (dir, "product_info.json");
+  g_rmdir (dir);
+  g_rmdir (root);
+  g_free (dir);
+  g_free (root);
+}
+
 static void
 test_language_from_installer_name (void)
 {
@@ -561,6 +610,7 @@ main (int argc, char *argv[])
 {
   g_test_init (&argc, &argv, NULL);
   g_test_add_func ("/library/scan_reads_serials", test_scan_reads_serials);
+  g_test_add_func ("/library/scan_reads_product_info", test_scan_reads_product_info);
   g_test_add_func ("/library/language_from_installer_name", test_language_from_installer_name);
   g_test_add_func ("/library/scan_detects_installer_languages", test_scan_detects_installer_languages);
   g_test_add_func ("/library/all_languages_listed_once", test_all_languages_listed_once);

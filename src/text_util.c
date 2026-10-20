@@ -100,7 +100,21 @@ text_strip_html (const char *html)
               if (g_ascii_strncasecmp (p, "<li", 3) == 0)
                 g_string_append (out, BULLET);
             }
+          else if ((g_ascii_strncasecmp (p, "<h", 2) == 0 && g_ascii_isdigit (p[2])) ||
+                   g_ascii_strncasecmp (p, "<hr", 3) == 0)
+            {
+              /* A heading or a rule starts a section: an empty line
+               * before it (changelogs: "<h4>1.2 (2025-05-12)</h4>"). */
+              while (out->len > 0 && out->str[out->len - 1] == '\n')
+                g_string_truncate (out, out->len - 1);
+              if (out->len > 0)
+                g_string_append (out, "\n\n");
+            }
           else if (g_ascii_strncasecmp (p, "<p", 2) == 0 ||
+                   (g_ascii_strncasecmp (p, "</h", 3) == 0 && g_ascii_isdigit (p[3])) ||
+                   g_ascii_strncasecmp (p, "</ol", 4) == 0 ||
+                   g_ascii_strncasecmp (p, "<div", 4) == 0 ||
+                   g_ascii_strncasecmp (p, "</div", 5) == 0 ||
                    g_ascii_strncasecmp (p, "</p", 3) == 0 ||
                    g_ascii_strncasecmp (p, "</ul", 4) == 0 ||
                    g_ascii_strncasecmp (p, "</li", 4) == 0)

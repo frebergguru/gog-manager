@@ -83,14 +83,16 @@ API ourselves: it holds the login and handles GOG's quirks.
 
 ### api.gog.com (no login needed)
 
-- [ ] **More of `v2/games/<id>`**, which we already fetch for categories:
-      developers and publisher; features (single player, co-op, controller
-      support, cloud saves, achievements); which languages have audio, text
-      or subtitles; system requirements per OS; age ratings (PEGI, ESRB, USK);
-      series and editions; screenshots and videos. Cache them with the
-      categories and add filters (for example by feature or language).
-- [ ] **`products/<id>?expand=screenshots,videos,changelog`** if the
-      product JSON lgogdownloader saves does not include them.
+- [x] **More of `v2/games/<id>`**, which we already fetch for categories:
+      features, tags, audio and text languages, system requirements per OS,
+      age ratings, editions, technologies (DOSBox), copyright and "in
+      development"; cached with the categories, with Feature and Tag
+      filters. Not used: developers, publisher, series, screenshots and
+      videos (the games database has them), and prices (games are owned).
+  - [ ] A filter by audio or text language.
+- [x] **`products/<id>?expand=screenshots,videos,changelog`**: not needed,
+      the product JSON lgogdownloader saves has them (changelog,
+      screenshots, videos, links), and the game page now uses them.
 
 ### Other GOG services
 

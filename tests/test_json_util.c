@@ -72,6 +72,16 @@ test_strip_html_list (void)
   g_free (out);
 }
 
+/* Changelogs: each version under its heading, an empty line between. */
+static void
+test_strip_html_changelog (void)
+{
+  gchar *out = text_strip_html ("<h4>1.1 (2025-05-12)</h4><p>Fixes</p>\n<ol>\n<li>One</li>\n</ol>"
+                                "<hr><h4>1.0</h4><ul><li>First</li></ul>");
+  g_assert_cmpstr (out, ==, "1.1 (2025-05-12)\nFixes\n\n\xE2\x80\xA2 One\n\n1.0\n\xE2\x80\xA2 First");
+  g_free (out);
+}
+
 /* GOG's placeholders for feature images aren't text. */
 static void
 test_strip_html_feature_placeholder (void)
@@ -187,6 +197,7 @@ main (int argc, char *argv[])
   g_test_add_func ("/text_util/strip_html_repeated_list", test_strip_html_repeated_list);
   g_test_add_func ("/text_util/strip_html_numeric_entities", test_strip_html_numeric_entities);
   g_test_add_func ("/text_util/strip_html_invalid_utf8", test_strip_html_invalid_utf8);
+  g_test_add_func ("/text_util/strip_html_changelog", test_strip_html_changelog);
   g_test_add_func ("/text_util/strip_html_feature_placeholder",
                    test_strip_html_feature_placeholder);
   g_test_add_func ("/text_util/language_label", test_language_label);
