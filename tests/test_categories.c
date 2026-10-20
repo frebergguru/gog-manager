@@ -55,7 +55,7 @@ test_store_info_parse (void)
       "      { \"_embedded\": { \"language\": { \"name\": \"English\" },"
       "                         \"localizationScope\": { \"type\": \"text\" } } } ],"
       "    \"esrbRating\": { \"category\": { \"name\": \"Mature 17+\" }, \"ageRating\": 17 },"
-      "    \"pegiRating\": { \"ageRating\": 18, \"contentDescriptors\": [ { \"descriptor\": \"Violence\" } ] },"
+      "    \"pegiRating\": { \"ageRating\": 18, \"contentDescriptors\": [ { \"descriptor\": \"Violence\\n\" } ] },"
       "    \"editions\": [ { \"name\": \"Standard\" } ],"
       "    \"supportedOperatingSystems\": [ { \"operatingSystem\": { \"name\": \"osx\" },"
       "      \"systemRequirements\": ["

@@ -52,10 +52,15 @@ All notable changes to GOG Manager are listed here. The format follows
 - Details cached by 0.5.0 are fetched again once, to get the new fields.
 - The game page's tabs show their icon above the name, so up to seven fit
   without cutting their names short.
-- Headings and rules in GOG's text (as in changelogs) start a new
-  paragraph.
+- Headings and rules in GOG's text start a new paragraph.
+- Changelogs are easier to read: version headings large and bold,
+  section headings ("[Balance changes]") bold, one bullet per line instead
+  of an empty line between each, nested items indented, and no empty
+  bullets. Line breaks in GOG's HTML source no longer show as empty lines.
 
 ### Fixed
+- An age rating's reasons could end in a stray line break from GOG
+  ("BR 10 (Violência" with ")" on the next line).
 - An extra or DLC whose name has "&" in it (such as "guides & reference")
   showed an empty row.
 - A game's About text took a thin column under a screen of empty space

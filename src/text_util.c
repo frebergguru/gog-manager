@@ -74,6 +74,297 @@ append_unescaped_entity (GString *out, const char *entity, gsize len)
     g_string_append_len (out, entity, len);
 }
 
+/* ---- changelogs ---- */
+
+typedef enum
+{
+  BLOCK_VERSION, /* <h1>-<h4> */
+  BLOCK_SECTION, /* <h5>, <h6> */
+  BLOCK_BULLET,
+  BLOCK_PARAGRAPH,
+  BLOCK_RULE,    /* <hr>: only spacing */
+} BlockKind;
+
+typedef struct
+{
+  BlockKind kind;
+  int depth;          /* list nesting, for bullets */
+  GString *markup;
+  gboolean has_text;
+  gboolean last_space;
+  char open[8];       /* inline tags open in it: 'b', 'i', 't' */
+  guint n_open;
+} Block;
+
+typedef struct
+{
+  GPtrArray *blocks; /* Block*, the finished ones with text */
+  Block *cur;
+  int depth;
+} Changelog;
+
+static void
+block_free (Block *b)
+{
+  g_string_free (b->markup, TRUE);
+  g_free (b);
+}
+
+static void
+end_block (Changelog *c)
+{
+  Block *b = c->cur;
+  if (!b)
+    return;
+  c->cur = NULL;
+  if (!b->has_text && b->kind != BLOCK_RULE)
+    {
+      block_free (b);
+      return;
+    }
+  if (b->last_space)
+    g_string_truncate (b->markup, b->markup->len - 1);
+  while (b->n_open > 0)
+    {
+      char t = b->open[--b->n_open];
+      g_string_append (b->markup, t == 'b' ? "</b>" : t == 'i' ? "</i>" : "</tt>");
+    }
+  g_ptr_array_add (c->blocks, b);
+}
+
+static Block *
+start_block (Changelog *c, BlockKind kind)
+{
+  end_block (c);
+  Block *b = g_new0 (Block, 1);
+  b->kind = kind;
+  b->depth = MAX (c->depth, 1);
+  b->markup = g_string_new (NULL);
+  c->cur = b;
+  return b;
+}
+
+static void
+add_text (Changelog *c, const char *text, gsize len)
+{
+  Block *b = c->cur ? c->cur : start_block (c, BLOCK_PARAGRAPH);
+  for (gsize i = 0; i < len; i++)
+    {
+      char ch = text[i];
+      if (g_ascii_isspace (ch))
+        {
+          if (b->has_text && !b->last_space)
+            {
+              g_string_append_c (b->markup, ' ');
+              b->last_space = TRUE;
+            }
+          continue;
+        }
+      switch (ch)
+        {
+        case '&': g_string_append (b->markup, "&amp;"); break;
+        case '<': g_string_append (b->markup, "&lt;"); break;
+        case '>': g_string_append (b->markup, "&gt;"); break;
+        case '"': g_string_append (b->markup, "&quot;"); break;
+        case '\'': g_string_append (b->markup, "&#39;"); break;
+        default: g_string_append_c (b->markup, ch);
+        }
+      b->has_text = TRUE;
+      b->last_space = FALSE;
+    }
+}
+
+static void
+open_inline (Changelog *c, char tag)
+{
+  Block *b = c->cur ? c->cur : start_block (c, BLOCK_PARAGRAPH);
+  if (b->n_open >= G_N_ELEMENTS (b->open))
+    return;
+  b->open[b->n_open++] = tag;
+  g_string_append (b->markup, tag == 'b' ? "<b>" : tag == 'i' ? "<i>" : "<tt>");
+}
+
+static void
+close_inline (Changelog *c, char tag)
+{
+  Block *b = c->cur;
+  /* Only the innermost: Pango wants them nested. */
+  if (!b || b->n_open == 0 || b->open[b->n_open - 1] != tag)
+    return;
+  b->n_open--;
+  if (b->last_space)
+    {
+      g_string_truncate (b->markup, b->markup->len - 1);
+      b->last_space = FALSE;
+      g_string_append (b->markup, tag == 'b' ? "</b> " : tag == 'i' ? "</i> " : "</tt> ");
+      b->last_space = TRUE;
+    }
+  else
+    g_string_append (b->markup, tag == 'b' ? "</b>" : tag == 'i' ? "</i>" : "</tt>");
+}
+
+static gboolean
+tag_is (const char *name, gsize len, const char *want)
+{
+  return len == strlen (want) && g_ascii_strncasecmp (name, want, len) == 0;
+}
+
+static void
+handle_tag (Changelog *c, const char *name, gsize len, gboolean closing)
+{
+  if (len == 2 && (name[0] == 'h' || name[0] == 'H') && name[1] >= '1' && name[1] <= '6')
+    {
+      if (closing)
+        end_block (c);
+      else
+        start_block (c, name[1] <= '4' ? BLOCK_VERSION : BLOCK_SECTION);
+    }
+  else if (tag_is (name, len, "ul") || tag_is (name, len, "ol"))
+    {
+      end_block (c);
+      c->depth = MAX (c->depth + (closing ? -1 : 1), 0);
+    }
+  else if (tag_is (name, len, "li"))
+    {
+      if (closing)
+        end_block (c);
+      else
+        start_block (c, BLOCK_BULLET);
+    }
+  else if (tag_is (name, len, "p") || tag_is (name, len, "div") || tag_is (name, len, "pre"))
+    {
+      /* "<li><p>Text</p></li>" stays a bullet. */
+      gboolean in_bullet = c->cur && c->cur->kind == BLOCK_BULLET;
+      if (!closing && !(in_bullet && !c->cur->has_text))
+        start_block (c, BLOCK_PARAGRAPH);
+      else if (closing && !in_bullet)
+        end_block (c);
+    }
+  else if (tag_is (name, len, "br"))
+    {
+      if (c->cur && c->cur->has_text)
+        {
+          if (c->cur->last_space)
+            g_string_truncate (c->cur->markup, c->cur->markup->len - 1);
+          g_string_append_c (c->cur->markup, '\n');
+          /* What follows starts the line, like after a block's start. */
+          c->cur->last_space = TRUE;
+        }
+    }
+  else if (tag_is (name, len, "hr"))
+    {
+      start_block (c, BLOCK_RULE);
+      end_block (c);
+    }
+  else if (tag_is (name, len, "strong") || tag_is (name, len, "b"))
+    closing ? close_inline (c, 'b') : open_inline (c, 'b');
+  else if (tag_is (name, len, "em") || tag_is (name, len, "i"))
+    closing ? close_inline (c, 'i') : open_inline (c, 'i');
+  else if (tag_is (name, len, "code"))
+    closing ? close_inline (c, 't') : open_inline (c, 't');
+}
+
+gchar *
+text_changelog_markup (const char *html)
+{
+  if (!html || !*html)
+    return g_strdup ("");
+  gchar *valid = g_utf8_make_valid (html, -1);
+  Changelog c = { g_ptr_array_new_with_free_func ((GDestroyNotify) block_free), NULL, 0 };
+  for (const char *p = valid; *p;)
+    {
+      if (*p == '<')
+        {
+          const char *end = strchr (p, '>');
+          if (!end)
+            break;
+          const char *name = p + 1;
+          gboolean closing = *name == '/';
+          if (closing)
+            name++;
+          gsize len = 0;
+          while (g_ascii_isalnum (name[len]))
+            len++;
+          handle_tag (&c, name, len, closing);
+          p = end + 1;
+        }
+      else if (*p == '&')
+        {
+          const char *end = strchr (p, ';');
+          GString *plain = g_string_new (NULL);
+          if (end && (gsize) (end - p) < 10)
+            {
+              append_unescaped_entity (plain, p, (gsize) (end - p + 1));
+              p = end + 1;
+            }
+          else
+            {
+              g_string_append_c (plain, '&');
+              p++;
+            }
+          /* A no-break space is still a space between words. */
+          if (g_str_equal (plain->str, "\xC2\xA0"))
+            add_text (&c, " ", 1);
+          else
+            add_text (&c, plain->str, plain->len);
+          g_string_free (plain, TRUE);
+        }
+      else
+        {
+          const char *next = p;
+          while (*next && *next != '<' && *next != '&')
+            next++;
+          add_text (&c, p, (gsize) (next - p));
+          p = next;
+        }
+    }
+  end_block (&c);
+  g_free (valid);
+
+  GString *out = g_string_new (NULL);
+  BlockKind prev = BLOCK_RULE;
+  gboolean first = TRUE;
+  for (guint i = 0; i < c.blocks->len; i++)
+    {
+      Block *b = g_ptr_array_index (c.blocks, i);
+      if (b->kind == BLOCK_RULE)
+        {
+          prev = BLOCK_RULE;
+          continue;
+        }
+      if (!first)
+        {
+          /* Bullets one per line, and a heading right above what it heads;
+           * an empty line everywhere else. */
+          gboolean tight = (prev == BLOCK_BULLET && b->kind == BLOCK_BULLET) ||
+                           prev == BLOCK_VERSION || prev == BLOCK_SECTION;
+          g_string_append (out, tight ? "\n" : "\n\n");
+        }
+      first = FALSE;
+      switch (b->kind)
+        {
+        case BLOCK_VERSION:
+          g_string_append_printf (out, "<span size=\"large\" weight=\"bold\">%s</span>",
+                                  b->markup->str);
+          break;
+        case BLOCK_SECTION:
+          g_string_append_printf (out, "<b>%s</b>", b->markup->str);
+          break;
+        case BLOCK_BULLET:
+          for (int d = 1; d < b->depth; d++)
+            g_string_append (out, "    ");
+          g_string_append (out, b->depth > 1 ? "\xE2\x97\xA6 " : BULLET);
+          g_string_append (out, b->markup->str);
+          break;
+        default:
+          g_string_append (out, b->markup->str);
+        }
+      prev = b->kind;
+    }
+  g_ptr_array_unref (c.blocks);
+  return g_string_free (out, FALSE);
+}
+
 gchar *
 text_strip_html (const char *html)
 {

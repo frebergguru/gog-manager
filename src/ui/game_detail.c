@@ -1257,7 +1257,7 @@ build_about_extras (GogGameDetail *self, const GogStoreInfo *store)
   gtk_label_set_label (self->copyright_label, copyright ? copyright : "");
   gtk_widget_set_visible (GTK_WIDGET (self->copyright_label), copyright != NULL);
 
-  gtk_label_set_label (self->changelog_label, product->changelog ? product->changelog : "");
+  gtk_label_set_markup (self->changelog_label, product->changelog ? product->changelog : "");
   adw_view_stack_page_set_visible (self->changelog_page, product->changelog != NULL);
 }
 

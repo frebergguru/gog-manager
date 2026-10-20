@@ -110,7 +110,8 @@ test_scan_reads_product_info (void)
   g_assert_nonnull (g);
   const GogProductInfo *info = gog_game_get_product_info (g);
   g_assert_cmpstr (info->lead, ==, "Short.");
-  g_assert_cmpstr (info->changelog, ==, "1.1\n\xE2\x80\xA2 Fix");
+  g_assert_cmpstr (info->changelog, ==,
+                   "<span size=\"large\" weight=\"bold\">1.1</span>\n\xE2\x80\xA2 Fix");
   g_assert_true (info->in_development);
   g_assert_cmpstr (info->store_url, ==, "https://www.gog.com/game/info");
   /* Only GOG's own pages. */

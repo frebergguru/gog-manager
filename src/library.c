@@ -502,7 +502,7 @@ product_info (json_object *root)
   GogProductInfo *info = gog_product_info_new ();
   gchar *lead = text_strip_html (ju_get_string (ju_get_obj (root, "description"), "lead", ""));
   info->lead = *lead ? lead : (g_free (lead), NULL);
-  gchar *changelog = text_strip_html (ju_get_string (root, "changelog", ""));
+  gchar *changelog = text_changelog_markup (ju_get_string (root, "changelog", ""));
   info->changelog = *changelog ? changelog : (g_free (changelog), NULL);
 
   json_object *links = ju_get_obj (root, "links");

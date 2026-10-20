@@ -6,6 +6,7 @@
 #include <string.h>
 #include "../src/json_util.h"
 #include "../src/text_util.h"
+#include <pango/pango.h>
 
 static void
 test_languages_dict (void)
@@ -79,6 +80,34 @@ test_strip_html_changelog (void)
   gchar *out = text_strip_html ("<h4>1.1 (2025-05-12)</h4><p>Fixes</p>\n<ol>\n<li>One</li>\n</ol>"
                                 "<hr><h4>1.0</h4><ul><li>First</li></ul>");
   g_assert_cmpstr (out, ==, "1.1 (2025-05-12)\nFixes\n\n\xE2\x80\xA2 One\n\n1.0\n\xE2\x80\xA2 First");
+  g_free (out);
+}
+
+/* Stardew Valley's, cut short: line breaks between the tags are spaces,
+ * an item that only holds a list leaves no empty bullet, and the nested
+ * one is indented. */
+static void
+test_changelog_markup (void)
+{
+  gchar *out = text_changelog_markup (
+      "<h4>1.6.3 update</h4><h5>[New content &amp; features]</h5>\n<ul>\n"
+      "<li>Added  scaling.</li>\n<li>Void egg is <strong>poisonous</strong>.</li>\n</ul>\n"
+      "<h5>[Balance]</h5>\n<ul>\n<li>\n<ul>\n<li>Raccoon &lt;3</li>\n</ul>\n</li>\n"
+      "<li>Moss</li>\n</ul><hr><h4>1.6.2</h4><p>Small fixes,<br>\nfaster.</p>");
+  g_assert_cmpstr (out, ==,
+                   "<span size=\"large\" weight=\"bold\">1.6.3 update</span>\n"
+                   "<b>[New content &amp; features]</b>\n"
+                   "\xE2\x80\xA2 Added scaling.\n"
+                   "\xE2\x80\xA2 Void egg is <b>poisonous</b>.\n\n"
+                   "<b>[Balance]</b>\n"
+                   "    \xE2\x97\xA6 Raccoon &lt;3\n"
+                   "\xE2\x80\xA2 Moss\n\n"
+                   "<span size=\"large\" weight=\"bold\">1.6.2</span>\n"
+                   "Small fixes,\nfaster.");
+  g_assert_true (pango_parse_markup (out, -1, 0, NULL, NULL, NULL, NULL));
+  g_free (out);
+  out = text_changelog_markup ("<ul><li> </li></ul>");
+  g_assert_cmpstr (out, ==, "");
   g_free (out);
 }
 
@@ -198,6 +227,7 @@ main (int argc, char *argv[])
   g_test_add_func ("/text_util/strip_html_numeric_entities", test_strip_html_numeric_entities);
   g_test_add_func ("/text_util/strip_html_invalid_utf8", test_strip_html_invalid_utf8);
   g_test_add_func ("/text_util/strip_html_changelog", test_strip_html_changelog);
+  g_test_add_func ("/text_util/changelog_markup", test_changelog_markup);
   g_test_add_func ("/text_util/strip_html_feature_placeholder",
                    test_strip_html_feature_placeholder);
   g_test_add_func ("/text_util/language_label", test_language_label);

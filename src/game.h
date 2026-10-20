@@ -70,7 +70,7 @@ void          gog_extra_info_free (GogExtraInfo *info);
 typedef struct
 {
   gchar *lead;        /* the short description, plain text; NULL if none */
-  gchar *changelog;   /* plain text; NULL if none */
+  gchar *changelog;   /* Pango markup (text_changelog_markup()); NULL if none */
   gchar *store_url;   /* https://www.gog.com/... pages; NULL if none */
   gchar *support_url;
   gchar *forum_url;

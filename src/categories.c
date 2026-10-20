@@ -18,8 +18,8 @@
 /* Games GOG didn't know are asked about again after this long. */
 #define RETRY_SECONDS (30 * 24 * 3600)
 /* What a cache entry holds; older entries are looked up again. 2 added the
- * store details (GogStoreInfo). */
-#define CACHE_VERSION 2
+ * store details (GogStoreInfo); 3 trims the age ratings' reasons. */
+#define CACHE_VERSION 3
 
 static G_LOCK_DEFINE (cache);
 
@@ -373,6 +373,9 @@ age_rating (const char *key, json_object *rating)
       return NULL;
     }
   GStrv descriptors = names (ju_get_array (rating, "contentDescriptors"), "descriptor");
+  /* GOG's sometimes end in a line break ("Violência\n"). */
+  for (GStrv d = descriptors; *d; d++)
+    g_strstrip (*d);
   if (descriptors[0])
     {
       gchar *joined = g_strjoinv (", ", descriptors);
