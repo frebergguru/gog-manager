@@ -20,6 +20,7 @@ struct _GogGame
 
   gboolean supports_os[3];
   GStrv languages;
+  GStrv categories;
 
   GogProductType product_type;
   GArray *related_ids; /* gint64 */
@@ -95,6 +96,7 @@ gog_game_finalize (GObject *object)
   g_free (self->description);
   g_free (self->serials);
   g_strfreev (self->languages);
+  g_strfreev (self->categories);
   if (self->related_ids)
     g_array_unref (self->related_ids);
   if (self->installers)
@@ -277,6 +279,19 @@ gog_game_set_languages (GogGame *self, GStrv languages)
 {
   g_strfreev (self->languages);
   self->languages = languages;
+}
+
+const char *const *
+gog_game_get_categories (GogGame *self)
+{
+  return (const char *const *) self->categories;
+}
+
+void
+gog_game_set_categories (GogGame *self, GStrv categories)
+{
+  g_strfreev (self->categories);
+  self->categories = categories;
 }
 
 GogProductType

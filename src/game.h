@@ -89,6 +89,12 @@ void     gog_game_set_supports_os (GogGame *self, GogOs os, gboolean supported);
 const char *const *gog_game_get_languages (GogGame *self);
 void                gog_game_set_languages (GogGame *self, GStrv languages);
 
+/* GOG's genres for the game, main one first (e.g. "Role-playing",
+ * "Action", "Fantasy"), from the categories cache; NULL if not known.
+ * NULL-terminated, owned by self; set takes ownership. */
+const char *const *gog_game_get_categories (GogGame *self);
+void                gog_game_set_categories (GogGame *self, GStrv categories);
+
 GogProductType gog_game_get_product_type (GogGame *self);
 void           gog_game_set_product_type (GogGame *self, GogProductType type);
 

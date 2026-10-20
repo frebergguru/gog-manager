@@ -609,6 +609,13 @@ refresh (GogGameDetail *self)
       g_free (joined);
     }
   g_strfreev (installer_langs);
+  const char *const *categories = gog_game_get_categories (self->game);
+  if (categories && categories[0])
+    {
+      gchar *joined = g_strjoinv (", ", (GStrv) categories);
+      g_string_append_printf (badges, "\nCategories: %s", joined);
+      g_free (joined);
+    }
   gtk_label_set_label (self->badges_label, badges->str);
   g_string_free (badges, TRUE);
 

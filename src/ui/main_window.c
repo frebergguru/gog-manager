@@ -10,6 +10,7 @@
 #include "gog_sync_dialog.h"
 #include "../gog_sync.h"
 #include "../text_util.h"
+#include "../categories.h"
 #include <string.h>
 
 struct _GogMainWindow
@@ -49,6 +50,9 @@ struct _GogMainWindow
   GtkDropDown *language_dropdown;
   GStrv language_names;        /* GOG's names, for the dropdown's entries after "Any" */
   GtkDropDown *status_dropdown;
+  GtkDropDown *category_dropdown;
+  GStrv category_names;        /* the dropdown's entries after "Any category" */
+  GtkLabel *category_status;   /* progress or failure of the category lookup */
   GtkDropDown *sort_dropdown;
 
   /* GTK fires "toggled"/"notify::selected" on some widgets as a side
@@ -62,6 +66,10 @@ struct _GogMainWindow
   gboolean scanning;       /* a scan is in flight; don't start a second one */
   gboolean rescan_pending; /* start_scan() was called during a scan */
   GCancellable *scan_cancellable;
+
+  gboolean categories_running; /* a category lookup is in flight */
+  gboolean categories_pending; /* a scan finished during it; look again after */
+  GCancellable *categories_cancellable;
 };
 
 G_DEFINE_FINAL_TYPE (GogMainWindow, gog_main_window, ADW_TYPE_APPLICATION_WINDOW)
@@ -77,6 +85,8 @@ typedef struct
 } CardWidgets;
 
 static void start_scan (GogMainWindow *self);
+static void on_filters_changed (GtkWidget *widget, gpointer user_data);
+static void on_sort_changed (GtkWidget *widget, gpointer user_data);
 
 /* Whether the last GOG check found a new version of game. The library
  * folder of a game is named after its lgogdownloader game name. */
@@ -221,6 +231,18 @@ filter_func (gpointer item, gpointer user_data)
         return FALSE;
     }
 
+  guint cat_idx = gtk_drop_down_get_selected (self->category_dropdown);
+  if (cat_idx != GTK_INVALID_LIST_POSITION && cat_idx != 0)
+    {
+      const char *wanted = self->category_names &&
+                                   cat_idx - 1 < g_strv_length (self->category_names)
+                               ? self->category_names[cat_idx - 1]
+                               : NULL;
+      const char *const *cats = gog_game_get_categories (game);
+      if (!wanted || !cats || !g_strv_contains (cats, wanted))
+        return FALSE;
+    }
+
   guint status_idx = gtk_drop_down_get_selected (self->status_dropdown);
   if (status_idx == 1 && !gog_game_get_installed (game))
     return FALSE;
@@ -255,6 +277,19 @@ compare_installer_languages (GogGame *ga, GogGame *gb)
   return result;
 }
 
+/* By main category (GOG lists it first); games without any go last. */
+static gint
+compare_main_category (GogGame *ga, GogGame *gb)
+{
+  const char *const *ca = gog_game_get_categories (ga);
+  const char *const *cb = gog_game_get_categories (gb);
+  const char *a = ca ? ca[0] : NULL;
+  const char *b = cb ? cb[0] : NULL;
+  if (!a || !b)
+    return (a == NULL) - (b == NULL);
+  return g_utf8_collate (a, b);
+}
+
 static gint
 sort_func (gconstpointer a, gconstpointer b, gpointer user_data)
 {
@@ -284,6 +319,13 @@ sort_func (gconstpointer a, gconstpointer b, gpointer user_data)
         gint by_lang = compare_installer_languages (ga, gb);
         if (by_lang != 0)
           return by_lang;
+        return g_utf8_collate (gog_game_get_title (ga), gog_game_get_title (gb));
+      }
+    case 5: /* Category */
+      {
+        gint by_category = compare_main_category (ga, gb);
+        if (by_category != 0)
+          return by_category;
         return g_utf8_collate (gog_game_get_title (ga), gog_game_get_title (gb));
       }
     default: /* Title A-Z */
@@ -551,6 +593,216 @@ populate_language_dropdown (GogMainWindow *self)
   g_object_unref (list);
 }
 
+/* ---------------- categories ---------------- */
+
+static gint
+collate_strings (gconstpointer a, gconstpointer b, gpointer user_data)
+{
+  (void) user_data;
+  return g_utf8_collate (*(const char *const *) a, *(const char *const *) b);
+}
+
+/* Every category among the games with a card of their own, sorted. */
+static void
+populate_category_dropdown (GogMainWindow *self)
+{
+  /* Keep the chosen category across a rescan or a finished lookup. */
+  guint old_idx = gtk_drop_down_get_selected (self->category_dropdown);
+  gchar *old = self->category_names && old_idx != GTK_INVALID_LIST_POSITION && old_idx > 0 &&
+                       old_idx - 1 < g_strv_length (self->category_names)
+                   ? g_strdup (self->category_names[old_idx - 1])
+                   : NULL;
+
+  GHashTable *seen = g_hash_table_new (g_str_hash, g_str_equal);
+  GListModel *model = gog_library_get_model (self->library);
+  guint n = g_list_model_get_n_items (model);
+  for (guint i = 0; i < n; i++)
+    {
+      GogGame *g = g_list_model_get_item (model, i);
+      if (!gog_game_get_base_game (g))
+        for (const char *const *c = gog_game_get_categories (g); c && *c; c++)
+          g_hash_table_add (seen, (gpointer) *c);
+      g_object_unref (g);
+    }
+  /* The keys point into the games' own lists; copy them. */
+  GPtrArray *names = g_ptr_array_new_with_free_func (g_free);
+  GHashTableIter iter;
+  gpointer key;
+  g_hash_table_iter_init (&iter, seen);
+  while (g_hash_table_iter_next (&iter, &key, NULL))
+    g_ptr_array_add (names, g_strdup (key));
+  g_hash_table_unref (seen);
+  g_ptr_array_sort_with_data (names, collate_strings, NULL);
+
+  GtkStringList *list = gtk_string_list_new (NULL);
+  gtk_string_list_append (list, "Any category");
+  guint selected = 0;
+  for (guint i = 0; i < names->len; i++)
+    {
+      const char *name = g_ptr_array_index (names, i);
+      gtk_string_list_append (list, name);
+      if (g_strcmp0 (name, old) == 0)
+        selected = i + 1;
+    }
+  g_ptr_array_add (names, NULL);
+  g_strfreev (self->category_names);
+  self->category_names = (GStrv) g_ptr_array_free (names, FALSE);
+
+  gtk_drop_down_set_model (self->category_dropdown, G_LIST_MODEL (list));
+  gtk_drop_down_set_selected (self->category_dropdown, selected);
+  g_object_unref (list);
+  g_free (old);
+}
+
+/* Gives every game its categories from the cache. */
+static void
+apply_categories (GogMainWindow *self)
+{
+  GHashTable *cache = gog_categories_load ();
+  GListModel *model = gog_library_get_model (self->library);
+  guint n = g_list_model_get_n_items (model);
+  for (guint i = 0; i < n; i++)
+    {
+      GogGame *g = g_list_model_get_item (model, i);
+      gchar *key = g_strdup_printf ("%" G_GINT64_FORMAT, gog_game_get_id (g));
+      GStrv cats = g_hash_table_lookup (cache, key);
+      gog_game_set_categories (g, cats && cats[0] ? g_strdupv (cats) : NULL);
+      g_free (key);
+      g_object_unref (g);
+    }
+  g_hash_table_unref (cache);
+  populate_category_dropdown (self);
+}
+
+static void
+set_category_status (GogMainWindow *self, const char *text)
+{
+  gtk_label_set_label (self->category_status, text ? text : "");
+  gtk_widget_set_visible (GTK_WIDGET (self->category_status), text != NULL);
+}
+
+typedef struct
+{
+  GogMainWindow *window;
+  guint done;
+  guint total;
+} CategoryProgress;
+
+static gboolean
+category_progress_idle (gpointer data)
+{
+  CategoryProgress *p = data;
+  if (p->window->categories_running && !gtk_widget_in_destruction (GTK_WIDGET (p->window)))
+    {
+      gchar *text = g_strdup_printf ("Fetching categories from GOG… %u of %u", p->done, p->total);
+      set_category_status (p->window, text);
+      g_free (text);
+    }
+  g_object_unref (p->window);
+  g_free (p);
+  return G_SOURCE_REMOVE;
+}
+
+/* On the lookup thread. */
+static void
+on_category_progress (guint done, guint total, gpointer user_data)
+{
+  CategoryProgress *p = g_new0 (CategoryProgress, 1);
+  p->window = g_object_ref (user_data);
+  p->done = done;
+  p->total = total;
+  g_idle_add (category_progress_idle, p);
+}
+
+static void
+category_lookup_thread (GTask *task, gpointer source, gpointer task_data, GCancellable *cancellable)
+{
+  GArray *ids = task_data;
+  GError *error = NULL;
+  guint looked_up = 0;
+  if (gog_categories_lookup ((const gint64 *) (gpointer) ids->data, ids->len, cancellable,
+                             on_category_progress, source, &looked_up, &error))
+    g_task_return_int (task, looked_up);
+  else
+    g_task_return_error (task, error);
+}
+
+static void start_category_lookup (GogMainWindow *self);
+
+static void
+on_category_lookup_done (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+  (void) user_data;
+  GogMainWindow *self = GOG_MAIN_WINDOW (source);
+  self->categories_running = FALSE;
+  g_clear_object (&self->categories_cancellable);
+  GError *error = NULL;
+  g_task_propagate_int (G_TASK (res), &error);
+  if (gtk_widget_in_destruction (GTK_WIDGET (self)) ||
+      g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+    {
+      g_clear_error (&error);
+      return;
+    }
+
+  /* Whatever was found is in the cache, also after a failure. */
+  apply_categories (self);
+  on_filters_changed (NULL, self);
+  on_sort_changed (NULL, self);
+  if (error)
+    {
+      gchar *text = g_strdup_printf ("%s\nThe rest are fetched on the next rescan.",
+                                     error->message);
+      set_category_status (self, text);
+      g_free (text);
+      g_clear_error (&error);
+    }
+  else
+    set_category_status (self, NULL);
+
+  if (self->categories_pending)
+    {
+      self->categories_pending = FALSE;
+      start_category_lookup (self);
+    }
+}
+
+/* Fetches categories in the background for the games the cache doesn't
+ * know yet; a no-op without network use when it knows them all. */
+static void
+start_category_lookup (GogMainWindow *self)
+{
+  if (self->categories_running)
+    {
+      self->categories_pending = TRUE;
+      return;
+    }
+  GArray *ids = g_array_new (FALSE, FALSE, sizeof (gint64));
+  GListModel *model = gog_library_get_model (self->library);
+  guint n = g_list_model_get_n_items (model);
+  for (guint i = 0; i < n; i++)
+    {
+      GogGame *g = g_list_model_get_item (model, i);
+      gint64 id = gog_game_get_id (g);
+      /* Only games with a card: DLC isn't sorted or filtered. */
+      if (!gog_game_get_base_game (g) && id > 0)
+        g_array_append_val (ids, id);
+      g_object_unref (g);
+    }
+  if (ids->len == 0)
+    {
+      g_array_unref (ids);
+      return;
+    }
+
+  self->categories_running = TRUE;
+  self->categories_cancellable = g_cancellable_new ();
+  GTask *task = g_task_new (self, self->categories_cancellable, on_category_lookup_done, NULL);
+  g_task_set_task_data (task, ids, (GDestroyNotify) g_array_unref);
+  g_task_run_in_thread (task, category_lookup_thread);
+  g_object_unref (task);
+}
+
 static void
 on_scan_progress (GogLibrary *library, gdouble fraction, const gchar *message, gpointer user_data)
 {
@@ -629,6 +881,8 @@ on_scan_done (GObject *source, GAsyncResult *res, gpointer user_data)
     }
 
   populate_language_dropdown (self);
+  apply_categories (self);
+  start_category_lookup (self);
   /* Re-filter/re-sort: install state was applied after the models saw the
    * new items. */
   on_filters_changed (NULL, self);
@@ -880,6 +1134,22 @@ build_sidebar (GogMainWindow *self)
   gtk_box_append (GTK_BOX (box), GTK_WIDGET (self->language_dropdown));
   g_signal_connect (self->language_dropdown, "notify::selected", G_CALLBACK (on_filter_dropdown_changed), self);
 
+  GtkWidget *category_heading = gtk_label_new ("Category");
+  gtk_widget_add_css_class (category_heading, "heading");
+  gtk_widget_set_halign (category_heading, GTK_ALIGN_START);
+  gtk_box_append (GTK_BOX (box), category_heading);
+  self->category_dropdown = GTK_DROP_DOWN (gtk_drop_down_new (NULL, NULL));
+  set_accessible_label (GTK_WIDGET (self->category_dropdown), "Category");
+  gtk_box_append (GTK_BOX (box), GTK_WIDGET (self->category_dropdown));
+  g_signal_connect (self->category_dropdown, "notify::selected", G_CALLBACK (on_filter_dropdown_changed), self);
+  self->category_status = GTK_LABEL (gtk_label_new (NULL));
+  gtk_label_set_wrap (self->category_status, TRUE);
+  gtk_label_set_xalign (self->category_status, 0);
+  gtk_widget_add_css_class (GTK_WIDGET (self->category_status), "dim-label");
+  gtk_widget_add_css_class (GTK_WIDGET (self->category_status), "caption");
+  gtk_widget_set_visible (GTK_WIDGET (self->category_status), FALSE);
+  gtk_box_append (GTK_BOX (box), GTK_WIDGET (self->category_status));
+
   GtkWidget *status_heading = gtk_label_new ("Status");
   gtk_widget_add_css_class (status_heading, "heading");
   gtk_widget_set_halign (status_heading, GTK_ALIGN_START);
@@ -898,7 +1168,7 @@ build_sidebar (GogMainWindow *self)
   gtk_box_append (GTK_BOX (box), sort_heading);
   GtkStringList *sort_list = gtk_string_list_new (
       (const char *[]) { "Title A–Z", "Title Z–A", "Installed first", "Size (largest)",
-                         "Language", NULL });
+                         "Language", "Category", NULL });
   self->sort_dropdown = GTK_DROP_DOWN (gtk_drop_down_new (G_LIST_MODEL (sort_list), NULL));
   set_accessible_label (GTK_WIDGET (self->sort_dropdown), "Sort By");
   gtk_box_append (GTK_BOX (box), GTK_WIDGET (self->sort_dropdown));
@@ -965,6 +1235,8 @@ gog_main_window_dispose (GObject *object)
   GogMainWindow *self = GOG_MAIN_WINDOW (object);
   if (self->scan_cancellable)
     g_cancellable_cancel (self->scan_cancellable);
+  if (self->categories_cancellable)
+    g_cancellable_cancel (self->categories_cancellable);
   if (self->library)
     g_signal_handlers_disconnect_by_data (self->library, self);
   g_clear_pointer (&self->gog_updates, g_hash_table_unref);
@@ -978,6 +1250,7 @@ gog_main_window_finalize (GObject *object)
   GogMainWindow *self = GOG_MAIN_WINDOW (object);
   g_clear_object (&self->library);
   g_strfreev (self->language_names);
+  g_strfreev (self->category_names);
   gog_config_free (self->config);
   gog_state_free (self->state);
   G_OBJECT_CLASS (gog_main_window_parent_class)->finalize (object);
