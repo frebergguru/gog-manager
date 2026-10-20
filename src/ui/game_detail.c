@@ -25,6 +25,7 @@ struct _GogGameDetail
   GtkPicture *logo;
   GtkLabel *title_label;
   GtkLabel *badges_label;
+  GtkGrid *info_grid; /* "Developer  id Software" and so on, rebuilt by refresh() */
   GtkBox *action_box;
   GtkWidget *runner_group;
   AdwComboRow *runner_row;
@@ -659,14 +660,33 @@ strv_equal (GStrv a, GStrv b)
   return a && b && g_strv_equal ((const char *const *) a, (const char *const *) b);
 }
 
-/* "\n<what>: a, b, c", or nothing when the list is empty. */
+/* A row of the details table; nothing when value is NULL or empty. */
 static void
-append_list (GString *s, const char *what, GStrv list)
+add_info (GtkGrid *grid, int *row, const char *what, const char *value)
+{
+  if (!value || !*value)
+    return;
+  GtkWidget *key = gtk_label_new (what);
+  gtk_label_set_xalign (GTK_LABEL (key), 0.0);
+  gtk_label_set_yalign (GTK_LABEL (key), 0.0);
+  gtk_widget_add_css_class (key, "dim-label");
+  GtkWidget *val = gtk_label_new (value);
+  gtk_label_set_xalign (GTK_LABEL (val), 0.0);
+  gtk_label_set_wrap (GTK_LABEL (val), TRUE);
+  gtk_label_set_selectable (GTK_LABEL (val), FALSE);
+  gtk_widget_set_hexpand (val, TRUE);
+  gtk_grid_attach (grid, key, 0, *row, 1, 1);
+  gtk_grid_attach (grid, val, 1, *row, 1, 1);
+  (*row)++;
+}
+
+static void
+add_info_list (GtkGrid *grid, int *row, const char *what, GStrv list)
 {
   if (!list || !list[0])
     return;
   gchar *joined = g_strjoinv (", ", list);
-  g_string_append_printf (s, "\n%s: %s", what, joined);
+  add_info (grid, row, what, joined);
   g_free (joined);
 }
 
@@ -678,64 +698,65 @@ refresh (GogGameDetail *self)
 
   gtk_label_set_label (self->title_label, gog_game_get_title (self->game));
 
-  GString *badges = g_string_new (NULL);
-  if (gog_game_get_supports_os (self->game, GOG_OS_WINDOWS))
-    g_string_append (badges, "Windows  ");
-  if (gog_game_get_supports_os (self->game, GOG_OS_LINUX))
-    g_string_append (badges, "Linux  ");
-  if (gog_game_get_supports_os (self->game, GOG_OS_MAC))
-    g_string_append (badges, "macOS  ");
-  gchar *size_str = text_format_size (gog_game_get_total_size (self->game));
-  g_string_append (badges, size_str);
-  g_free (size_str);
+  /* "Windows · Linux · 4,6 GB · Installed" */
+  GPtrArray *badges = g_ptr_array_new_with_free_func (g_free);
+  const GogOs systems[] = { GOG_OS_WINDOWS, GOG_OS_LINUX, GOG_OS_MAC };
+  for (guint i = 0; i < G_N_ELEMENTS (systems); i++)
+    if (gog_game_get_supports_os (self->game, systems[i]))
+      g_ptr_array_add (badges, g_strdup (os_label (systems[i])));
+  g_ptr_array_add (badges, text_format_size (gog_game_get_total_size (self->game)));
   if (gog_game_get_installed (self->game))
-    g_string_append (badges, "  ·  Installed");
+    g_ptr_array_add (badges, g_strdup ("Installed"));
+  g_ptr_array_add (badges, NULL);
+  gchar *badge_text = g_strjoinv (" · ", (gchar **) badges->pdata);
+  gtk_label_set_label (self->badges_label, badge_text);
+  g_free (badge_text);
+  g_ptr_array_unref (badges);
+
+  /* The details as a two-column table: easier to scan than a block of
+   * lines. */
+  GtkWidget *child;
+  while ((child = gtk_widget_get_first_child (GTK_WIDGET (self->info_grid))))
+    gtk_grid_remove (self->info_grid, child);
+  int row = 0;
+
   GStrv installer_langs = gog_game_dup_installer_languages (self->game);
-  if (installer_langs[0])
+  for (gchar **l = installer_langs; *l; l++)
     {
-      for (gchar **l = installer_langs; *l; l++)
-        {
-          gchar *label = text_language_label (*l);
-          g_free (*l);
-          *l = label;
-        }
-      gchar *joined = g_strjoinv (", ", installer_langs);
-      g_string_append_printf (badges, "\nInstallers in %s", joined);
-      g_free (joined);
+      gchar *label = text_language_label (*l);
+      g_free (*l);
+      *l = label;
     }
+  add_info_list (self->info_grid, &row, "Installers in", installer_langs);
   g_strfreev (installer_langs);
   gint64 released = gog_game_get_release_date (self->game);
   if (released > 0)
     {
       GDateTime *dt = g_date_time_new_from_unix_utc (released);
       gchar *date = dt ? g_date_time_format (dt, "%Y-%m-%d") : NULL;
-      if (date)
-        g_string_append_printf (badges, "\nReleased %s", date);
+      add_info (self->info_grid, &row, "Released", date);
       g_free (date);
       if (dt)
         g_date_time_unref (dt);
     }
-  const char *const *categories = gog_game_get_categories (self->game);
-  append_list (badges, "Categories", (GStrv) categories);
+  add_info_list (self->info_grid, &row, "Categories", (GStrv) gog_game_get_categories (self->game));
   const GogGamesdbInfo *db = gog_game_get_gamesdb (self->game);
   if (db)
     {
-      append_list (badges, "Developer", db->developers);
+      add_info_list (self->info_grid, &row, "Developer", db->developers);
       if (!strv_equal (db->publishers, db->developers))
-        append_list (badges, "Publisher", db->publishers);
-      if (db->series)
-        g_string_append_printf (badges, "\nSeries: %s", db->series);
-      append_list (badges, "Themes", db->themes);
-      append_list (badges, "Modes", db->game_modes);
+        add_info_list (self->info_grid, &row, "Publisher", db->publishers);
+      add_info (self->info_grid, &row, "Series", db->series);
+      add_info_list (self->info_grid, &row, "Themes", db->themes);
+      add_info_list (self->info_grid, &row, "Modes", db->game_modes);
     }
-  gtk_label_set_label (self->badges_label, badges->str);
-  g_string_free (badges, TRUE);
+  gtk_widget_set_visible (GTK_WIDGET (self->info_grid), row > 0);
 
   /* GOG's background art when it's there, else lgogdownloader's logo. */
-  if (db && db->background_path)
-    gtk_picture_set_filename (self->logo, db->background_path);
-  else
-    gtk_picture_set_filename (self->logo, gog_game_get_logo_path (self->game));
+  const char *banner = db && db->background_path ? db->background_path
+                                                  : gog_game_get_logo_path (self->game);
+  gtk_picture_set_filename (self->logo, banner);
+  gtk_widget_set_visible (GTK_WIDGET (self->logo), banner != NULL);
 
   const char *serials = gog_game_get_serials (self->game);
   gtk_label_set_label (self->serials_label, serials ? serials : "");
@@ -783,9 +804,10 @@ gog_game_detail_new (GtkWindow *parent_window, GogLibrary *library, GogConfig *c
   gtk_widget_set_margin_bottom (content, 24);
   adw_clamp_set_child (ADW_CLAMP (clamp), content);
 
+  /* No fixed height: GtkPicture keeps the art's proportions at the
+   * page's width, so nothing is cropped. */
   self->logo = GTK_PICTURE (gtk_picture_new ());
-  gtk_picture_set_content_fit (self->logo, GTK_CONTENT_FIT_COVER);
-  gtk_widget_set_size_request (GTK_WIDGET (self->logo), -1, 200);
+  gtk_picture_set_content_fit (self->logo, GTK_CONTENT_FIT_CONTAIN);
   gtk_widget_add_css_class (GTK_WIDGET (self->logo), "card");
   gtk_box_append (GTK_BOX (content), GTK_WIDGET (self->logo));
 
@@ -801,6 +823,11 @@ gog_game_detail_new (GtkWindow *parent_window, GogLibrary *library, GogConfig *c
   gtk_widget_add_css_class (GTK_WIDGET (self->badges_label), "dim-label");
   gtk_widget_set_halign (GTK_WIDGET (self->badges_label), GTK_ALIGN_START);
   gtk_box_append (GTK_BOX (content), GTK_WIDGET (self->badges_label));
+
+  self->info_grid = GTK_GRID (gtk_grid_new ());
+  gtk_grid_set_column_spacing (self->info_grid, 18);
+  gtk_grid_set_row_spacing (self->info_grid, 4);
+  gtk_box_append (GTK_BOX (content), GTK_WIDGET (self->info_grid));
 
   self->action_box = GTK_BOX (gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8));
   gtk_box_append (GTK_BOX (content), GTK_WIDGET (self->action_box));

@@ -19,6 +19,14 @@ All notable changes to GOG Manager are listed here. The format follows
   carries on where the last run stopped.
 
 ### Changed
+- The game page lists its details (installer languages, release date,
+  categories, developer, publisher, series, themes, modes) as a
+  two-column table instead of a block of grey lines, the top line reads
+  "Windows · 4,6 GB · Installed", and the banner keeps the art's own
+  proportions instead of cropping it to a fixed height.
+- Descriptions no longer keep the stray indents and double spaces in
+  GOG's HTML.
+- Install buttons say "Windows" and "Linux", not "windows" and "linux".
 - Preferences is split into three pages, Library, Runners and Downloads,
   with the switcher in the header (a bar at the bottom in a narrow window).
   Folder rows show the path as their main text and open the folder chooser

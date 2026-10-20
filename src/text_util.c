@@ -96,16 +96,30 @@ text_strip_html (const char *html)
         }
     }
 
-  /* collapse 3+ consecutive newlines down to 2, trim edges. GRegex refuses
-   * invalid UTF-8 (product JSON isn't checked), so mend it first. */
+  /* One space between words and none around line breaks (GOG's HTML
+   * indents and double-spaces), at most one empty line in a row, trimmed
+   * edges. GRegex refuses invalid UTF-8 (product JSON isn't checked), so
+   * mend it first. */
   gchar *valid = g_utf8_make_valid (out->str, (gssize) out->len);
   g_string_free (out, TRUE);
-  GRegex *re = g_regex_new ("\n{3,}", 0, 0, NULL);
-  gchar *collapsed = g_regex_replace (re, valid, -1, 0, "\n\n", 0, NULL);
-  g_regex_unref (re);
-  if (!collapsed)
-    collapsed = g_strdup (valid);
-  g_free (valid);
+  static const char *const rules[][2] = {
+    { "\r", "" },
+    { "[ \t]+", " " },
+    { " ?\n ?", "\n" },
+    { "\n{3,}", "\n\n" },
+  };
+  gchar *collapsed = valid;
+  for (guint i = 0; i < G_N_ELEMENTS (rules); i++)
+    {
+      GRegex *re = g_regex_new (rules[i][0], 0, 0, NULL);
+      gchar *next = g_regex_replace (re, collapsed, -1, 0, rules[i][1], 0, NULL);
+      g_regex_unref (re);
+      if (next)
+        {
+          g_free (collapsed);
+          collapsed = next;
+        }
+    }
   gchar *trimmed = g_strdup (g_strstrip (collapsed));
   g_free (collapsed);
   return trimmed;

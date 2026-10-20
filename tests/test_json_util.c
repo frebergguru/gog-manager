@@ -72,6 +72,16 @@ test_strip_html_list (void)
   g_free (out);
 }
 
+/* GOG's HTML indents lines and double-spaces words. */
+static void
+test_strip_html_whitespace (void)
+{
+  gchar *out = text_strip_html ("<p>  Intro  text </p>\r\n<ul><li> One</li></ul><br><br><br><br>"
+                                "&nbsp;Last  word ");
+  g_assert_cmpstr (out, ==, "Intro text\n\n\u2022 One\nLast word");
+  g_free (out);
+}
+
 static void
 test_strip_html_empty (void)
 {
@@ -142,6 +152,7 @@ main (int argc, char *argv[])
   g_test_add_func ("/text_util/strip_html_basic", test_strip_html_basic);
   g_test_add_func ("/text_util/strip_html_list", test_strip_html_list);
   g_test_add_func ("/text_util/strip_html_empty", test_strip_html_empty);
+  g_test_add_func ("/text_util/strip_html_whitespace", test_strip_html_whitespace);
   g_test_add_func ("/text_util/strip_html_numeric_entities", test_strip_html_numeric_entities);
   g_test_add_func ("/text_util/strip_html_invalid_utf8", test_strip_html_invalid_utf8);
   g_test_add_func ("/text_util/language_label", test_language_label);
