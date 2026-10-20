@@ -306,7 +306,7 @@ test_gog_sync_parse_status (void)
   const char *details =
       "Getting game names 4 / 4\n"
       "[\n"
-      "{ \"gamename\": \"fallout_4\", \"title\": \"Fallout 4\",\n"
+      "{ \"gamename\": \"fallout_4\", \"title\": \"Fallout 4\", \"changelog\": \"<h4>1.1</h4>\",\n"
       "  \"installers\": [\n"
       "    { \"gamename\": \"fallout_4\", \"language\": 2, \"size\": \"5000\", \"type\": 1,\n"
       "      \"path\": \"/fallout_4/setup_fallout_4_(german_64bit)_(66700).exe\" },\n"
@@ -336,6 +336,8 @@ test_gog_sync_parse_status (void)
   g_assert_cmpstr (c->title, ==, "New Game");
   g_assert_cmpint (c->product_id, ==, 1207);
   g_assert_cmpint (b->product_id, ==, 0);
+  g_assert_cmpstr (b->changelog, ==, "<h4>1.1</h4>");
+  g_assert_null (c->changelog);
 
   /* Owned but not downloaded: a game of its own in the library, once. */
   GogLibrary *library = gog_library_new ();

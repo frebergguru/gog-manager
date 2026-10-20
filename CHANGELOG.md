@@ -47,6 +47,9 @@ All notable changes to GOG Manager are listed here. The format follows
   downloaded" status filter shows only them. They come from the last check
   in the download window ("Check Now"), which now also keeps each game's
   title and GOG product id.
+- The download window shows each game's changelog, folded away under the
+  game: for a new version, what changed up to it. It comes with the check
+  (lgogdownloader's `--list j` already has it), so it costs nothing extra.
 
 ### Changed
 - Details cached by 0.5.0 are fetched again once, to get the new fields.

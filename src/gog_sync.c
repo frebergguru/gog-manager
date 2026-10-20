@@ -46,6 +46,7 @@ gog_sync_item_free (GogSyncItem *item)
     return;
   g_free (item->gamename);
   g_free (item->title);
+  g_free (item->changelog);
   g_ptr_array_unref (item->files);
   g_free (item);
 }
@@ -652,6 +653,12 @@ gog_sync_apply_details (GPtrArray *items, const char *list_output)
       gint64 id = id_text ? g_ascii_strtoll (id_text, NULL, 10) : ju_get_int64 (game, "product_id", 0);
       if (id > 0)
         item->product_id = id;
+      const char *changelog = ju_get_string (game, "changelog", NULL);
+      if (changelog && *changelog)
+        {
+          g_free (item->changelog);
+          item->changelog = g_strdup (changelog);
+        }
       for (guint f = 0; f < item->files->len; f++)
         {
           GogSyncFile *file = g_ptr_array_index (item->files, f);
@@ -707,6 +714,7 @@ gog_sync_load_results (gint64 *out_checked_unix)
       item->languages_offered = (guint) ju_get_int64 (rec, "languages", 0);
       item->title = g_strdup (ju_get_string (rec, "title", NULL));
       item->product_id = MAX (ju_get_int64 (rec, "product_id", 0), 0);
+      item->changelog = g_strdup (ju_get_string (rec, "changelog", NULL));
       json_object *files = ju_get_array (rec, "file_list");
       for (size_t f = 0; files && f < json_object_array_length (files); f++)
         {
@@ -752,6 +760,8 @@ save_results_checked (GPtrArray *items, gint64 checked_unix)
         json_object_object_add (rec, "title", json_object_new_string (item->title));
       if (item->product_id > 0)
         json_object_object_add (rec, "product_id", json_object_new_int64 (item->product_id));
+      if (item->changelog)
+        json_object_object_add (rec, "changelog", json_object_new_string (item->changelog));
       json_object *files = json_object_new_array ();
       for (guint f = 0; f < item->files->len; f++)
         {

@@ -46,9 +46,9 @@ API ourselves: it holds the login and handles GOG's quirks.
 
 ### Through lgogdownloader
 
-- [ ] **Changelogs with updates**: the game page shows the changelog from
-      the product JSON; show it in the download window too, next to a
-      game's new version.
+- [x] **Changelogs**: on the game page (from the product JSON) and in the
+      download window (from the check's `--list j`, so for the version on
+      GOG).
 - [ ] **Updated / new flags**: `--updated` and `--new` to show which games
       changed before a full `--status`; `--clear-update-flags` afterwards.
 - [ ] **Notifications**: `--notifications`.

@@ -6,6 +6,7 @@
 #include "../gog_sync.h"
 #include "dialog_window.h"
 #include "../installer_engine.h"
+#include "../text_util.h"
 
 #define N_SLOTS 8 /* the most downloads at the same time */
 #define N_PARTS 3
@@ -522,6 +523,32 @@ add_game_row (SyncCtx *ctx, GtkWidget *list, GogSyncItem *item)
             add_file_row (game, file);
         }
     }
+
+  /* GOG's notes on the version it has now, folded away: they can be long. */
+  gchar *changelog = item->changelog ? text_changelog_markup (item->changelog) : NULL;
+  if (changelog && *changelog)
+    {
+      GtkWidget *notes = adw_expander_row_new ();
+      adw_preferences_row_set_title (ADW_PREFERENCES_ROW (notes), "Changelog");
+      adw_preferences_row_set_use_markup (ADW_PREFERENCES_ROW (notes), FALSE);
+      adw_expander_row_set_subtitle (ADW_EXPANDER_ROW (notes),
+                                     item->kind == GOG_SYNC_UPDATE
+                                         ? "What changed, up to the version on GOG"
+                                         : "GOG's notes on each version");
+      gtk_widget_add_css_class (notes, "gog-part-row");
+      GtkWidget *label = gtk_label_new (NULL);
+      gtk_label_set_markup (GTK_LABEL (label), changelog);
+      gtk_label_set_wrap (GTK_LABEL (label), TRUE);
+      gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+      gtk_label_set_selectable (GTK_LABEL (label), TRUE);
+      gtk_widget_set_margin_start (label, 12);
+      gtk_widget_set_margin_end (label, 12);
+      gtk_widget_set_margin_top (label, 8);
+      gtk_widget_set_margin_bottom (label, 8);
+      adw_expander_row_add_row (ADW_EXPANDER_ROW (notes), label);
+      adw_expander_row_add_row (game->row, notes);
+    }
+  g_free (changelog);
   refresh_game (game);
   gtk_list_box_append (GTK_LIST_BOX (list), GTK_WIDGET (game->row));
   g_free (title);
