@@ -21,6 +21,7 @@ struct _GogGame
   gboolean supports_os[3];
   GStrv languages;
   GStrv categories;
+  GogGamesdbInfo *gamesdb;
   gint64 release_date;
 
   GogProductType product_type;
@@ -43,6 +44,7 @@ enum
   PROP_0,
   PROP_INSTALLED,
   PROP_CATEGORIES,
+  PROP_GAMESDB,
   N_PROPS,
 };
 
@@ -100,6 +102,7 @@ gog_game_finalize (GObject *object)
   g_free (self->serials);
   g_strfreev (self->languages);
   g_strfreev (self->categories);
+  gog_gamesdb_info_free (self->gamesdb);
   if (self->related_ids)
     g_array_unref (self->related_ids);
   if (self->installers)
@@ -125,6 +128,9 @@ gog_game_get_property (GObject *object, guint prop_id, GValue *value, GParamSpec
     case PROP_CATEGORIES:
       g_value_set_boxed (value, self->categories);
       break;
+    case PROP_GAMESDB:
+      g_value_set_boolean (value, self->gamesdb != NULL);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
     }
@@ -143,6 +149,10 @@ gog_game_class_init (GogGameClass *klass)
   properties[PROP_CATEGORIES] =
       g_param_spec_boxed ("categories", "Categories", "GOG's genres for the game",
                           G_TYPE_STRV, G_PARAM_READABLE);
+  /* Only notifies; read it with gog_game_get_gamesdb(). */
+  properties[PROP_GAMESDB] =
+      g_param_spec_boolean ("gamesdb", "Games database", "Whether GOG's games database knows the game",
+                            FALSE, G_PARAM_READABLE);
   g_object_class_install_properties (object_class, N_PROPS, properties);
 }
 
@@ -307,6 +317,37 @@ gog_game_set_categories (GogGame *self, GStrv categories)
   self->categories = categories;
   if (!same)
     g_object_notify_by_pspec (G_OBJECT (self), properties[PROP_CATEGORIES]);
+}
+
+const GogGamesdbInfo *
+gog_game_get_gamesdb (GogGame *self)
+{
+  return self->gamesdb;
+}
+
+static gboolean
+strv_same (GStrv a, GStrv b)
+{
+  return (!a && !b) || (a && b && g_strv_equal ((const char *const *) a, (const char *const *) b));
+}
+
+void
+gog_game_set_gamesdb (GogGame *self, GogGamesdbInfo *info)
+{
+  GogGamesdbInfo *old = self->gamesdb;
+  gboolean same = (!old && !info) ||
+                  (old && info && g_strcmp0 (old->summary, info->summary) == 0 &&
+                   g_strcmp0 (old->series, info->series) == 0 &&
+                   g_strcmp0 (old->cover_path, info->cover_path) == 0 &&
+                   g_strcmp0 (old->background_path, info->background_path) == 0 &&
+                   strv_same (old->developers, info->developers) &&
+                   strv_same (old->publishers, info->publishers) &&
+                   strv_same (old->themes, info->themes) &&
+                   strv_same (old->game_modes, info->game_modes));
+  self->gamesdb = info;
+  gog_gamesdb_info_free (old);
+  if (!same)
+    g_object_notify_by_pspec (G_OBJECT (self), properties[PROP_GAMESDB]);
 }
 
 gint64

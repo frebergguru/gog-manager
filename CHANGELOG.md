@@ -6,6 +6,15 @@ All notable changes to GOG Manager are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Box art and details from GOG's games database (gamesdb.gog.com): grid
+  cards show the game's vertical cover (the square icon when there is
+  none), and the game page shows the background art, developer, publisher,
+  series, themes and game modes, and GOG's summary when the game has no
+  description. Fetched in the background with the categories and kept in
+  the config folder (`gog-manager-gamesdb.json` and `gamesdb-images/`), so
+  they work offline; Preferences fetches them again with the categories.
+
 ### Changed
 - The config, install state, download choices, last GOG check and caches are
   kept in a hidden `.gog-manager-configs` folder next to the AppImage instead

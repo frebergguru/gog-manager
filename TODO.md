@@ -92,8 +92,13 @@ API ourselves: it holds the login and handles GOG's quirks.
 
 ### Other GOG services
 
-- [ ] **`gamesdb.gog.com`**: vertical covers and backgrounds for the library
-      grid, summaries, themes.
+- [x] **`gamesdb.gog.com`**: vertical covers on the cards; background,
+      summary, developer, publisher, series, themes and game modes on the
+      game page.
+  - [ ] Filters and sorting by theme, series, developer or game mode.
+  - [ ] Screenshots and videos (`game.screenshots`, `game.videos`) on the
+        game page.
+  - [ ] Refresh the game page when details arrive while it is open.
 - [ ] **`reviews.gog.com`**: user ratings and reviews.
 - [ ] **Achievements and stats** (`gameplay.gog.com`, needs the Galaxy
       login): show them read-only. Games only report them through Galaxy,

@@ -4,16 +4,15 @@
 
 #include "categories.h"
 #include "config.h"
+#include "fetch.h"
 #include "json_util.h"
 #include <glib/gstdio.h>
 #include <errno.h>
-#include <string.h>
 
 #define CACHE_FILE "gog-manager-categories.json"
 #define API_URL "https://api.gog.com/v2/games/%" G_GINT64_FORMAT "?locale=en-US"
-/* Games per curl run; it fetches PARALLEL of them at a time. */
+/* Games per curl run. */
 #define BATCH 12
-#define PARALLEL "4"
 /* Games GOG didn't know are asked about again after this long. */
 #define RETRY_SECONDS (30 * 24 * 3600)
 
@@ -131,22 +130,6 @@ record (json_object *cache, gint64 id, GStrv categories, gint64 now)
   g_free (key);
 }
 
-static void
-remove_dir (const char *dir)
-{
-  GDir *d = g_dir_open (dir, 0, NULL);
-  const char *name;
-  while (d && (name = g_dir_read_name (d)))
-    {
-      gchar *path = g_build_filename (dir, name, NULL);
-      g_remove (path);
-      g_free (path);
-    }
-  if (d)
-    g_dir_close (d);
-  g_rmdir (dir);
-}
-
 /* Fetches up to BATCH games in one curl run and records the answers. A game
  * that could not be fetched (no connection, GOG busy) is left for next
  * time; the batch fails only when none of its games could be fetched. */
@@ -157,79 +140,56 @@ lookup_batch (const gint64 *ids, guint n, json_object *cache, GError **error)
   if (!dir)
     return FALSE;
 
-  /* A plain, generic User-Agent: nothing that identifies the user. One line
-   * per game on stdout: "<HTTP status> <file>"; 000 when nothing came back. */
-  static const char *const base_argv[] = { "curl", "-sS", "--max-time", "30", "-A", "gog-manager",
-                                           "--parallel", "--parallel-max", PARALLEL, "-w",
-                                           "%{http_code} %{filename_effective}\\n" };
-  GPtrArray *argv = g_ptr_array_new_with_free_func (g_free);
-  for (guint i = 0; i < G_N_ELEMENTS (base_argv); i++)
-    g_ptr_array_add (argv, g_strdup (base_argv[i]));
+  gchar **urls = g_new0 (gchar *, n + 1);
+  gchar **dests = g_new0 (gchar *, n + 1);
+  int *codes = g_new0 (int, n);
   for (guint i = 0; i < n; i++)
     {
-      g_ptr_array_add (argv, g_strdup ("-o"));
-      g_ptr_array_add (argv, g_strdup_printf ("%s/%" G_GINT64_FORMAT ".json", dir, ids[i]));
-      g_ptr_array_add (argv, g_strdup_printf (API_URL, ids[i]));
+      urls[i] = g_strdup_printf (API_URL, ids[i]);
+      dests[i] = g_strdup_printf ("%s/%" G_GINT64_FORMAT ".json", dir, ids[i]);
     }
-  g_ptr_array_add (argv, NULL);
-
-  gchar *out = NULL;
-  gchar *err = NULL;
-  gboolean ok = g_spawn_sync (NULL, (gchar **) argv->pdata, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL,
-                              &out, &err, NULL, error);
-  g_ptr_array_unref (argv);
+  gchar *curl_error = NULL;
+  gboolean ok = gog_fetch_files ((const char *const *) urls, (const char *const *) dests, n, codes,
+                                 &curl_error, error);
 
   guint fetched = 0;
   gint64 now = g_get_real_time () / G_USEC_PER_SEC;
-  gchar **lines = g_strsplit (ok && out ? out : "", "\n", -1);
-  for (gchar **l = lines; *l; l++)
+  for (guint i = 0; ok && i < n; i++)
     {
-      int code = 0;
-      const char *space = strchr (*l, ' ');
-      if (!space || sscanf (*l, "%d", &code) != 1)
-        continue;
-      gchar *base = g_path_get_basename (space + 1);
-      gint64 id = g_ascii_strtoll (base, NULL, 10);
-      g_free (base);
-      if (id <= 0)
-        continue;
-      if (code == 200)
+      if (codes[i] == 200)
         {
           gchar *body = NULL;
-          GStrv categories = g_file_get_contents (space + 1, &body, NULL, NULL)
+          GStrv categories = g_file_get_contents (dests[i], &body, NULL, NULL)
                                  ? gog_categories_parse (body)
                                  : NULL;
           g_free (body);
           if (categories)
             {
-              record (cache, id, categories, now);
+              record (cache, ids[i], categories, now);
               fetched++;
             }
           g_strfreev (categories);
         }
-      else if (code == 404)
+      else if (codes[i] == 404)
         {
           /* No longer sold, or never a product of its own: GOG has none. */
-          record (cache, id, NULL, now);
+          record (cache, ids[i], NULL, now);
           fetched++;
         }
     }
-  g_strfreev (lines);
-  remove_dir (dir);
+  gog_fetch_remove_dir (dir);
   g_free (dir);
+  g_strfreev (urls);
+  g_strfreev (dests);
+  g_free (codes);
 
   if (ok && fetched == 0)
     {
-      /* curl says the same for every game; once is enough. */
-      gchar *nl = err ? strchr (g_strstrip (err), '\n') : NULL;
-      if (nl)
-        *nl = '\0';
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED, "Could not fetch categories from GOG: %s",
-                   err && *err ? err : "no answer");
+                   curl_error ? curl_error : "no answer");
       ok = FALSE;
     }
-  g_free (out);
-  g_free (err);
+  g_free (curl_error);
   return ok;
 }
 

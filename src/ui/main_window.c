@@ -12,6 +12,7 @@
 #include "../gog_sync.h"
 #include "../text_util.h"
 #include "../categories.h"
+#include "../gamesdb.h"
 #include <string.h>
 
 struct _GogMainWindow
@@ -500,10 +501,11 @@ update_card (CardWidgets *cw, GogGame *game)
   gtk_label_set_label (cw->category, cats && cats[0] ? cats[0] : "");
   gtk_widget_set_visible (GTK_WIDGET (cw->category), cats && cats[0]);
 
-  if (gog_game_get_icon_path (game))
-    gtk_picture_set_filename (cw->cover, gog_game_get_icon_path (game));
-  else
-    gtk_picture_set_filename (cw->cover, NULL);
+  /* GOG's box art when it's there; otherwise the square icon, whole. */
+  const GogGamesdbInfo *db = gog_game_get_gamesdb (game);
+  const char *cover = db && db->cover_path ? db->cover_path : NULL;
+  gtk_picture_set_content_fit (cw->cover, cover ? GTK_CONTENT_FIT_COVER : GTK_CONTENT_FIT_CONTAIN);
+  gtk_picture_set_filename (cw->cover, cover ? cover : gog_game_get_icon_path (game));
 }
 
 static void
@@ -517,7 +519,8 @@ on_factory_setup (GtkSignalListItemFactory *factory, GtkListItem *list_item, gpo
 
   GtkWidget *cover = gtk_picture_new ();
   gtk_widget_add_css_class (cover, "gog-card-cover");
-  gtk_widget_set_size_request (cover, 152, 152);
+  /* Box art's shape (342x482). */
+  gtk_widget_set_size_request (cover, 152, 214);
   gtk_picture_set_content_fit (GTK_PICTURE (cover), GTK_CONTENT_FIT_COVER);
   gtk_box_append (GTK_BOX (box), cover);
 
@@ -599,8 +602,11 @@ on_item_bind (GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointe
                                         list_item);
   gulong categories = g_signal_connect (game, "notify::categories",
                                          G_CALLBACK (on_item_game_notify), list_item);
+  gulong gamesdb = g_signal_connect (game, "notify::gamesdb", G_CALLBACK (on_item_game_notify),
+                                      list_item);
   g_object_set_data (G_OBJECT (list_item), "notify-id", GSIZE_TO_POINTER (installed));
   g_object_set_data (G_OBJECT (list_item), "notify-categories-id", GSIZE_TO_POINTER (categories));
+  g_object_set_data (G_OBJECT (list_item), "notify-gamesdb-id", GSIZE_TO_POINTER (gamesdb));
 }
 
 static void
@@ -609,7 +615,7 @@ on_item_unbind (GtkSignalListItemFactory *factory, GtkListItem *list_item, gpoin
   (void) factory;
   (void) user_data;
   GogGame *game = gtk_list_item_get_item (list_item);
-  const char *keys[] = { "notify-id", "notify-categories-id" };
+  const char *keys[] = { "notify-id", "notify-categories-id", "notify-gamesdb-id" };
   for (guint i = 0; i < G_N_ELEMENTS (keys); i++)
     {
       gulong handler = (gulong) GPOINTER_TO_SIZE (g_object_get_data (G_OBJECT (list_item), keys[i]));
@@ -1202,6 +1208,28 @@ apply_categories (GogMainWindow *self)
   populate_category_picker (self);
 }
 
+/* Gives every game what GOG's games database says about it. */
+static void
+apply_gamesdb (GogMainWindow *self)
+{
+  GHashTable *cache = gog_gamesdb_load ();
+  GListModel *model = gog_library_get_model (self->library);
+  guint n = g_list_model_get_n_items (model);
+  for (guint i = 0; i < n; i++)
+    {
+      GogGame *g = g_list_model_get_item (model, i);
+      gchar *key = g_strdup_printf ("%" G_GINT64_FORMAT, gog_game_get_id (g));
+      gpointer stolen_key = NULL;
+      gpointer info = NULL;
+      g_hash_table_steal_extended (cache, key, &stolen_key, &info);
+      gog_game_set_gamesdb (g, info);
+      g_free (stolen_key);
+      g_free (key);
+      g_object_unref (g);
+    }
+  g_hash_table_unref (cache);
+}
+
 static void
 set_category_status (GogMainWindow *self, const char *text)
 {
@@ -1212,6 +1240,7 @@ set_category_status (GogMainWindow *self, const char *text)
 typedef struct
 {
   GogMainWindow *window;
+  const char *what; /* "categories", "details" */
   guint done;
   guint total;
 } CategoryProgress;
@@ -1222,7 +1251,7 @@ category_progress_idle (gpointer data)
   CategoryProgress *p = data;
   if (p->window->categories_running && !window_gone (p->window))
     {
-      gchar *text = g_strdup_printf ("Fetching categories from GOG… %u of %u", p->done, p->total);
+      gchar *text = g_strdup_printf ("Fetching %s from GOG… %u of %u", p->what, p->done, p->total);
       set_category_status (p->window, text);
       g_free (text);
     }
@@ -1231,15 +1260,28 @@ category_progress_idle (gpointer data)
   return G_SOURCE_REMOVE;
 }
 
+static void
+post_progress (const char *what, guint done, guint total, gpointer user_data)
+{
+  CategoryProgress *p = g_new0 (CategoryProgress, 1);
+  p->window = g_object_ref (user_data);
+  p->what = what;
+  p->done = done;
+  p->total = total;
+  g_idle_add (category_progress_idle, p);
+}
+
 /* On the lookup thread. */
 static void
 on_category_progress (guint done, guint total, gpointer user_data)
 {
-  CategoryProgress *p = g_new0 (CategoryProgress, 1);
-  p->window = g_object_ref (user_data);
-  p->done = done;
-  p->total = total;
-  g_idle_add (category_progress_idle, p);
+  post_progress ("categories", done, total, user_data);
+}
+
+static void
+on_gamesdb_progress (guint done, guint total, gpointer user_data)
+{
+  post_progress ("covers and details", done, total, user_data);
 }
 
 static void
@@ -1248,11 +1290,21 @@ category_lookup_thread (GTask *task, gpointer source, gpointer task_data, GCance
   GArray *ids = task_data;
   GError *error = NULL;
   guint looked_up = 0;
-  if (gog_categories_lookup ((const gint64 *) (gpointer) ids->data, ids->len, cancellable,
-                             on_category_progress, source, &looked_up, &error))
-    g_task_return_int (task, looked_up);
-  else
+  guint details = 0;
+  /* Details are fetched even when categories failed: they come from
+   * another server. The first failure is the one reported. */
+  gboolean ok = gog_categories_lookup ((const gint64 *) (gpointer) ids->data, ids->len,
+                                       cancellable, on_category_progress, source, &looked_up,
+                                       &error);
+  if (!g_cancellable_is_cancelled (cancellable))
+    ok = gog_gamesdb_lookup ((const gint64 *) (gpointer) ids->data, ids->len, cancellable,
+                             on_gamesdb_progress, source, &details, ok ? &error : NULL) && ok;
+  if (ok)
+    g_task_return_int (task, looked_up + details);
+  else if (error)
     g_task_return_error (task, error);
+  else
+    g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_CANCELLED, "Cancelled");
 }
 
 static void start_category_lookup (GogMainWindow *self);
@@ -1278,6 +1330,7 @@ on_category_lookup_done (GObject *source, GAsyncResult *res, gpointer user_data)
       self->categories_refetch = FALSE;
       self->categories_pending = FALSE;
       gog_categories_forget ();
+      gog_gamesdb_forget ();
       start_category_lookup (self);
       return;
     }
@@ -1289,6 +1342,7 @@ on_category_lookup_done (GObject *source, GAsyncResult *res, gpointer user_data)
 
   /* Whatever was found is in the cache, also after a failure. */
   apply_categories (self);
+  apply_gamesdb (self);
   on_filters_changed (NULL, self);
   on_sort_changed (NULL, self);
   if (error)
@@ -1304,7 +1358,7 @@ on_category_lookup_done (GObject *source, GAsyncResult *res, gpointer user_data)
     {
       set_category_status (self, NULL);
       if (looked_up > 0)
-        gog_announce (GTK_WIDGET (self), "Categories fetched from GOG.");
+        gog_announce (GTK_WIDGET (self), "Categories, covers and details fetched from GOG.");
     }
 
   if (self->categories_pending)
@@ -1363,6 +1417,7 @@ on_refetch_categories (gpointer user_data)
       return;
     }
   gog_categories_forget ();
+  gog_gamesdb_forget ();
   start_category_lookup (self);
 }
 
@@ -1445,6 +1500,7 @@ on_scan_done (GObject *source, GAsyncResult *res, gpointer user_data)
 
   populate_language_dropdown (self);
   apply_categories (self);
+  apply_gamesdb (self);
   start_category_lookup (self);
   /* Re-filter/re-sort: install state was applied after the models saw the
    * new items. */

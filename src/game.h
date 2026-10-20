@@ -7,6 +7,7 @@
 
 #include <glib-object.h>
 #include <gio/gio.h>
+#include "gamesdb.h"
 
 G_BEGIN_DECLS
 
@@ -95,6 +96,12 @@ void                gog_game_set_languages (GogGame *self, GStrv languages);
  * notify::categories when they changed. */
 const char *const *gog_game_get_categories (GogGame *self);
 void                gog_game_set_categories (GogGame *self, GStrv categories);
+
+/* What GOG's games database says about the game (artwork, summary,
+ * developers, themes...), from the gamesdb cache; NULL if not known.
+ * Owned by self; set takes ownership and emits notify::gamesdb. */
+const GogGamesdbInfo *gog_game_get_gamesdb (GogGame *self);
+void                  gog_game_set_gamesdb (GogGame *self, GogGamesdbInfo *info);
 
 /* When GOG first released the game (the product json's release_date), as
  * Unix time; 0 if not known. */

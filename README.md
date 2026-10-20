@@ -61,6 +61,9 @@ your GOG login.
   them from GOG once per game in the background after a scan and keeps them
   in `gog-manager-categories.json` in the app's config folder, so they work offline;
   Preferences can fetch them all again.
+- **Box art and details** — cards show each game's box art, and its page
+  the background art, developer, publisher, series, themes and game modes,
+  from GOG's games database; cached in the config folder like the categories.
 - **Views** — show the library as a grid of covers, a simple list or a
   detailed table (categories, platforms, status, size, release date,
   languages, DLC and extras); the choice is remembered.
@@ -181,6 +184,8 @@ directly next to the executable are moved there on start:
 | `<app dir>/.gog-manager-configs/gog-manager-state.json` | Per-game install state (keyed by product id) |
 | `<app dir>/.gog-manager-configs/gog-manager-updates.json` | The last GOG check: what each game has to download |
 | `<app dir>/.gog-manager-configs/gog-manager-download.json` | Download choices: files at the same time, and each game's languages |
+| `<app dir>/.gog-manager-configs/gog-manager-gamesdb.json` | Details from GOG's games database (summary, developers, themes...) |
+| `<app dir>/.gog-manager-configs/gamesdb-images/` | Box art and backgrounds from GOG's games database |
 | `$XDG_DATA_HOME/gog-manager/proton/<tag>/` | Downloaded GE-Proton builds |
 
 The GOG check and downloads use lgogdownloader's own settings in

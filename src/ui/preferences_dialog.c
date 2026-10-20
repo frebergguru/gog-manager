@@ -532,16 +532,17 @@ static AdwPreferencesGroup *
 categories_group (PrefsCtx *ctx)
 {
   AdwPreferencesGroup *group = ADW_PREFERENCES_GROUP (adw_preferences_group_new ());
-  adw_preferences_group_set_title (group, "Categories");
+  adw_preferences_group_set_title (group, "Details from GOG");
   ctx->categories_row = ADW_ACTION_ROW (adw_action_row_new ());
-  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (ctx->categories_row), "Categories from GOG");
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (ctx->categories_row), "Categories, covers and details");
   adw_action_row_set_subtitle (ctx->categories_row,
-                               "Fetched once per game for sorting and filtering. Fetch them "
-                               "again if GOG has changed a game's genres.");
+                               "Fetched once per game for the cards, game pages, sorting and "
+                               "filtering. Fetch them again if GOG has changed a game's genres "
+                               "or art.");
   GtkWidget *button = gtk_button_new_with_label ("Fetch Again");
   gtk_widget_set_valign (button, GTK_ALIGN_CENTER);
   gtk_accessible_update_property (GTK_ACCESSIBLE (button), GTK_ACCESSIBLE_PROPERTY_LABEL,
-                                  "Fetch categories again", -1);
+                                  "Fetch categories, covers and details again", -1);
   g_signal_connect (button, "clicked", G_CALLBACK (on_refetch_clicked), ctx);
   adw_action_row_add_suffix (ctx->categories_row, button);
   adw_preferences_group_add (group, GTK_WIDGET (ctx->categories_row));

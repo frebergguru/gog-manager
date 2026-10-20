@@ -640,6 +640,23 @@ build_dlc (GogGameDetail *self)
     }
 }
 
+static gboolean
+strv_equal (GStrv a, GStrv b)
+{
+  return a && b && g_strv_equal ((const char *const *) a, (const char *const *) b);
+}
+
+/* "\n<what>: a, b, c", or nothing when the list is empty. */
+static void
+append_list (GString *s, const char *what, GStrv list)
+{
+  if (!list || !list[0])
+    return;
+  gchar *joined = g_strjoinv (", ", list);
+  g_string_append_printf (s, "\n%s: %s", what, joined);
+  g_free (joined);
+}
+
 static void
 refresh (GogGameDetail *self)
 {
@@ -686,27 +703,35 @@ refresh (GogGameDetail *self)
         g_date_time_unref (dt);
     }
   const char *const *categories = gog_game_get_categories (self->game);
-  if (categories && categories[0])
+  append_list (badges, "Categories", (GStrv) categories);
+  const GogGamesdbInfo *db = gog_game_get_gamesdb (self->game);
+  if (db)
     {
-      gchar *joined = g_strjoinv (", ", (GStrv) categories);
-      g_string_append_printf (badges, "\nCategories: %s", joined);
-      g_free (joined);
+      append_list (badges, "Developer", db->developers);
+      if (!strv_equal (db->publishers, db->developers))
+        append_list (badges, "Publisher", db->publishers);
+      if (db->series)
+        g_string_append_printf (badges, "\nSeries: %s", db->series);
+      append_list (badges, "Themes", db->themes);
+      append_list (badges, "Modes", db->game_modes);
     }
   gtk_label_set_label (self->badges_label, badges->str);
   g_string_free (badges, TRUE);
 
-  if (gog_game_get_logo_path (self->game))
-    gtk_picture_set_filename (self->logo, gog_game_get_logo_path (self->game));
+  /* GOG's background art when it's there, else lgogdownloader's logo. */
+  if (db && db->background_path)
+    gtk_picture_set_filename (self->logo, db->background_path);
   else
-    gtk_picture_set_filename (self->logo, NULL);
+    gtk_picture_set_filename (self->logo, gog_game_get_logo_path (self->game));
 
   const char *serials = gog_game_get_serials (self->game);
   gtk_label_set_label (self->serials_label, serials ? serials : "");
   gtk_widget_set_visible (self->serials_group, serials != NULL);
 
-  gtk_label_set_label (self->description_label,
-                        gog_game_get_description (self->game) ? gog_game_get_description (self->game)
-                                                                : "");
+  const char *description = gog_game_get_description (self->game);
+  if ((!description || !*description) && db)
+    description = db->summary;
+  gtk_label_set_label (self->description_label, description ? description : "");
 
   build_action_row (self);
   build_runner_row (self);

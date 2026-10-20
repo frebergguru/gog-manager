@@ -36,6 +36,8 @@ common_sources = [
   'src/gog_sync.c',
   'src/original_language.c',
   'src/categories.c',
+  'src/gamesdb.c',
+  'src/fetch.c',
   'src/installer_engine.c',
   'src/launch.c',
   'src/shortcut.c',
@@ -68,7 +70,7 @@ install_data('packaging/org.gogmanager.app.svg',
 test_deps = [gtk_dep, adw_dep, gio_dep, json_dep]
 test_support_sources = ['src/json_util.c', 'src/text_util.c', 'src/runner.c', 'src/proton_fetch.c',
                          'src/gog_sync.c', 'src/original_language.c', 'src/categories.c',
-                         'src/config.c', 'src/game.c']
+                         'src/gamesdb.c', 'src/fetch.c', 'src/config.c', 'src/game.c']
 
 test_json_exe = executable('test-json-util',
   ['tests/test_json_util.c'] + test_support_sources,
@@ -99,6 +101,12 @@ test_categories_exe = executable('test-categories',
   dependencies : test_deps,
 )
 test('categories', test_categories_exe)
+
+test_gamesdb_exe = executable('test-gamesdb',
+  ['tests/test_gamesdb.c'] + test_support_sources,
+  dependencies : test_deps,
+)
+test('gamesdb', test_gamesdb_exe)
 
 test_shortcut_exe = executable('test-shortcut',
   ['tests/test_shortcut.c', 'src/shortcut.c', 'src/launch.c'] + test_support_sources,
