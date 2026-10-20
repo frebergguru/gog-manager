@@ -33,8 +33,10 @@ typedef struct
 void gog_gamesdb_info_free (GogGamesdbInfo *info);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC (GogGamesdbInfo, gog_gamesdb_info_free)
 
-/* Called after each step with how much of the work is done. */
-typedef void (*GogGamesdbProgress) (guint done, guint total, gpointer user_data);
+/* Called after each step with how much of the work is done: first the
+ * details (images FALSE), then the covers and backgrounds (images TRUE),
+ * which are on disk for gog_gamesdb_load() as each step ends. */
+typedef void (*GogGamesdbProgress) (guint done, guint total, gboolean images, gpointer user_data);
 
 /* Looks up the games not in the cache yet (and those gamesdb didn't know
  * more than a month ago), then downloads any cover and background that is

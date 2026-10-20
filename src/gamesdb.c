@@ -421,7 +421,7 @@ fetch_images (const gint64 *ids, guint n_ids, GCancellable *cancellable,
       g_strfreev (parts);
       g_free (codes);
       if (progress)
-        progress (i + n, urls->len, user_data);
+        progress (i + n, urls->len, TRUE, user_data);
     }
   g_ptr_array_unref (urls);
   g_ptr_array_unref (paths);
@@ -516,7 +516,7 @@ gog_gamesdb_lookup (const gint64 *ids, guint n_ids, GCancellable *cancellable,
       G_UNLOCK (cache);
       json_object_put (answers);
       if (progress)
-        progress (i + n, todo->len, user_data);
+        progress (i + n, todo->len, FALSE, user_data);
     }
   g_array_unref (todo);
 

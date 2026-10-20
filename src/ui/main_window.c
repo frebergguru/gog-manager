@@ -1271,7 +1271,8 @@ build_status_bar (GogMainWindow *self)
 typedef struct
 {
   GogMainWindow *window;
-  const char *what; /* "categories", "details" */
+  const char *what; /* e.g. "Fetching categories from GOG" */
+  gboolean images;  /* covers came in: show them now, not at the end */
   guint done;
   guint total;
 } CategoryProgress;
@@ -1282,9 +1283,11 @@ category_progress_idle (gpointer data)
   CategoryProgress *p = data;
   if (p->window->categories_running && !window_gone (p->window))
     {
-      gchar *text = g_strdup_printf ("Fetching %s from GOG… %u of %u", p->what, p->done, p->total);
+      gchar *text = g_strdup_printf ("%s… %u of %u", p->what, p->done, p->total);
       set_category_status (p->window, text);
       g_free (text);
+      if (p->images)
+        apply_gamesdb (p->window);
     }
   g_object_unref (p->window);
   g_free (p);
@@ -1292,11 +1295,12 @@ category_progress_idle (gpointer data)
 }
 
 static void
-post_progress (const char *what, guint done, guint total, gpointer user_data)
+post_progress (const char *what, gboolean images, guint done, guint total, gpointer user_data)
 {
   CategoryProgress *p = g_new0 (CategoryProgress, 1);
   p->window = g_object_ref (user_data);
   p->what = what;
+  p->images = images;
   p->done = done;
   p->total = total;
   g_idle_add (category_progress_idle, p);
@@ -1306,13 +1310,17 @@ post_progress (const char *what, guint done, guint total, gpointer user_data)
 static void
 on_category_progress (guint done, guint total, gpointer user_data)
 {
-  post_progress ("categories", done, total, user_data);
+  post_progress ("Fetching categories from GOG", FALSE, done, total, user_data);
 }
 
 static void
-on_gamesdb_progress (guint done, guint total, gpointer user_data)
+on_gamesdb_progress (guint done, guint total, gboolean images, gpointer user_data)
 {
-  post_progress ("covers and details", done, total, user_data);
+  /* Only what is missing: details once per game, then the images not on
+   * disk yet (a restart carries on where the last run stopped). */
+  post_progress (images ? "Downloading covers and backgrounds from GOG"
+                        : "Fetching details from GOG",
+                 images, done, total, user_data);
 }
 
 static void

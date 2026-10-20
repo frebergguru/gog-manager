@@ -14,6 +14,9 @@ All notable changes to GOG Manager are listed here. The format follows
   description. Fetched in the background with the categories and kept in
   the config folder (`gog-manager-gamesdb.json` and `gamesdb-images/`), so
   they work offline; Preferences fetches them again with the categories.
+  Only what is missing is fetched: details once per game, then the images
+  not on disk yet. Covers appear on the cards as they arrive, and a restart
+  carries on where the last run stopped.
 
 ### Changed
 - The progress of fetching categories, covers and details from GOG, and
