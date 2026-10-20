@@ -6,6 +6,8 @@ All notable changes to GOG Manager are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-20
+
 ### Added
 - A free-space check before installing: when the drive looks too full
   (about twice the installer size, plus 1 GB for a new Wine/Proton
@@ -33,8 +35,8 @@ All notable changes to GOG Manager are listed here. The format follows
   "Windows · 4,6 GB · Installed", and the banner keeps the art's own
   proportions instead of cropping it to a fixed height.
 - Descriptions no longer keep the stray indents and double spaces in
-  GOG's HTML, a list item written as "<li><br>Text" keeps its text on the
-  bullet's line, and a paragraph GOG repeats word for word (DOOM 3: BFG
+  GOG's HTML, a list item written as "<li><br>Text" (also with space or a
+  line break between the two) keeps its text on the bullet's line, and a paragraph GOG repeats word for word (DOOM 3: BFG
   Edition has its feature list twice) is shown once.
 - Install buttons say "Windows" and "Linux", not "windows" and "linux".
 - Preferences is split into three pages, Library, Runners and Downloads,
@@ -196,7 +198,8 @@ All notable changes to GOG Manager are listed here. The format follows
   keeps them.
 - Single-file AppImage, built and published by CI.
 
-[Unreleased]: https://github.com/frebergguru/gog-manager/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/frebergguru/gog-manager/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/frebergguru/gog-manager/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/frebergguru/gog-manager/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/frebergguru/gog-manager/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/frebergguru/gog-manager/compare/v0.1.0...v0.2.0
