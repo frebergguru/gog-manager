@@ -19,6 +19,12 @@ All notable changes to GOG Manager are listed here. The format follows
   carries on where the last run stopped.
 
 ### Changed
+- Preferences is split into three pages, Library, Runners and Downloads,
+  with the switcher in the header (a bar at the bottom in a narrow window).
+  Folder rows show the path as their main text and open the folder chooser
+  from anywhere on the row; the default runner's name gets a line of its
+  own; custom runners are listed one per row and can be removed; shorter
+  texts throughout.
 - The progress of fetching categories, covers and details from GOG, and
   any failure, is shown in a blue bar along the bottom of the window
   instead of small text in the sidebar. A failure can be dismissed.
