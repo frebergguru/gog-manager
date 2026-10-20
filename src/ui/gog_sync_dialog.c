@@ -93,13 +93,7 @@ ctx_free (SyncCtx *ctx)
 static void
 announce (SyncCtx *ctx, const char *message)
 {
-#if GTK_CHECK_VERSION(4, 14, 0)
-  gtk_accessible_announce (GTK_ACCESSIBLE (ctx->window), message,
-                           GTK_ACCESSIBLE_ANNOUNCEMENT_PRIORITY_MEDIUM);
-#else
-  (void) ctx;
-  (void) message;
-#endif
+  gog_announce (GTK_WIDGET (ctx->window), message);
 }
 
 static void

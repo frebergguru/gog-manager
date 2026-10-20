@@ -250,3 +250,22 @@ gog_alert_present (GogAlert *alert, GtkWindow *parent, GogAlertFunc callback, gp
     }
   gtk_window_present (window);
 }
+
+void
+gog_announce (GtkWidget *widget, const char *message)
+{
+#if GTK_CHECK_VERSION(4, 14, 0)
+  if (!widget || !message || !*message)
+    return;
+  GType at_spi = g_type_from_name ("GtkAtSpiContext");
+  GtkATContext *context = gtk_accessible_get_at_context (GTK_ACCESSIBLE (widget));
+  gboolean usable = context && at_spi && G_TYPE_CHECK_INSTANCE_TYPE (context, at_spi);
+  g_clear_object (&context);
+  if (usable)
+    gtk_accessible_announce (GTK_ACCESSIBLE (widget), message,
+                             GTK_ACCESSIBLE_ANNOUNCEMENT_PRIORITY_MEDIUM);
+#else
+  (void) widget;
+  (void) message;
+#endif
+}

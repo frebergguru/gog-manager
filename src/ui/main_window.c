@@ -8,6 +8,7 @@
 #include "../library.h"
 #include "../config.h"
 #include "gog_sync_dialog.h"
+#include "dialog_window.h"
 #include "../gog_sync.h"
 #include "../text_util.h"
 #include "../categories.h"
@@ -737,7 +738,7 @@ on_category_lookup_done (GObject *source, GAsyncResult *res, gpointer user_data)
   self->categories_running = FALSE;
   g_clear_object (&self->categories_cancellable);
   GError *error = NULL;
-  g_task_propagate_int (G_TASK (res), &error);
+  gssize looked_up = g_task_propagate_int (G_TASK (res), &error);
   if (gtk_widget_in_destruction (GTK_WIDGET (self)) ||
       g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
     {
@@ -754,11 +755,16 @@ on_category_lookup_done (GObject *source, GAsyncResult *res, gpointer user_data)
       gchar *text = g_strdup_printf ("%s\nThe rest are fetched on the next rescan.",
                                      error->message);
       set_category_status (self, text);
+      gog_announce (GTK_WIDGET (self), text);
       g_free (text);
       g_clear_error (&error);
     }
   else
-    set_category_status (self, NULL);
+    {
+      set_category_status (self, NULL);
+      if (looked_up > 0)
+        gog_announce (GTK_WIDGET (self), "Categories fetched from GOG.");
+    }
 
   if (self->categories_pending)
     {

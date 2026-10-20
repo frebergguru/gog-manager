@@ -38,6 +38,12 @@ void      gog_alert_set_extra_child (GogAlert *alert, GtkWidget *child);
 void      gog_alert_present (GogAlert *alert, GtkWindow *parent, GogAlertFunc callback,
                              gpointer user_data);
 
+/* Tells screen readers message (gtk_accessible_announce, medium priority). Only through
+ * AT-SPI: GTK's stand-in accessibility context, used when no AT-SPI bus is
+ * there (Broadway, some headless sessions), crashes on announcements, and
+ * nobody would hear them there anyway. */
+void gog_announce (GtkWidget *widget, const char *message);
+
 G_END_DECLS
 
 #endif

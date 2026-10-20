@@ -132,11 +132,7 @@ set_status (ManageCtx *ctx, const char *message)
 {
   gtk_label_set_text (ctx->status_label, message);
   gtk_widget_set_visible (GTK_WIDGET (ctx->status_label), message && *message);
-#if GTK_CHECK_VERSION(4, 14, 0)
-  if (message && *message)
-    gtk_accessible_announce (GTK_ACCESSIBLE (ctx->window), message,
-                             GTK_ACCESSIBLE_ANNOUNCEMENT_PRIORITY_MEDIUM);
-#endif
+  gog_announce (GTK_WIDGET (ctx->window), message);
 }
 
 static void
