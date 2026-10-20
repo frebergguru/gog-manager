@@ -1217,7 +1217,15 @@ refresh_details (GogGameDetail *self)
   const char *description = gog_game_get_description (self->game);
   if ((!description || !*description) && db)
     description = db->summary;
-  gtk_label_set_label (self->description_label, description ? description : "");
+  /* GOG's text for some is only placeholders (DOOM I Enhanced), and
+   * gamesdb may not know them: say so rather than show an empty tab. */
+  gboolean none = !description || !*description;
+  gtk_label_set_label (self->description_label,
+                       none ? "GOG gives no description for this game." : description);
+  if (none)
+    gtk_widget_add_css_class (GTK_WIDGET (self->description_label), "dim-label");
+  else
+    gtk_widget_remove_css_class (GTK_WIDGET (self->description_label), "dim-label");
 
   build_screenshots (self, db);
   build_videos (self, db);

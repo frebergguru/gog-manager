@@ -143,9 +143,10 @@ text_strip_html (const char *html)
     { "\r", "" },
     { "[ \t]+", " " },
     { " ?\n ?", "\n" },
-    /* A list item that is only "product_feature_1390579243": the name of
-     * a feature image GOG's store page shows, not text (DOOM (2016)). */
-    { "(?m)^(" BULLET ")?product_feature_[0-9]+$", "" },
+    /* A line that is only "product_feature_1390579243" or
+     * "product_description_2015545325": names of parts GOG's store page
+     * fills in itself, not text (DOOM (2016), DOOM I Enhanced). */
+    { "(?m)^(" BULLET ")?product_[a-z]+_[0-9]+$", "" },
     { "\n{3,}", "\n\n" },
   };
   gchar *collapsed = valid;

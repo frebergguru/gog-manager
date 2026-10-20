@@ -34,8 +34,12 @@ All notable changes to GOG Manager are listed here. The format follows
 - A game's About text took a thin column under a screen of empty space
   when the game had many screenshots (the tabs were all as tall as the
   tallest); it fills the page's width again, right under the tabs.
-- Descriptions no longer end in "• product_feature_1390579243" and the
-  like: GOG's names for its store page's feature images (DOOM (2016)).
+- Descriptions no longer show "product_feature_1390579243",
+  "product_description_2015545325" and the like: names of parts GOG's
+  store page fills in itself (DOOM (2016), DOOM I Enhanced). A game whose
+  description is only those falls back to the games database's summary,
+  and where there is none the About tab says that GOG gives no
+  description.
 
 ## [0.5.0] - 2026-10-20
 

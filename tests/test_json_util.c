@@ -80,6 +80,11 @@ test_strip_html_feature_placeholder (void)
                                 "<ul><li>product_feature_1390579243</li></ul>");
   g_assert_cmpstr (out, ==, "Single-player only.");
   g_free (out);
+  /* DOOM I Enhanced has nothing else. */
+  out = text_strip_html ("product_description_2015545325\n<br>product_feature_2015545325\n<br>\n"
+                         "<ul><li>product_feature_2015545325</li></ul>");
+  g_assert_cmpstr (out, ==, "");
+  g_free (out);
 }
 
 /* GOG's HTML indents lines and double-spaces words. */
