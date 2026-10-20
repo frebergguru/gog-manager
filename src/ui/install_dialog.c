@@ -8,6 +8,7 @@
 #include "../installer_engine.h"
 #include "../launch.h"
 #include "dialog_window.h"
+#include "../text_util.h"
 
 typedef struct
 {
@@ -471,6 +472,46 @@ start_install (InstallCtx *ctx)
 }
 
 static void
+on_low_space_response (const char *response, gpointer user_data)
+{
+  InstallCtx *ctx = user_data;
+  if (g_strcmp0 (response, "install") == 0 && !ctx->job)
+    start_install (ctx);
+}
+
+/* Installs, after a warning when the drive looks too full. Only a
+ * warning: the size is an estimate (see gog_install_estimate_bytes()). */
+static void
+check_space_and_install (InstallCtx *ctx)
+{
+  /* A DLC goes into its base game's folder and uses its prefix. */
+  gboolean new_prefix = ctx->installer->os == GOG_OS_WINDOWS && !ctx->runner_locked;
+  guint64 needed = gog_install_estimate_bytes (ctx->installer->size, new_prefix);
+  guint64 free_bytes = 0;
+  if (!gog_free_space (ctx->install_dir, &free_bytes) || free_bytes >= needed)
+    {
+      start_install (ctx);
+      return;
+    }
+
+  gchar *free_text = text_format_size (free_bytes);
+  gchar *needed_text = text_format_size (needed);
+  gchar *body = g_strdup_printf ("Only %s is free on the drive for %s. %s probably needs about "
+                                 "%s once installed, so the install may fail part way.",
+                                 free_text, ctx->install_dir, gog_game_get_title (ctx->game),
+                                 needed_text);
+  GogAlert *alert = gog_alert_new ("Not Enough Free Space?", body);
+  gog_alert_add_response (alert, "cancel", "_Cancel", ADW_RESPONSE_DEFAULT);
+  gog_alert_add_response (alert, "install", "_Install Anyway", ADW_RESPONSE_DESTRUCTIVE);
+  gog_alert_set_default_response (alert, "cancel");
+  gog_alert_set_close_response (alert, "cancel");
+  gog_alert_present (alert, ctx->window, on_low_space_response, ctx);
+  g_free (body);
+  g_free (needed_text);
+  g_free (free_text);
+}
+
+static void
 on_action_clicked (GtkButton *button, gpointer user_data)
 {
   (void) button;
@@ -478,7 +519,7 @@ on_action_clicked (GtkButton *button, gpointer user_data)
 
   if (!ctx->job)
     {
-      start_install (ctx);
+      check_space_and_install (ctx);
       return;
     }
 

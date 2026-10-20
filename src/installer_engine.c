@@ -1080,3 +1080,36 @@ gog_uninstall_game (GogGame *game, GError **error)
   gog_game_set_prefix_path (game, NULL);
   return TRUE;
 }
+
+guint64
+gog_install_estimate_bytes (guint64 installer_size, gboolean new_prefix)
+{
+  return installer_size * 2 + (new_prefix ? (guint64) 1 << 30 : 0);
+}
+
+gboolean
+gog_free_space (const char *path, guint64 *free_bytes)
+{
+  if (!path || !g_path_is_absolute (path))
+    return FALSE;
+  gchar *dir = g_strdup (path);
+  while (!g_file_test (dir, G_FILE_TEST_IS_DIR))
+    {
+      gchar *up = g_path_get_dirname (dir);
+      gboolean top = strcmp (up, dir) == 0;
+      g_free (dir);
+      dir = up;
+      if (top)
+        break;
+    }
+  GFile *file = g_file_new_for_path (dir);
+  g_free (dir);
+  GFileInfo *info = g_file_query_filesystem_info (file, G_FILE_ATTRIBUTE_FILESYSTEM_FREE, NULL,
+                                                  NULL);
+  g_object_unref (file);
+  gboolean known = info && g_file_info_has_attribute (info, G_FILE_ATTRIBUTE_FILESYSTEM_FREE);
+  if (known)
+    *free_bytes = g_file_info_get_attribute_uint64 (info, G_FILE_ATTRIBUTE_FILESYSTEM_FREE);
+  g_clear_object (&info);
+  return known;
+}

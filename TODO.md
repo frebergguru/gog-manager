@@ -59,7 +59,9 @@ API ourselves: it holds the login and handles GOG's quirks.
       too.
 - [ ] **Game details JSON**: `--save-game-details-json` (the
       `account/gameDetails/<id>.json` data: changelog, messages, CD keys).
-- [ ] **Free space**: `--check-free-space` before downloading.
+- [x] **Free space**: checked by GOG Manager itself before downloading
+      (lgogdownloader's `--check-free-space` counts files already on disk
+      too) and before installing.
 - [ ] **Download speed limit**: `--limit-rate`.
 - [ ] **Patches and language packs**: offer them, instead of always
       excluding patches.

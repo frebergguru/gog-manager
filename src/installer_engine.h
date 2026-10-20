@@ -47,6 +47,16 @@ const char *gog_install_job_get_install_dir (GogInstallJob *self);
  * installs, or accept a brief UI stall for small ones. */
 gboolean gog_uninstall_game (GogGame *game, GError **error);
 
+/* Roughly how much space an install takes. GOG doesn't say how big a game
+ * is once installed, only its installers, which are compressed: twice
+ * their size, plus 1 GiB when a new Wine/Proton prefix is made. */
+guint64 gog_install_estimate_bytes (guint64 installer_size, gboolean new_prefix);
+
+/* Free bytes for an unprivileged user on the drive that holds path (or
+ * the nearest folder above it that exists, as an install folder usually
+ * doesn't yet). FALSE when it can't be told. */
+gboolean gog_free_space (const char *path, guint64 *free_bytes);
+
 G_END_DECLS
 
 #endif

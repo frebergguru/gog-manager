@@ -5,6 +5,7 @@
 #include "gog_sync_dialog.h"
 #include "../gog_sync.h"
 #include "dialog_window.h"
+#include "../installer_engine.h"
 
 #define N_SLOTS 8 /* the most downloads at the same time */
 #define N_PARTS 3
@@ -875,12 +876,13 @@ fetch_missing_file_lists (SyncCtx *ctx)
   g_strfreev (names);
 }
 
-static void
-on_download_clicked (GtkButton *button, gpointer user_data)
+/* What is ticked, and in *bytes (may be NULL) the size of the files that
+ * will come, as far as it is known. */
+static GArray *
+chosen_requests (SyncCtx *ctx, guint64 *bytes)
 {
-  (void) button;
-  SyncCtx *ctx = user_data;
   GArray *requests = g_array_new (FALSE, FALSE, sizeof (GogSyncRequest));
+  guint64 total = 0;
   for (guint i = 0; i < ctx->games->len; i++)
     {
       GameRow *game = g_ptr_array_index (ctx->games, i);
@@ -888,9 +890,25 @@ on_download_clicked (GtkButton *button, gpointer user_data)
       /* Results from before files were listed have no parts to choose. */
       if (game->item->files->len == 0)
         r.parts = GOG_SYNC_PART_ALL;
-      if (gtk_check_button_get_active (game->check) && r.parts)
-        g_array_append_val (requests, r);
+      if (!gtk_check_button_get_active (game->check) || !r.parts)
+        continue;
+      g_array_append_val (requests, r);
+      for (guint f = 0; f < game->item->files->len; f++)
+        {
+          GogSyncFile *file = g_ptr_array_index (game->item->files, f);
+          if ((file->part & r.parts) && gog_sync_file_wanted (file, r.languages))
+            total += file->size;
+        }
     }
+  if (bytes)
+    *bytes = total;
+  return requests;
+}
+
+static void
+start_download (SyncCtx *ctx)
+{
+  GArray *requests = chosen_requests (ctx, NULL);
   if (requests->len > 0)
     {
       guint threads = (guint) adw_spin_row_get_value (ctx->threads_row);
@@ -901,6 +919,49 @@ on_download_clicked (GtkButton *button, gpointer user_data)
       start_job (ctx, job);
     }
   g_array_unref (requests);
+}
+
+static void
+on_low_space_response (const char *response, gpointer user_data)
+{
+  SyncCtx *ctx = user_data;
+  if (g_strcmp0 (response, "download") == 0 && !ctx->job)
+    start_download (ctx);
+}
+
+/* Downloads, after a warning when the library's drive can't hold what is
+ * coming. Our own check, not lgogdownloader's --check-free-space: that one
+ * adds up every file of the games, also those already on disk, so an
+ * update to a big game would be refused. New files arrive before the old
+ * versions are deleted, so all of it has to fit. */
+static void
+on_download_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  SyncCtx *ctx = user_data;
+  guint64 needed = 0;
+  g_array_unref (chosen_requests (ctx, &needed));
+  guint64 free_bytes = 0;
+  if (needed == 0 || !gog_free_space (ctx->library_dir, &free_bytes) || free_bytes >= needed)
+    {
+      start_download (ctx);
+      return;
+    }
+
+  gchar *free_text = g_format_size (free_bytes);
+  gchar *needed_text = g_format_size (needed);
+  gchar *body = g_strdup_printf ("The downloads need %s, but only %s is free on the drive for "
+                                 "%s. Downloads that don't fit will fail.",
+                                 needed_text, free_text, ctx->library_dir);
+  GogAlert *alert = gog_alert_new ("Not Enough Free Space", body);
+  gog_alert_add_response (alert, "cancel", "_Cancel", ADW_RESPONSE_DEFAULT);
+  gog_alert_add_response (alert, "download", "_Download Anyway", ADW_RESPONSE_DESTRUCTIVE);
+  gog_alert_set_default_response (alert, "cancel");
+  gog_alert_set_close_response (alert, "cancel");
+  gog_alert_present (alert, ctx->window, on_low_space_response, ctx);
+  g_free (body);
+  g_free (needed_text);
+  g_free (free_text);
 }
 
 static void

@@ -7,6 +7,14 @@ All notable changes to GOG Manager are listed here. The format follows
 ## [Unreleased]
 
 ### Added
+- A free-space check before installing: when the drive looks too full
+  (about twice the installer size, plus 1 GB for a new Wine/Proton
+  prefix; GOG doesn't give the installed size) a warning offers Cancel or
+  Install Anyway.
+- A free-space check before downloading from GOG, counting only the files
+  that will actually be downloaded, with Cancel or Download Anyway.
+  (lgogdownloader's own `--check-free-space` counts every file of a game,
+  also those already on disk, so it would refuse updates to big games.)
 - Box art and details from GOG's games database (gamesdb.gog.com): grid
   cards show the game's vertical cover (the square icon when there is
   none), and the game page shows the background art, developer, publisher,

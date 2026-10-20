@@ -538,6 +538,24 @@ test_config_files_move_to_config_folder (void)
   g_free (tmp);
 }
 
+/* The estimate, and free space for an install folder that doesn't exist
+ * yet: the nearest folder above it is asked. */
+static void
+test_install_space (void)
+{
+  g_assert_cmpuint (gog_install_estimate_bytes (1000, FALSE), ==, 2000);
+  g_assert_cmpuint (gog_install_estimate_bytes (1000, TRUE), ==, 2000 + (1u << 30));
+  gchar *tmp = g_dir_make_tmp ("gog-space-XXXXXX", NULL);
+  gchar *missing = g_build_filename (tmp, "not", "there", "yet", NULL);
+  guint64 free_bytes = 0;
+  g_assert_true (gog_free_space (missing, &free_bytes));
+  g_assert_cmpuint (free_bytes, >, 0);
+  g_assert_false (gog_free_space ("relative/path", &free_bytes));
+  g_rmdir (tmp);
+  g_free (missing);
+  g_free (tmp);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -551,5 +569,6 @@ main (int argc, char *argv[])
   g_test_add_func ("/gog_sync/version_blind_names", test_version_blind_names);
   g_test_add_func ("/install/uninstall_protects_folders", test_uninstall_protects_folders);
   g_test_add_func ("/config/files_move_to_config_folder", test_config_files_move_to_config_folder);
+  g_test_add_func ("/install/space", test_install_space);
   return g_test_run ();
 }
