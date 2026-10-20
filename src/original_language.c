@@ -187,9 +187,80 @@ join (GPtrArray *list, const char *sep)
   return g_string_free (out, FALSE);
 }
 
+typedef struct
+{
+  gboolean done;
+  gchar *out;
+  gchar *err;
+  GError *error;
+} CurlRun;
+
+static void
+on_curl_done (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+  CurlRun *run = user_data;
+  g_subprocess_communicate_utf8_finish (G_SUBPROCESS (source), res, &run->out, &run->err,
+                                        &run->error);
+  run->done = TRUE;
+}
+
+static gboolean
+wake_up (gpointer data)
+{
+  (void) data;
+  return G_SOURCE_CONTINUE;
+}
+
+/* Runs curl and collects its output like g_spawn_sync(), but kills it as
+ * soon as *cancelled is set, so Cancel doesn't wait out --max-time. */
+static gboolean
+run_curl (gchar **argv, const volatile gboolean *cancelled, gchar **out, gchar **err,
+          gboolean *succeeded, GError **error)
+{
+  GSubprocess *proc = g_subprocess_newv ((const gchar *const *) argv,
+                                         G_SUBPROCESS_FLAGS_STDOUT_PIPE |
+                                             G_SUBPROCESS_FLAGS_STDERR_PIPE,
+                                         error);
+  if (!proc)
+    return FALSE;
+  GMainContext *context = g_main_context_new ();
+  g_main_context_push_thread_default (context);
+  CurlRun run = { 0 };
+  g_subprocess_communicate_utf8_async (proc, NULL, NULL, on_curl_done, &run);
+  /* Looks at the flag a few times a second while curl runs. */
+  GSource *tick = g_timeout_source_new (200);
+  g_source_set_callback (tick, wake_up, NULL, NULL);
+  g_source_attach (tick, context);
+  while (!run.done)
+    {
+      if (cancelled && *cancelled)
+        g_subprocess_force_exit (proc);
+      g_main_context_iteration (context, TRUE);
+    }
+  g_source_destroy (tick);
+  g_source_unref (tick);
+  g_main_context_pop_thread_default (context);
+  g_main_context_unref (context);
+
+  gboolean ok = run.error == NULL;
+  if (!ok)
+    g_propagate_error (error, run.error);
+  else if (cancelled && *cancelled)
+    {
+      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_CANCELLED, "Cancelled");
+      ok = FALSE;
+    }
+  *succeeded = ok && g_subprocess_get_successful (proc);
+  *out = run.out;
+  *err = run.err;
+  g_object_unref (proc);
+  return ok;
+}
+
 /* Runs one SPARQL query for up to BATCH games and records the answers. */
 static gboolean
-lookup_batch (const char *const *names, guint n, json_object *cache, GError **error)
+lookup_batch (const char *const *names, guint n, json_object *cache,
+              const volatile gboolean *cancelled, GError **error)
 {
   GString *values = g_string_new (NULL);
   for (guint i = 0; i < n; i++)
@@ -214,11 +285,10 @@ lookup_batch (const char *const *names, guint n, json_object *cache, GError **er
                     "--data-urlencode", data, SPARQL_URL, NULL };
   gchar *out = NULL;
   gchar *err = NULL;
-  gint status = 0;
-  gboolean ok = g_spawn_sync (NULL, argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, &out, &err,
-                              &status, error);
+  gboolean succeeded = FALSE;
+  gboolean ok = run_curl (argv, cancelled, &out, &err, &succeeded, error);
   g_free (data);
-  if (ok && !g_spawn_check_wait_status (status, NULL))
+  if (ok && !succeeded)
     {
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
                    "Could not look up original languages on Wikidata: %s",
@@ -330,7 +400,7 @@ gog_original_lookup (const char *const *gamenames, const volatile gboolean *canc
   gboolean ok = TRUE;
   for (guint i = 0; ok && i < todo->len && !(cancelled && *cancelled); i += BATCH)
     ok = lookup_batch ((const char *const *) todo->pdata + i, MIN (BATCH, todo->len - i), cache,
-                       error);
+                       cancelled, error);
   /* Whatever was looked up before a failure is kept. */
   if (todo->len)
     save_cache (cache);
