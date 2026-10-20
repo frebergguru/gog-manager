@@ -6,16 +6,6 @@ All notable changes to GOG Manager are listed here. The format follows
 
 ## [Unreleased]
 
-### Changed
-- Preferences is easier to read: each group says in one line what it is
-  for, and row subtitles are short enough to stay on one line next to
-  their buttons. Folders have a labelled Change button and show the home
-  folder as `~`. Fetching details again and adding Wine or Proton are
-  full-width buttons under their group instead of being squeezed into a
-  row or the group header. "Other Languages" is now "Also Download". The
-  pages can be switched with Alt+L, Alt+R and Alt+D, and the window opens
-  taller so the Runners page fits.
-
 ## [0.5.0] - 2026-10-20
 
 ### Added
@@ -50,17 +40,26 @@ All notable changes to GOG Manager are listed here. The format follows
   Edition has its feature list twice) is shown once.
 - Install buttons say "Windows" and "Linux", not "windows" and "linux".
 - Preferences is split into three pages, Library, Runners and Downloads,
-  with the switcher in the header (a bar at the bottom in a narrow window).
-  Folder rows show the path as their main text and open the folder chooser
-  from anywhere on the row; the default runner's name gets a line of its
-  own; custom runners are listed one per row and can be removed; shorter
-  texts throughout.
+  with the switcher in the header (a bar at the bottom in a narrow window)
+  and Alt+L, Alt+R and Alt+D to switch. Each group says in one line what it
+  is for, and row subtitles are short enough to stay on one line next to
+  their buttons. Folder rows have a labelled Change button, open the folder
+  chooser from anywhere on the row and show the home folder as `~`. Custom
+  runners are listed one per row and can be removed; fetching details
+  again and adding Wine or Proton are full-width buttons under their group.
+  "Other Languages" is now "Also Download", and the window opens taller so
+  the Runners page fits.
 - The progress of fetching categories, covers and details from GOG, and
   any failure, is shown in a blue bar along the bottom of the window
   instead of small text in the sidebar. A failure can be dismissed.
 - The config, install state, download choices, last GOG check and caches are
   kept in a hidden `.gog-manager-configs` folder next to the AppImage instead
   of directly beside it. Files from an older version are moved there on start.
+
+### Fixed
+- The AppImage no longer forces `GTK_THEME`, which replaced libadwaita's
+  stylesheet and left rows without padding and groups without space
+  between them.
 
 ## [0.4.0] - 2026-10-20
 
