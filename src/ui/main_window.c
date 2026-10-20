@@ -69,6 +69,7 @@ struct _GogMainWindow
    * are no-ops instead of dereferencing not-yet-created objects. */
   gboolean ready;
 
+  gboolean disposed;       /* dispose ran; late async callbacks must not touch widgets */
   gboolean scanning;       /* a scan is in flight; don't start a second one */
   gboolean rescan_pending; /* start_scan() was called during a scan */
   GCancellable *scan_cancellable;
@@ -80,6 +81,14 @@ struct _GogMainWindow
 };
 
 G_DEFINE_FINAL_TYPE (GogMainWindow, gog_main_window, ADW_TYPE_APPLICATION_WINDOW)
+
+/* TRUE once the window is being or has been torn down. in_destruction alone
+ * is only set while "destroy" is emitted, not after dispose has run. */
+static gboolean
+window_gone (GogMainWindow *self)
+{
+  return self->disposed || gtk_widget_in_destruction (GTK_WIDGET (self));
+}
 
 typedef struct
 {
@@ -1211,7 +1220,7 @@ static gboolean
 category_progress_idle (gpointer data)
 {
   CategoryProgress *p = data;
-  if (p->window->categories_running && !gtk_widget_in_destruction (GTK_WIDGET (p->window)))
+  if (p->window->categories_running && !window_gone (p->window))
     {
       gchar *text = g_strdup_printf ("Fetching categories from GOG… %u of %u", p->done, p->total);
       set_category_status (p->window, text);
@@ -1257,7 +1266,7 @@ on_category_lookup_done (GObject *source, GAsyncResult *res, gpointer user_data)
   g_clear_object (&self->categories_cancellable);
   GError *error = NULL;
   gssize looked_up = g_task_propagate_int (G_TASK (res), &error);
-  if (gtk_widget_in_destruction (GTK_WIDGET (self)))
+  if (window_gone (self))
     {
       g_clear_error (&error);
       return;
@@ -1380,7 +1389,7 @@ on_scan_done (GObject *source, GAsyncResult *res, gpointer user_data)
   self->scanning = FALSE;
   g_clear_object (&self->scan_cancellable);
 
-  if (gtk_widget_in_destruction (GTK_WIDGET (self)))
+  if (window_gone (self))
     {
       g_object_unref (self);
       return;
@@ -1475,10 +1484,14 @@ start_scan (GogMainWindow *self)
 static void
 on_choose_library_response (GObject *source, GAsyncResult *res, gpointer user_data)
 {
-  GogMainWindow *self = user_data;
+  GogMainWindow *self = user_data; /* reffed by prompt_for_library() */
   GFile *folder = gtk_file_dialog_select_folder_finish (GTK_FILE_DIALOG (source), res, NULL);
-  if (!folder)
-    return;
+  if (!folder || window_gone (self))
+    {
+      g_clear_object (&folder);
+      g_object_unref (self);
+      return;
+    }
 
   g_free (self->config->library_path);
   self->config->library_path = g_file_get_path (folder);
@@ -1492,6 +1505,7 @@ on_choose_library_response (GObject *source, GAsyncResult *res, gpointer user_da
     }
 
   start_scan (self);
+  g_object_unref (self);
 }
 
 static void
@@ -1509,7 +1523,8 @@ prompt_for_library (GogMainWindow *self)
     }
   g_free (guess);
 
-  gtk_file_dialog_select_folder (dialog, GTK_WINDOW (self), NULL, on_choose_library_response, self);
+  gtk_file_dialog_select_folder (dialog, GTK_WINDOW (self), NULL, on_choose_library_response,
+                                 g_object_ref (self));
   g_object_unref (dialog);
 }
 
@@ -1551,7 +1566,7 @@ on_gog_sync_done (gboolean downloaded, gpointer user_data)
 {
   GogMainWindow *self = user_data;
   /* The updates window is destroyed with this one; don't rescan then. */
-  if (gtk_widget_in_destruction (GTK_WIDGET (self)))
+  if (window_gone (self))
     return;
   gboolean changed = load_gog_updates (self);
   if (downloaded || changed)
@@ -1828,6 +1843,7 @@ static void
 gog_main_window_dispose (GObject *object)
 {
   GogMainWindow *self = GOG_MAIN_WINDOW (object);
+  self->disposed = TRUE;
   if (self->scan_cancellable)
     g_cancellable_cancel (self->scan_cancellable);
   if (self->categories_cancellable)
@@ -1927,7 +1943,8 @@ gog_main_window_new (GtkApplication *app)
   /* library grid page */
   self->filter = gtk_custom_filter_new (filter_func, self, NULL);
   self->filter_model =
-      gtk_filter_list_model_new (gog_library_get_model (self->library), GTK_FILTER (self->filter));
+      gtk_filter_list_model_new (g_object_ref (gog_library_get_model (self->library)),
+                                 GTK_FILTER (self->filter));
   self->sorter = gtk_custom_sorter_new (sort_func, self, NULL);
   self->sort_model = gtk_sort_list_model_new (G_LIST_MODEL (self->filter_model), GTK_SORTER (self->sorter));
   self->selection = gtk_single_selection_new (G_LIST_MODEL (self->sort_model));

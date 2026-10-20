@@ -96,11 +96,16 @@ text_strip_html (const char *html)
         }
     }
 
-  /* collapse 3+ consecutive newlines down to 2, trim edges */
-  GRegex *re = g_regex_new ("\n{3,}", 0, 0, NULL);
-  gchar *collapsed = g_regex_replace (re, out->str, -1, 0, "\n\n", 0, NULL);
-  g_regex_unref (re);
+  /* collapse 3+ consecutive newlines down to 2, trim edges. GRegex refuses
+   * invalid UTF-8 (product JSON isn't checked), so mend it first. */
+  gchar *valid = g_utf8_make_valid (out->str, (gssize) out->len);
   g_string_free (out, TRUE);
+  GRegex *re = g_regex_new ("\n{3,}", 0, 0, NULL);
+  gchar *collapsed = g_regex_replace (re, valid, -1, 0, "\n\n", 0, NULL);
+  g_regex_unref (re);
+  if (!collapsed)
+    collapsed = g_strdup (valid);
+  g_free (valid);
   gchar *trimmed = g_strdup (g_strstrip (collapsed));
   g_free (collapsed);
   return trimmed;
@@ -133,6 +138,9 @@ static const struct
 static gboolean
 has_non_latin_letter (const char *s)
 {
+  /* g_utf8_next_char() could step past the end of a broken sequence. */
+  if (!g_utf8_validate (s, -1, NULL))
+    return FALSE;
   for (const char *p = s; *p; p = g_utf8_next_char (p))
     {
       gunichar c = g_utf8_get_char (p);

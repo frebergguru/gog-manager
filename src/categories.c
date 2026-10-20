@@ -238,8 +238,11 @@ gog_categories_lookup (const gint64 *ids, guint n_ids, GCancellable *cancellable
                        GogCategoriesProgress progress, gpointer user_data, guint *looked_up,
                        GError **error)
 {
+  /* The lock is held only while the file is read or written, never across
+   * the network: the UI thread takes it in gog_categories_load(). */
   G_LOCK (cache);
   json_object *cache = load_cache_json ();
+  G_UNLOCK (cache);
   gint64 now = g_get_real_time () / G_USEC_PER_SEC;
   GArray *todo = g_array_new (FALSE, FALSE, sizeof (gint64));
   for (guint i = 0; i < n_ids; i++)
@@ -266,14 +269,22 @@ gog_categories_lookup (const gint64 *ids, guint n_ids, GCancellable *cancellable
   for (guint i = 0; ok && i < todo->len && !g_cancellable_is_cancelled (cancellable); i += BATCH)
     {
       guint n = MIN (BATCH, todo->len - i);
-      ok = lookup_batch (&g_array_index (todo, gint64, i), n, cache, error);
-      /* Saved as it goes, so closing the app half way loses nothing. */
-      save_cache (cache);
+      json_object *answers = json_object_new_object ();
+      ok = lookup_batch (&g_array_index (todo, gint64, i), n, answers, error);
+      /* Merged into the file as it is now and saved as it goes, so closing
+       * the app half way loses nothing. */
+      G_LOCK (cache);
+      json_object *current = load_cache_json ();
+      json_object_object_foreach (answers, key, entry)
+        json_object_object_add (current, key, json_object_get (entry));
+      save_cache (current);
+      json_object_put (current);
+      G_UNLOCK (cache);
+      json_object_put (answers);
       if (progress)
         progress (i + n, todo->len, user_data);
     }
   g_array_unref (todo);
   json_object_put (cache);
-  G_UNLOCK (cache);
   return ok;
 }

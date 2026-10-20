@@ -447,7 +447,13 @@ run_capture (GogProtonFetchJob *job, gchar **argv, gchar **out_output, GError **
       g_mutex_unlock (&job->proc_mutex);
     }
 
-  if (ok && !g_subprocess_get_successful (proc))
+  if (ok && job && job->cancelled)
+    {
+      /* Killed by our own cancel: say so, not "terminated (signal 9)". */
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_CANCELLED, "Cancelled");
+      ok = FALSE;
+    }
+  else if (ok && !g_subprocess_get_successful (proc))
     {
       ok = FALSE;
       /* get_exit_status() asserts if the process died by signal (e.g. our
@@ -882,7 +888,7 @@ verify_sha512 (GogProtonFetchJob *job, const char *path, const char *sum_url,
       return FALSE;
     }
 
-  const char *p = sum_text;
+  const char *p = sum_text ? sum_text : "";
   /* The line for this archive, if the file lists more than one. */
   for (const char *line = sum_text; line && *line;)
     {

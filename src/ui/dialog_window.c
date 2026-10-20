@@ -137,9 +137,12 @@ alert_answer (GogAlert *alert, const char *id)
   if (alert->answered)
     return;
   alert->answered = TRUE;
+  /* The callback may destroy the alert's parent, and the alert with it. */
+  GtkWindow *window = g_object_ref (alert->window);
   if (alert->callback)
     alert->callback (id, alert->user_data);
-  gtk_window_destroy (alert->window);
+  gtk_window_destroy (window);
+  g_object_unref (window);
 }
 
 static void

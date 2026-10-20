@@ -36,6 +36,8 @@ gboolean gog_write_play_script (GogGame *game, GError **error);
  * message on the main thread. One handler at a time; NULL removes it. */
 typedef void (*GogLaunchFailedFunc) (const char *message, gpointer user_data);
 void gog_launch_set_failed_func (GogLaunchFailedFunc func, gpointer user_data);
+/* Removes the handler only if it was set with this user_data. */
+void gog_launch_clear_failed_func (gpointer user_data);
 
 /* Opens winecfg / regedit against a game's existing Wine or Proton prefix.
  * Returns FALSE with error set for natively-installed or not-yet-installed

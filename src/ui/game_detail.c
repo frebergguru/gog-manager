@@ -36,6 +36,7 @@ struct _GogGameDetail
   GtkBox *extras_box;
   GtkBox *dlc_box;
   AdwToastOverlay *toast_overlay;
+  gboolean disposed; /* late async callbacks must not touch widgets */
 };
 
 enum
@@ -52,7 +53,9 @@ static void
 gog_game_detail_dispose (GObject *object)
 {
   GogGameDetail *self = GOG_GAME_DETAIL (object);
-  gog_launch_set_failed_func (NULL, NULL);
+  self->disposed = TRUE;
+  /* A newer page may have taken the handler over; leave it alone then. */
+  gog_launch_clear_failed_func (self);
   g_clear_object (&self->game);
   g_clear_pointer (&self->runner_choices, g_ptr_array_unref);
   G_OBJECT_CLASS (gog_game_detail_parent_class)->dispose (object);
@@ -81,6 +84,16 @@ emit_changed (GogGameDetail *self)
   g_signal_emit (self, detail_signals[SIG_CHANGED], 0);
 }
 
+/* refresh() rebuilds the action buttons, so the one that had keyboard
+ * focus is gone; give it to the first of the new ones. */
+static void
+focus_first_action (GogGameDetail *self)
+{
+  GtkWidget *first = gtk_widget_get_first_child (GTK_WIDGET (self->action_box));
+  if (first && gtk_widget_get_mapped (first))
+    gtk_widget_grab_focus (first);
+}
+
 static void
 toast (GogGameDetail *self, const char *msg)
 {
@@ -100,12 +113,13 @@ on_install_done (GogGame *game, gboolean success, gpointer user_data)
   (void) game;
   /* The install window can close because the main window is going away;
    * then this page is being torn down too. */
-  if (!gtk_widget_in_destruction (GTK_WIDGET (self)))
+  if (!self->disposed && !gtk_widget_in_destruction (GTK_WIDGET (self)))
     {
       if (success)
         toast (self, "Installed successfully");
       refresh (self);
       emit_changed (self);
+      focus_first_action (self);
     }
   g_object_unref (self); /* taken in on_install_clicked */
 }
@@ -195,13 +209,15 @@ on_uninstall_response (const char *response, gpointer user_data)
   GError *save_err = NULL;
   if (!gog_state_save (self->state, &save_err))
     {
+      /* The files are gone either way; the page must say so. */
       toast (self, save_err->message);
       g_clear_error (&save_err);
-      return;
     }
-  toast (self, is_dlc_record ? "DLC marked as not installed" : "Uninstalled");
+  else
+    toast (self, is_dlc_record ? "DLC marked as not installed" : "Uninstalled");
   refresh (self);
   emit_changed (self);
+  focus_first_action (self);
 }
 
 /* Label and tooltip for the menu-entry button; changed in place so it keeps
@@ -262,6 +278,7 @@ on_open_path_finished (GObject *source, GAsyncResult *res, gpointer user_data)
   GogGameDetail *self = user_data;
   GError *error = NULL;
   if (!gtk_file_launcher_launch_finish (GTK_FILE_LAUNCHER (source), res, &error) &&
+      !self->disposed &&
       !g_error_matches (error, GTK_DIALOG_ERROR, GTK_DIALOG_ERROR_DISMISSED))
     {
       gchar *name = g_file_get_basename (gtk_file_launcher_get_file (GTK_FILE_LAUNCHER (source)));

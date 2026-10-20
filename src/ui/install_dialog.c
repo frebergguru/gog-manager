@@ -393,8 +393,11 @@ on_choose_dir_response (GObject *source, GAsyncResult *res, gpointer user_data)
 {
   GError *error = NULL;
   GFile *folder = gtk_file_dialog_select_folder_finish (GTK_FILE_DIALOG (source), res, &error);
-  /* Cancelled because the install window closed: ctx is gone. */
-  if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+  /* Cancelled because the install window closed (ctx is gone) or a newer
+   * picker replaced this one. GtkFileDialog reports its cancellable as a
+   * GtkDialogError. */
+  if (g_error_matches (error, GTK_DIALOG_ERROR, GTK_DIALOG_ERROR_CANCELLED) ||
+      g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
     {
       g_error_free (error);
       return;

@@ -35,7 +35,7 @@ struct _GogGame
   gchar *runner_path;
   gchar *prefix_path;
 
-  GogGame *base_game; /* weak, not owned */
+  GogGame *base_game; /* owned; the base never refs its DLCs, so no cycle */
 };
 
 enum
@@ -90,6 +90,7 @@ gog_game_finalize (GObject *object)
 {
   GogGame *self = GOG_GAME (object);
 
+  g_clear_object (&self->base_game);
   g_free (self->slug);
   g_free (self->title);
   g_free (self->folder_path);
@@ -509,7 +510,7 @@ gog_game_get_base_game (GogGame *self)
 void
 gog_game_set_base_game (GogGame *self, GogGame *base)
 {
-  self->base_game = base;
+  g_set_object (&self->base_game, base);
 }
 
 const char *

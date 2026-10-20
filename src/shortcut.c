@@ -39,12 +39,15 @@ gog_shortcut_exists (GogGame *game)
 gchar *
 gog_shortcut_exec_value (const char *path)
 {
-  /* Inside the quotes ", `, $ and \ take a backslash; then the value as a
-   * whole is a string, where every backslash is doubled again. */
+  /* Inside the quotes ", `, $ and \ take a backslash, and % is doubled so
+   * it is no field code; then the value as a whole is a string, where every
+   * backslash is doubled again. */
   GString *quoted = g_string_new ("\"");
   for (const char *p = path; *p; p++)
     {
-      if (strchr ("\"`$\\", *p))
+      if (*p == '%')
+        g_string_append_c (quoted, '%');
+      else if (strchr ("\"`$\\", *p))
         g_string_append_c (quoted, '\\');
       g_string_append_c (quoted, *p);
     }

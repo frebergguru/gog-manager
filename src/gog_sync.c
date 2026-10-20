@@ -1095,6 +1095,10 @@ run_streaming (GogSyncJob *job, gchar **argv, LineFunc on_line, gpointer data, G
       }
   flush_line (job, buf, FALSE, on_line, data);
   g_string_free (buf, TRUE);
+  /* A read error leaves the pipe unread; the child would block on it and the
+   * wait below never end. */
+  if (n < 0)
+    g_subprocess_force_exit (proc);
 
   gboolean ok = g_subprocess_wait (proc, NULL, error);
 
@@ -1250,7 +1254,7 @@ parse_sizes (const char *s, guint64 *done, guint64 *total)
   for (int k = 0; prefixes[k]; k++)
     if (g_ascii_tolower (unit[0]) == g_ascii_tolower (prefixes[k]))
       for (int j = 0; j <= k; j++)
-        mult *= strchr (unit, 'i') ? 1024 : 1000;
+        mult *= unit[1] == 'i' ? 1024 : 1000;
   *done = (guint64) (d * mult);
   *total = (guint64) (t * mult);
   return TRUE;
@@ -1621,9 +1625,12 @@ delete_replaced_orphans (GogSyncJob *job, const char *listed, const char *const 
       gboolean ours = FALSE;
       for (const char *const *g = games; *g && !ours; g++)
         {
-          gchar *folder = g_build_filename (job->library_dir, *g, "", NULL);
+          /* With the slash, or "game" would also match "game_goty". */
+          gchar *game_dir = g_build_filename (job->library_dir, *g, NULL);
+          gchar *folder = g_strconcat (game_dir, G_DIR_SEPARATOR_S, NULL);
           ours = g_str_has_prefix (path, folder);
           g_free (folder);
+          g_free (game_dir);
         }
       if (!ours || strstr (path, "/../"))
         continue;

@@ -7,7 +7,8 @@
 # third-party libraries. This reads the FINISHED files and fails if any one of
 # them still has:
 #
-#   ELF  a .symtab section, or any .debug_* / .zdebug_* section
+#   ELF  a symbol table (.symtab, or any SHT_SYMTAB section), any .debug_* /
+#        .zdebug_* section, or .gnu_debugdata (MiniDebugInfo: a packed .symtab)
 #   PE   any .debug_* section, or a nonzero COFF symbol count
 #
 # It parses the headers itself rather than calling readelf/objdump, because
@@ -40,24 +41,32 @@ def elf_problems(b):
     else:
         shoff, = struct.unpack_from(e + 'I', b, 0x20)
         shentsize, shnum, shstrndx = struct.unpack_from(e + 'HHH', b, 0x2E)
-    if shoff == 0 or shnum == 0:
+    if shoff == 0:
         return []
     def sh(i):
         o = shoff + i * shentsize
+        name, stype = struct.unpack_from(e + 'II', b, o)
         if cls == 2:
-            name, = struct.unpack_from(e + 'I', b, o)
             off, size = struct.unpack_from(e + 'QQ', b, o + 0x18)
+            link, = struct.unpack_from(e + 'I', b, o + 0x28)
         else:
-            name, = struct.unpack_from(e + 'I', b, o)
             off, size = struct.unpack_from(e + 'II', b, o + 0x10)
-        return name, off, size
-    _, stroff, strsize = sh(shstrndx)
+            link, = struct.unpack_from(e + 'I', b, o + 0x18)
+        return name, stype, off, size, link
+    # Extended numbering: the real counts live in section 0.
+    if shnum == 0:
+        shnum = sh(0)[3]
+    if shstrndx == 0xFFFF:
+        shstrndx = sh(0)[4]
+    _, _, stroff, strsize, _ = sh(shstrndx)
     strtab = b[stroff:stroff + strsize]
     bad = []
     for i in range(shnum):
-        n, _, _ = sh(i)
+        n, stype, _, _, _ = sh(i)
         name = strtab[n:strtab.index(b'\0', n)].decode('latin-1')
-        if name == '.symtab' or name.startswith(('.debug', '.zdebug')):
+        SHT_SYMTAB = 2
+        if (stype == SHT_SYMTAB or name in ('.symtab', '.gnu_debugdata')
+                or name.startswith(('.debug', '.zdebug'))):
             bad.append(name)
     return bad
 

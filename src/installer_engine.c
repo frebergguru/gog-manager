@@ -974,6 +974,20 @@ gog_install_job_resume (GogInstallJob *self)
   g_mutex_unlock (&self->proc_mutex);
 }
 
+/* Adds dir to keep both as written and with symlinks resolved, since real
+ * is resolved (e.g. /home -> /var/home on Fedora Atomic). */
+static void
+add_protected (GPtrArray *keep, const char *dir)
+{
+  g_ptr_array_add (keep, g_canonicalize_filename (dir, NULL));
+  char *resolved = realpath (dir, NULL);
+  if (resolved)
+    {
+      g_ptr_array_add (keep, g_strdup (resolved));
+      free (resolved);
+    }
+}
+
 /* TRUE for folders an uninstall must never delete, whatever the install
  * record says: /, the home folder and anything holding it, the standard
  * user folders (Downloads, Documents...), a mount point, and the folder
@@ -985,16 +999,16 @@ is_protected_dir (const char *real, GogGame *game)
   gboolean protected = g_strcmp0 (real, "/") == 0;
 
   GPtrArray *keep = g_ptr_array_new_with_free_func (g_free);
-  g_ptr_array_add (keep, g_canonicalize_filename (g_get_home_dir (), NULL));
+  add_protected (keep, g_get_home_dir ());
   for (int d = 0; d < G_USER_N_DIRECTORIES; d++)
     {
       const char *dir = g_get_user_special_dir (d);
       if (dir)
-        g_ptr_array_add (keep, g_canonicalize_filename (dir, NULL));
+        add_protected (keep, dir);
     }
   const char *installers = gog_game_get_folder_path (game);
   if (installers && *installers)
-    g_ptr_array_add (keep, g_canonicalize_filename (installers, NULL));
+    add_protected (keep, installers);
   for (guint i = 0; i < keep->len && !protected; i++)
     {
       const char *k = g_ptr_array_index (keep, i);

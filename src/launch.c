@@ -192,6 +192,13 @@ gog_launch_set_failed_func (GogLaunchFailedFunc func, gpointer user_data)
   failed_data = user_data;
 }
 
+void
+gog_launch_clear_failed_func (gpointer user_data)
+{
+  if (failed_data == user_data)
+    gog_launch_set_failed_func (NULL, NULL);
+}
+
 /* On the main thread, where the handler is set and cleared. */
 static gboolean
 report_failed_idle (gpointer data)
@@ -485,8 +492,11 @@ gog_write_play_script (GogGame *game, GError **error)
   /* Paths inside the game folder are written relative to the script, so it
    * keeps working if the folder is moved or seen from another mount. */
   GString *s = g_string_new ("#!/bin/sh\n");
-  g_string_append_printf (s, PLAY_SCRIPT_MARKER " to start %s without it.\n",
-                          gog_game_get_title (game));
+  /* One comment line: a line break in the title would end it. */
+  gchar *title = g_strdup (gog_game_get_title (game) ? gog_game_get_title (game) : "");
+  g_strdelimit (title, "\r\n", ' ');
+  g_string_append_printf (s, PLAY_SCRIPT_MARKER " to start %s without it.\n", title);
+  g_free (title);
   g_string_append (s, "# It is rewritten when the game is played or its runner changes there.\n"
                       "# Delete the \"Written by gog-manager\" line to keep your own edits.\n"
                       "here=$(cd \"$(dirname \"$0\")\" && pwd) || exit 1\n");
@@ -504,10 +514,20 @@ gog_write_play_script (GogGame *game, GError **error)
           g_free (q_wd);
         }
       g_string_append_printf (s, " || exit 1\nexec \"$here\"/%s", q_rel);
-      /* The manifest's argument string is already shell syntax; it is what
-       * gog_launch_game() splits with g_shell_parse_argv(). */
-      if (task->arguments && *task->arguments)
-        g_string_append_printf (s, " %s", task->arguments);
+      /* Split the manifest's arguments as gog_launch_game() does and quote
+       * each, so /bin/sh does no $, ; or glob expansion it would not. */
+      gchar **split = NULL;
+      if (task->arguments && *task->arguments
+          && g_shell_parse_argv (task->arguments, NULL, &split, NULL))
+        {
+          for (gchar **a = split; *a; a++)
+            {
+              gchar *q = g_shell_quote (*a);
+              g_string_append_printf (s, " %s", q);
+              g_free (q);
+            }
+          g_strfreev (split);
+        }
       g_string_append (s, " \"$@\"\n");
       g_free (q_rel);
       g_free (wd);

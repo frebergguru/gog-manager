@@ -496,7 +496,11 @@ parse_game_dir (const char *dir_path)
 
   GogGame *game = gog_game_new ();
   gog_game_set_id (game, ju_get_int64 (root, "id", 0));
-  gog_game_set_slug (game, ju_get_string (root, "slug", basename));
+  /* The slug names the install folder; one that would leave it is not used. */
+  const char *slug = ju_get_string (root, "slug", basename);
+  if (!slug || !*slug || strchr (slug, '/') || strcmp (slug, ".") == 0 || strcmp (slug, "..") == 0)
+    slug = basename;
+  gog_game_set_slug (game, slug);
   gog_game_set_title (game, ju_get_string (root, "title", basename));
   gog_game_set_folder_path (game, dir_path);
 

@@ -153,6 +153,7 @@ refresh_runner_dropdown (PrefsCtx *ctx)
     }
   GtkStringList *list = gtk_string_list_new (NULL);
   guint select_idx = 0;
+  gboolean found = FALSE;
   for (guint i = 0; i < ctx->runners->len; i++)
     {
       GogRunnerInfo *r = g_ptr_array_index (ctx->runners, i);
@@ -162,9 +163,15 @@ refresh_runner_dropdown (PrefsCtx *ctx)
                                             r->kind == GOG_RUNNER_PROTON ? "Proton" : "Wine");
       gtk_string_list_append (list, label);
       if (r->kind == want_kind && g_strcmp0 (r->bin_path, want_path) == 0)
-        select_idx = i;
+        {
+          select_idx = i;
+          found = TRUE;
+        }
       g_free (label);
     }
+  /* A pick that is gone (removed in Manage) must not be saved back. */
+  if (!found && ctx->picked)
+    g_clear_pointer (&ctx->picked, gog_runner_info_free);
   ctx->refreshing = TRUE;
   gtk_drop_down_set_model (ctx->default_runner_dropdown, G_LIST_MODEL (list));
   gtk_drop_down_set_selected (ctx->default_runner_dropdown, select_idx);

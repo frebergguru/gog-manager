@@ -26,6 +26,11 @@ test_exec_value_escaping (void)
   gchar *odd = gog_shortcut_exec_value ("/g/$x \"q\"/a\\b/play.sh");
   g_assert_cmpstr (odd, ==, "\"/g/\\\\$x \\\\\"q\\\\\"/a\\\\\\\\b/play.sh\"");
   g_free (odd);
+
+  /* A literal % is doubled, or it would read as a field code. */
+  gchar *pct = gog_shortcut_exec_value ("/g/100% Juice/play.sh");
+  g_assert_cmpstr (pct, ==, "\"/g/100%% Juice/play.sh\"");
+  g_free (pct);
 }
 
 static void

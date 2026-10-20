@@ -102,8 +102,11 @@ fetch "https://github.com/AppImage/appimagetool/releases/download/continuous/app
 # but distros that ship no optional GTK4 modules (e.g. Arch) have no such dir,
 # and the plugin then aborts under `set -e`. Guard that one copy so a missing
 # modules dir is skipped instead of fatal. Idempotent: safe to re-run.
-if grep -qF 'copy_lib_tree "$gtk4_libdir" "$APPDIR/"' "$LD_GTK"; then
-  sed -i 's|        copy_lib_tree "\$gtk4_libdir" "\$APPDIR/"|        if [ -d "$gtk4_libdir" ]; then copy_lib_tree "$gtk4_libdir" "$APPDIR/"; else echo "No GTK 4.0 modules dir ($gtk4_libdir); skipping"; fi|' "$LD_GTK"
+# Any indentation; afterwards no unguarded copy may be left.
+sed -E -i 's|^([[:space:]]*)copy_lib_tree "\$gtk4_libdir" "\$APPDIR/"[[:space:]]*$|\1if [ -d "$gtk4_libdir" ]; then copy_lib_tree "$gtk4_libdir" "$APPDIR/"; else echo "No GTK 4.0 modules dir ($gtk4_libdir); skipping"; fi|' "$LD_GTK"
+if grep -qE '^[[:space:]]*copy_lib_tree "\$gtk4_libdir" "\$APPDIR/"[[:space:]]*$' "$LD_GTK"; then
+  echo "error: could not patch the gtk4 modules copy in $LD_GTK" >&2
+  exit 1
 fi
 
 # linuxdeploy finds its gtk plugin and appimagetool on PATH.

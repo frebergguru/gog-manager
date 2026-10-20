@@ -110,7 +110,7 @@ test_native_script (void)
   g_assert_true (gog_write_play_script (game, NULL));
 
   gchar *s = read_script (dir);
-  g_assert_nonnull (strstr (s, "cd \"$here\"/'bin' || exit 1\nexec \"$here\"/'bin/Game.exe' -windowed \"$@\"\n"));
+  g_assert_nonnull (strstr (s, "cd \"$here\"/'bin' || exit 1\nexec \"$here\"/'bin/Game.exe' '-windowed' \"$@\"\n"));
   g_free (s);
 
   g_object_unref (game);

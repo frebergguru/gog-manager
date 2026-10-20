@@ -29,6 +29,7 @@ typedef struct
   GtkButton *cleanup_button;
   GStrv unused;           /* the versions offered */
   GCancellable *measuring;
+  GCancellable *cleaning; /* the removal of older versions, if running */
 
   GogProtonFetchJob *job;
   gboolean succeeded;
@@ -40,14 +41,21 @@ ctx_free (FetchCtx *ctx)
 {
   if (ctx->job)
     {
-      /* The job's queued idles may still fire after the dialog is gone. */
+      /* The job's queued idles may still fire after the dialog is gone.
+       * A download still running has no window left to report to. */
       g_signal_handlers_disconnect_by_data (ctx->job, ctx);
+      gog_proton_fetch_job_cancel (ctx->job);
       g_clear_object (&ctx->job);
     }
   if (ctx->measuring)
     {
       g_cancellable_cancel (ctx->measuring);
       g_object_unref (ctx->measuring);
+    }
+  if (ctx->cleaning)
+    {
+      g_cancellable_cancel (ctx->cleaning);
+      g_object_unref (ctx->cleaning);
     }
   g_strfreev (ctx->unused);
   g_free (ctx->result);
@@ -149,9 +157,17 @@ static void
 on_cleanup_finished (GObject *source, GAsyncResult *res, gpointer user_data)
 {
   (void) source;
-  FetchCtx *ctx = user_data;
   GError *error = NULL;
-  if (proton_fetch_remove_finish (res, &error))
+  gboolean ok = proton_fetch_remove_finish (res, &error);
+  /* Cancelled because the window went away: ctx is gone. */
+  if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+    {
+      g_error_free (error);
+      return;
+    }
+  FetchCtx *ctx = user_data;
+  g_clear_object (&ctx->cleaning);
+  if (ok)
     {
       gtk_label_set_text (ctx->cleanup_label, "Older versions removed.");
       append_log_line (ctx, "Removed older GE-Proton versions no game used.");
@@ -183,7 +199,9 @@ on_cleanup_clicked (GtkButton *button, gpointer user_data)
    * the "take up X" text for versions that are gone. */
   if (ctx->measuring)
     g_cancellable_cancel (ctx->measuring);
-  proton_fetch_remove_async ((const char *const *) ctx->unused, NULL, on_cleanup_finished, ctx);
+  ctx->cleaning = g_cancellable_new ();
+  proton_fetch_remove_async ((const char *const *) ctx->unused, ctx->cleaning,
+                             on_cleanup_finished, ctx);
 }
 
 static void
@@ -316,6 +334,8 @@ gog_show_proton_fetch_dialog (GtkWindow *parent, GogConfig *config, GogLibrary *
 
   ctx->progress_bar = GTK_PROGRESS_BAR (gtk_progress_bar_new ());
   gtk_progress_bar_set_show_text (ctx->progress_bar, TRUE);
+  gtk_accessible_update_property (GTK_ACCESSIBLE (ctx->progress_bar),
+                                  GTK_ACCESSIBLE_PROPERTY_LABEL, "Download progress", -1);
   gtk_box_append (GTK_BOX (ctx->progress_box), GTK_WIDGET (ctx->progress_bar));
 
   GtkWidget *log_scroll = gtk_scrolled_window_new ();
@@ -326,6 +346,8 @@ gog_show_proton_fetch_dialog (GtkWindow *parent, GogConfig *config, GogLibrary *
   gtk_text_view_set_editable (ctx->log_view, FALSE);
   gtk_text_view_set_monospace (ctx->log_view, TRUE);
   gtk_widget_add_css_class (GTK_WIDGET (ctx->log_view), "gog-log-view");
+  gtk_accessible_update_property (GTK_ACCESSIBLE (ctx->log_view),
+                                  GTK_ACCESSIBLE_PROPERTY_LABEL, "Download log", -1);
   gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (log_scroll), GTK_WIDGET (ctx->log_view));
   gtk_widget_add_css_class (log_scroll, "card");
   gtk_box_append (GTK_BOX (ctx->progress_box), log_scroll);

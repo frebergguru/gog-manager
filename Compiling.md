@@ -15,8 +15,8 @@ dependencies, compiling, running, and installing.
 | C compiler (GCC or Clang) | Builds the sources (C17 / `gnu17`) |
 | Meson + Ninja | Build system |
 | `pkg-config` | Locates the libraries below |
-| **GTK 4** (`gtk4`) | UI toolkit |
-| **libadwaita 1** (`libadwaita-1`) | GNOME/Adwaita widgets |
+| **GTK 4** (`gtk4`) ≥ 4.10 | UI toolkit |
+| **libadwaita 1** (`libadwaita-1`) ≥ 1.6 | GNOME/Adwaita widgets |
 | **GLib / GIO** (`gio-2.0`) | Core object system, async I/O |
 | **json-c** | Parsing GOG `.info` manifests and config files |
 | `glib-compile-resources` | Bundles CSS/icons (ships with GLib) |
@@ -25,8 +25,10 @@ dependencies, compiling, running, and installing.
 
 | Tool | Needed for |
 |------|-----------|
-| `curl`, `tar` | Fetching and extracting GE-Proton |
+| `curl` | Fetching GE-Proton, game categories and original languages |
+| `tar` | Extracting GE-Proton |
 | `unzip` | Extracting certain installers |
+| `lgogdownloader` | Checking GOG for new games and updates, and downloading them |
 | Wine and/or Proton | Installing and running Windows games |
 
 ---
@@ -41,6 +43,9 @@ sudo pacman -S --needed base-devel meson ninja pkgconf \
 ```
 
 ### Debian / Ubuntu
+
+libadwaita 1.6 or newer is needed, so Ubuntu 24.04 and older (libadwaita 1.5)
+are too old; Ubuntu 25.04 or Debian 13 work.
 
 ```sh
 sudo apt install build-essential meson ninja-build pkg-config \
@@ -126,6 +131,10 @@ This runs the unit tests declared in `meson.build`:
 
 - `json-util` — JSON parsing/helpers
 - `runner-cmdline` — Wine/Proton command-line construction
+- `library` — library scanning
+- `play-script` — the `play.sh` written into each game's folder
+- `categories` — parsing GOG's category tags
+- `shortcut` — Applications menu entries
 
 Add `-v` for full output, or run a single suite with
 `meson test -C build json-util`.
@@ -182,13 +191,17 @@ driver and optional external helpers (wine, curl, tar) are taken from the host.
 
 1. Configures a `--buildtype=release` build and stages it into an `AppDir` via
    `DESTDIR` install (this is why `meson.build` installs the `.desktop` file and
-   icon under `packaging/`).
+   icon from `packaging/`).
 2. Downloads `linuxdeploy`, its GTK plugin and `appimagetool` into
    `.appimage-tools/` (cached across runs), plus a static `patchelf` if the host
    lacks one.
 3. Runs `linuxdeploy --plugin gtk --output appimage` to bundle everything.
+4. Runs `packaging/check-stripped.sh` on the AppDir and the finished AppImage,
+   and deletes the AppImage and fails if any binary or bundled library still
+   has symbols or debug info.
 
 Build-machine requirements: the normal build dependencies (section 2), plus
+`python3` (for the strip check), `patchelf` (downloaded if missing), and
 `wget` or `curl` for the one-time tool download. FUSE is **not** required — the
 script runs the tools in extract-and-run mode.
 
@@ -219,9 +232,10 @@ meson compile -C build
 ```
 
 **Runtime: icons show as missing / broken boxes**
-This depends on your desktop's icon theme providing the standard symbolic
-icons. Installing the Adwaita icon theme (usually pulled in by GTK 4) or the
-`hicolor-icon-theme` package resolves it.
+The app's own button icons are built into it, but the view-switcher icons and
+the app icon in the About window come from the system. Installing the Adwaita
+icon theme (usually pulled in by GTK 4) and the `hicolor-icon-theme` package,
+or installing GOG Manager with `meson install`, resolves it.
 
 **Runtime: Windows game won't install or launch**
 Make sure a runner is available — install Wine, or fetch GE-Proton from the

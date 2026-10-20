@@ -72,7 +72,7 @@ your GOG login.
 - **Applications menu** — an installed game's page can add it to the
   Applications menu; the entry starts its `play.sh`, so it runs without
   gog-manager or the library disk.
-- **Persistent state** — install records live in `state.json`, kept separate
+- **Persistent state** — install records live in `gog-manager-state.json`, kept separate
   from configuration so re-scanning or moving your library never loses them.
 
 ---
@@ -83,12 +83,14 @@ your GOG login.
 
 - A C compiler with C17 support (GCC or Clang)
 - [Meson](https://mesonbuild.com/) and [Ninja](https://ninja-build.org/)
-- GTK 4 (`gtk4`), libadwaita 1 (`libadwaita-1`), GLib/GIO (`gio-2.0`),
+- GTK 4 ≥ 4.10 (`gtk4`), libadwaita ≥ 1.6 (`libadwaita-1`), GLib/GIO (`gio-2.0`),
   and [json-c](https://github.com/json-c/json-c) — with their development headers
 
 **At runtime**
 
-- `curl` and `tar` — used by the GE-Proton fetcher
+- `curl` — used by the GE-Proton fetcher and to look up game categories and
+  original languages
+- `tar` — used by the GE-Proton fetcher
 - `unzip` — used when extracting certain installers
 - [lgogdownloader](https://github.com/Sude-/lgogdownloader) — only needed to
   check GOG for new games and updates and download them. Install it from your
@@ -211,7 +213,8 @@ src/
 └── ui/                    GTK widgets (main window, dialogs, detail view)
 
 tests/                     Unit tests (json-util, runner command building,
-                           library scanning, lgogdownloader output parsing)
+                           library scanning, lgogdownloader output parsing,
+                           play.sh, categories, menu entries)
 ```
 
 ---

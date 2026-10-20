@@ -91,6 +91,22 @@ test_strip_html_numeric_entities (void)
   g_free (out);
 }
 
+/* Product JSON isn't checked for UTF-8; broken bytes must not crash. */
+static void
+test_strip_html_invalid_utf8 (void)
+{
+  gchar *out = text_strip_html ("Caf\xE9<br>ok");
+  g_assert_nonnull (out);
+  g_assert_true (g_utf8_validate (out, -1, NULL));
+  g_assert_true (g_str_has_suffix (out, "ok"));
+  g_free (out);
+
+  /* A truncated sequence at the end: shown as it is, not read past. */
+  gchar *label = text_language_label ("\xD0");
+  g_assert_cmpstr (label, ==, "\xD0");
+  g_free (label);
+}
+
 /* Non-Latin language names get their English name too. */
 static void
 test_language_label (void)
@@ -127,6 +143,7 @@ main (int argc, char *argv[])
   g_test_add_func ("/text_util/strip_html_list", test_strip_html_list);
   g_test_add_func ("/text_util/strip_html_empty", test_strip_html_empty);
   g_test_add_func ("/text_util/strip_html_numeric_entities", test_strip_html_numeric_entities);
+  g_test_add_func ("/text_util/strip_html_invalid_utf8", test_strip_html_invalid_utf8);
   g_test_add_func ("/text_util/language_label", test_language_label);
   return g_test_run ();
 }
