@@ -8,11 +8,15 @@
     <file>icons/scalable/actions/folder-download-symbolic.svg</file>
     <file>icons/scalable/actions/folder-open-symbolic.svg</file>
     <file>icons/scalable/actions/folder-symbolic.svg</file>
+    <file>icons/scalable/actions/go-next-symbolic.svg</file>
     <file>icons/scalable/actions/go-previous-symbolic.svg</file>
     <file>icons/scalable/actions/help-about-symbolic.svg</file>
+    <file>icons/scalable/actions/image-x-generic-symbolic.svg</file>
+    <file>icons/scalable/actions/media-playback-start-symbolic.svg</file>
     <file>icons/scalable/actions/preferences-system-symbolic.svg</file>
     <file>icons/scalable/actions/sidebar-show-symbolic.svg</file>
     <file>icons/scalable/actions/software-update-available-symbolic.svg</file>
+    <file>icons/scalable/actions/video-x-generic-symbolic.svg</file>
     <file>icons/scalable/actions/view-refresh-symbolic.svg</file>
   </gresource>
 </gresources>

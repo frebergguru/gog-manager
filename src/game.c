@@ -325,25 +325,11 @@ gog_game_get_gamesdb (GogGame *self)
   return self->gamesdb;
 }
 
-static gboolean
-strv_same (GStrv a, GStrv b)
-{
-  return (!a && !b) || (a && b && g_strv_equal ((const char *const *) a, (const char *const *) b));
-}
-
 void
 gog_game_set_gamesdb (GogGame *self, GogGamesdbInfo *info)
 {
   GogGamesdbInfo *old = self->gamesdb;
-  gboolean same = (!old && !info) ||
-                  (old && info && g_strcmp0 (old->summary, info->summary) == 0 &&
-                   g_strcmp0 (old->series, info->series) == 0 &&
-                   g_strcmp0 (old->cover_path, info->cover_path) == 0 &&
-                   g_strcmp0 (old->background_path, info->background_path) == 0 &&
-                   strv_same (old->developers, info->developers) &&
-                   strv_same (old->publishers, info->publishers) &&
-                   strv_same (old->themes, info->themes) &&
-                   strv_same (old->game_modes, info->game_modes));
+  gboolean same = gog_gamesdb_info_equal (old, info);
   self->gamesdb = info;
   gog_gamesdb_info_free (old);
   if (!same)

@@ -6,6 +6,32 @@ All notable changes to GOG Manager are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Everything else useful in GOG's games database (gamesdb.gog.com): the
+  game page also lists genres, the critics' rating ("85 out of 100") and
+  the game's first release when GOG's came later, and has a
+  **Screenshots** tab (screenshots and artwork; click or Enter shows one
+  full size in its own window, Left/Right or the header buttons go to the
+  next) and a **Videos** tab whose rows open the trailers on YouTube.
+  Screenshots are fetched the first time the tab is opened and kept with
+  the box art. Videos that share a name are numbered ("Trailer 2"), so
+  screen reader users can tell them apart.
+- Library filters by genre, theme, game mode, series, developer and
+  publisher, each picked like the categories (several at once; any or all
+  of them where a game can have several), with a search field in long
+  lists. Sorting by critics' rating, by series (in release order) and by
+  developer. The detailed table has Genres, Developer, Series and Rating
+  columns. The search box also finds games by series, developer and
+  publisher.
+- The game page updates when GOG's details arrive while it is open.
+
+### Changed
+- Details cached by 0.5.0 are fetched again once, to get the new fields.
+
+### Fixed
+- An extra or DLC whose name has "&" in it (such as "guides & reference")
+  showed an empty row.
+
 ## [0.5.0] - 2026-10-20
 
 ### Added

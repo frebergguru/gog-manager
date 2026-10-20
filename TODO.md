@@ -97,10 +97,17 @@ API ourselves: it holds the login and handles GOG's quirks.
 - [x] **`gamesdb.gog.com`**: vertical covers on the cards; background,
       summary, developer, publisher, series, themes and game modes on the
       game page.
-  - [ ] Filters and sorting by theme, series, developer or game mode.
-  - [ ] Screenshots and videos (`game.screenshots`, `game.videos`) on the
-        game page.
-  - [ ] Refresh the game page when details arrive while it is open.
+  - [x] Filters and sorting by theme, series, developer or game mode
+        (also genre and publisher; sorting by rating).
+  - [x] Screenshots and videos (`game.screenshots`, `game.artworks`,
+        `game.videos`) on the game page; genres, critics' rating and the
+        first release in its details.
+  - [x] Refresh the game page when details arrive while it is open.
+  - Not used: `game.releases` (the other stores; gamesdb links games to
+    stores that don't sell them), `available_languages`,
+    `supported_operating_systems`, `dlcs`, `logo` and `icon` (the product
+    JSON and lgogdownloader have them), `mods_ids` and the popularity
+    fields (always empty or 0 when tried).
 - [ ] **Free on GOG now** (`catalog.gog.com/v1/catalog`, no login needed):
       now and then (e.g. once a day, and on demand), look for games at
       100% off and show "Free on GOG now: X (until …)" with a link to the

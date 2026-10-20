@@ -10,6 +10,7 @@
 #include "../runner.h"
 #include "dialog_window.h"
 #include "../text_util.h"
+#include "../gamesdb.h"
 
 struct _GogGameDetail
 {
@@ -36,6 +37,15 @@ struct _GogGameDetail
   GtkLabel *serials_label;
   GtkBox *extras_box;
   GtkBox *dlc_box;
+  AdwViewStack *stack;
+  AdwViewStackPage *screenshots_page;
+  AdwViewStackPage *videos_page;
+  GtkFlowBox *screenshots_box; /* thumbnails of shots, filled as they arrive */
+  GStrv shots;                 /* url_formats in the gallery; NULL when none */
+  gboolean shots_fetching;     /* thumbnails are being fetched for shots */
+  GCancellable *shots_cancellable;
+  GtkListBox *videos_list;
+  gulong gamesdb_handler; /* notify::gamesdb on game */
   AdwToastOverlay *toast_overlay;
   gboolean disposed; /* late async callbacks must not touch widgets */
 };
@@ -57,6 +67,12 @@ gog_game_detail_dispose (GObject *object)
   self->disposed = TRUE;
   /* A newer page may have taken the handler over; leave it alone then. */
   gog_launch_clear_failed_func (self);
+  if (self->shots_cancellable)
+    g_cancellable_cancel (self->shots_cancellable);
+  g_clear_object (&self->shots_cancellable);
+  g_clear_pointer (&self->shots, g_strfreev);
+  if (self->game)
+    g_clear_signal_handler (&self->gamesdb_handler, self->game);
   g_clear_object (&self->game);
   g_clear_pointer (&self->runner_choices, g_ptr_array_unref);
   G_OBJECT_CLASS (gog_game_detail_parent_class)->dispose (object);
@@ -583,6 +599,8 @@ build_extras (GogGameDetail *self)
     {
       GogExtraInfo *extra = g_ptr_array_index (extras, i);
       GtkWidget *row = adw_action_row_new ();
+      /* GOG's names and types are plain text: "guides & reference". */
+      adw_preferences_row_set_use_markup (ADW_PREFERENCES_ROW (row), FALSE);
       adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row), extra->name);
       gchar *size_str = text_format_size (extra->size);
       gchar *subtitle = g_strdup_printf ("%s · %s", extra->type, size_str);
@@ -620,6 +638,7 @@ build_dlc (GogGameDetail *self)
       found++;
 
       GtkWidget *row = adw_action_row_new ();
+      adw_preferences_row_set_use_markup (ADW_PREFERENCES_ROW (row), FALSE);
       adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row), gog_game_get_title (g));
       if (gog_game_get_installed (g))
         {
@@ -695,11 +714,427 @@ add_info_list (GtkGrid *grid, int *row, const char *what, GStrv list)
   g_free (joined);
 }
 
-static void
-refresh (GogGameDetail *self)
+static gchar *
+format_date (gint64 unix_time)
 {
-  if (!self->game)
+  GDateTime *dt = unix_time > 0 ? g_date_time_new_from_unix_utc (unix_time) : NULL;
+  gchar *date = dt ? g_date_time_format (dt, "%Y-%m-%d") : NULL;
+  if (dt)
+    g_date_time_unref (dt);
+  return date;
+}
+
+/* ---------------- screenshots ---------------- */
+
+/* A screenshot full size in a window of its own, with Previous and Next
+ * (also the arrow keys). Fetched when shown; the thumbnail stands in
+ * meanwhile. */
+typedef struct
+{
+  GtkWindow *window;
+  GStrv shots;
+  guint index;
+  gchar *title; /* the game's */
+  GtkPicture *picture;
+  GtkLabel *position;
+  GtkWidget *prev;
+  GtkWidget *next;
+  GCancellable *cancellable;
+} Viewer;
+
+static void
+viewer_free (Viewer *v)
+{
+  g_cancellable_cancel (v->cancellable);
+  g_object_unref (v->cancellable);
+  g_strfreev (v->shots);
+  g_free (v->title);
+  g_free (v);
+}
+
+static void viewer_show (Viewer *v, gboolean announce);
+
+static void
+full_shot_thread (GTask *task, gpointer source, gpointer task_data, GCancellable *cancellable)
+{
+  (void) source;
+  const char *formats[] = { task_data, NULL };
+  GError *error = NULL;
+  if (gog_gamesdb_fetch_screenshots (formats, TRUE, cancellable, NULL, NULL, &error))
+    g_task_return_boolean (task, TRUE);
+  else
+    g_task_return_error (task, error);
+}
+
+static void
+on_full_shot_done (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+  (void) user_data;
+  /* The task keeps the window, and so its viewer, alive until here. */
+  Viewer *v = g_object_get_data (source, "viewer");
+  g_task_propagate_boolean (G_TASK (res), NULL);
+  if (v && !g_cancellable_is_cancelled (v->cancellable))
+    viewer_show (v, FALSE);
+}
+
+static void
+viewer_show (Viewer *v, gboolean announce)
+{
+  guint n = g_strv_length (v->shots);
+  const char *format = v->shots[v->index];
+  gchar *full = gog_gamesdb_screenshot_path (format, TRUE);
+  gboolean have_full = full && g_file_test (full, G_FILE_TEST_IS_REGULAR);
+  gchar *thumb = have_full ? NULL : gog_gamesdb_screenshot_path (format, FALSE);
+  const char *path = have_full ? full : thumb;
+  gtk_picture_set_filename (v->picture,
+                            path && g_file_test (path, G_FILE_TEST_IS_REGULAR) ? path : NULL);
+
+  gchar *text = g_strdup_printf ("%u of %u", v->index + 1, n);
+  gtk_label_set_label (v->position, text);
+  gchar *alt = g_strdup_printf ("Screenshot %u of %u of %s%s", v->index + 1, n, v->title,
+                                have_full ? "" : ", loading the full size");
+  gtk_picture_set_alternative_text (v->picture, alt);
+  gtk_accessible_update_property (GTK_ACCESSIBLE (v->picture), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                  alt, -1);
+  if (announce)
+    gog_announce (GTK_WIDGET (v->window), alt);
+  gtk_widget_set_sensitive (v->prev, v->index > 0);
+  gtk_widget_set_sensitive (v->next, v->index + 1 < n);
+
+  if (!have_full && full)
+    {
+      GTask *task = g_task_new (v->window, v->cancellable, on_full_shot_done, NULL);
+      g_task_set_task_data (task, g_strdup (format), g_free);
+      g_task_run_in_thread (task, full_shot_thread);
+      g_object_unref (task);
+    }
+  g_free (alt);
+  g_free (text);
+  g_free (thumb);
+  g_free (full);
+}
+
+static void
+viewer_step (Viewer *v, int step)
+{
+  guint n = g_strv_length (v->shots);
+  if ((step < 0 && v->index == 0) || (step > 0 && v->index + 1 >= n))
     return;
+  v->index += step;
+  viewer_show (v, TRUE);
+}
+
+static void
+on_viewer_prev (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  viewer_step (user_data, -1);
+}
+
+static void
+on_viewer_next (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  viewer_step (user_data, 1);
+}
+
+static gboolean
+on_viewer_key (GtkWidget *widget, GVariant *args, gpointer user_data)
+{
+  (void) args;
+  Viewer *v = g_object_get_data (G_OBJECT (widget), "viewer");
+  viewer_step (v, GPOINTER_TO_INT (user_data));
+  return TRUE;
+}
+
+static void
+on_viewer_destroy (GtkWidget *window, gpointer user_data)
+{
+  (void) window;
+  Viewer *v = user_data;
+  /* A full size still on its way is not wanted any more. */
+  g_cancellable_cancel (v->cancellable);
+}
+
+static void
+show_viewer (GogGameDetail *self, guint index)
+{
+  Viewer *v = g_new0 (Viewer, 1);
+  v->shots = g_strdupv (self->shots);
+  v->index = index;
+  v->title = g_strdup (gog_game_get_title (self->game));
+  v->cancellable = g_cancellable_new ();
+  gchar *title = g_strdup_printf ("Screenshots: %s", v->title);
+  v->window = gog_dialog_window_new (self->parent_window, title, 1000, 640, 360, 260);
+  g_free (title);
+  g_object_set_data_full (G_OBJECT (v->window), "viewer", v, (GDestroyNotify) viewer_free);
+  g_signal_connect (v->window, "destroy", G_CALLBACK (on_viewer_destroy), v);
+
+  GtkWidget *view = adw_toolbar_view_new ();
+  GtkWidget *header = adw_header_bar_new ();
+  v->prev = gtk_button_new_from_icon_name ("go-previous-symbolic");
+  v->next = gtk_button_new_from_icon_name ("go-next-symbolic");
+  gtk_widget_set_tooltip_text (v->prev, "Previous screenshot (Left)");
+  gtk_widget_set_tooltip_text (v->next, "Next screenshot (Right)");
+  gtk_accessible_update_property (GTK_ACCESSIBLE (v->prev), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                  "Previous screenshot", -1);
+  gtk_accessible_update_property (GTK_ACCESSIBLE (v->next), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                  "Next screenshot", -1);
+  g_signal_connect (v->prev, "clicked", G_CALLBACK (on_viewer_prev), v);
+  g_signal_connect (v->next, "clicked", G_CALLBACK (on_viewer_next), v);
+  adw_header_bar_pack_start (ADW_HEADER_BAR (header), v->prev);
+  adw_header_bar_pack_start (ADW_HEADER_BAR (header), v->next);
+  v->position = GTK_LABEL (gtk_label_new (NULL));
+  adw_header_bar_pack_start (ADW_HEADER_BAR (header), GTK_WIDGET (v->position));
+  adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (view), header);
+
+  v->picture = GTK_PICTURE (gtk_picture_new ());
+  gtk_picture_set_content_fit (v->picture, GTK_CONTENT_FIT_CONTAIN);
+  gtk_widget_set_vexpand (GTK_WIDGET (v->picture), TRUE);
+  gtk_widget_set_hexpand (GTK_WIDGET (v->picture), TRUE);
+  adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (view), GTK_WIDGET (v->picture));
+  adw_window_set_content (ADW_WINDOW (v->window), view);
+
+  GtkEventController *keys = gtk_shortcut_controller_new ();
+  gtk_shortcut_controller_add_shortcut (
+      GTK_SHORTCUT_CONTROLLER (keys),
+      gtk_shortcut_new (gtk_keyval_trigger_new (GDK_KEY_Left, 0),
+                        gtk_callback_action_new (on_viewer_key, GINT_TO_POINTER (-1), NULL)));
+  gtk_shortcut_controller_add_shortcut (
+      GTK_SHORTCUT_CONTROLLER (keys),
+      gtk_shortcut_new (gtk_keyval_trigger_new (GDK_KEY_Right, 0),
+                        gtk_callback_action_new (on_viewer_key, GINT_TO_POINTER (1), NULL)));
+  gtk_widget_add_controller (GTK_WIDGET (v->window), keys);
+
+  viewer_show (v, FALSE);
+  gtk_window_present (v->window);
+  gtk_widget_grab_focus (v->next);
+}
+
+/* Shows the thumbnails that are on disk now in the gallery's empty
+ * places. */
+static void
+update_shot_pictures (GogGameDetail *self)
+{
+  guint i = 0;
+  for (GtkWidget *c = gtk_widget_get_first_child (GTK_WIDGET (self->screenshots_box));
+       c && self->shots && self->shots[i]; c = gtk_widget_get_next_sibling (c), i++)
+    {
+      GtkPicture *picture = GTK_PICTURE (gtk_flow_box_child_get_child (GTK_FLOW_BOX_CHILD (c)));
+      if (gtk_picture_get_paintable (picture))
+        continue;
+      gchar *path = gog_gamesdb_screenshot_path (self->shots[i], FALSE);
+      if (path && g_file_test (path, G_FILE_TEST_IS_REGULAR))
+        gtk_picture_set_filename (picture, path);
+      g_free (path);
+    }
+}
+
+static gboolean
+shots_progress_idle (gpointer data)
+{
+  GogGameDetail *self = data;
+  if (!self->disposed)
+    update_shot_pictures (self);
+  return G_SOURCE_REMOVE;
+}
+
+static void
+on_shots_progress (guint done, guint total, gboolean images, gpointer user_data)
+{
+  (void) done;
+  (void) total;
+  (void) images;
+  g_idle_add_full (G_PRIORITY_DEFAULT_IDLE, shots_progress_idle, g_object_ref (user_data),
+                   g_object_unref);
+}
+
+static void
+shots_thread (GTask *task, gpointer source, gpointer task_data, GCancellable *cancellable)
+{
+  GError *error = NULL;
+  if (gog_gamesdb_fetch_screenshots ((const char *const *) task_data, FALSE, cancellable,
+                                     on_shots_progress, source, &error))
+    g_task_return_boolean (task, TRUE);
+  else
+    g_task_return_error (task, error);
+}
+
+static void
+on_shots_done (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+  (void) user_data;
+  GogGameDetail *self = GOG_GAME_DETAIL (source);
+  GError *error = NULL;
+  gboolean ok = g_task_propagate_boolean (G_TASK (res), &error);
+  GCancellable *cancellable = g_task_get_cancellable (G_TASK (res));
+  /* A later gallery (another game) has its own fetch. */
+  if (cancellable == self->shots_cancellable && !self->disposed)
+    {
+      self->shots_fetching = FALSE;
+      update_shot_pictures (self);
+      if (!ok && !g_cancellable_is_cancelled (cancellable))
+        toast (self, "Could not fetch the screenshots from GOG");
+    }
+  g_clear_error (&error);
+}
+
+/* Fetches the gallery's missing thumbnails, once it's on screen. */
+static void
+fetch_shots (GogGameDetail *self)
+{
+  if (!self->shots || self->shots_fetching ||
+      g_strcmp0 (adw_view_stack_get_visible_child_name (self->stack), "screenshots") != 0)
+    return;
+  self->shots_fetching = TRUE;
+  GTask *task = g_task_new (self, self->shots_cancellable, on_shots_done, NULL);
+  g_task_set_task_data (task, g_strdupv (self->shots), (GDestroyNotify) g_strfreev);
+  g_task_run_in_thread (task, shots_thread);
+  g_object_unref (task);
+}
+
+static void
+on_stack_child_changed (GObject *stack, GParamSpec *pspec, gpointer user_data)
+{
+  (void) stack;
+  (void) pspec;
+  fetch_shots (user_data);
+}
+
+static void
+on_shot_activated (GtkFlowBox *box, GtkFlowBoxChild *child, gpointer user_data)
+{
+  (void) box;
+  GogGameDetail *self = user_data;
+  if (self->shots)
+    show_viewer (self, gtk_flow_box_child_get_index (child));
+}
+
+/* The gallery, made again only when the game's screenshots change. */
+static void
+build_screenshots (GogGameDetail *self, const GogGamesdbInfo *db)
+{
+  GStrv shots = db && db->screenshots && db->screenshots[0] ? db->screenshots : NULL;
+  gboolean same = (!shots && !self->shots) ||
+                  (shots && self->shots &&
+                   g_strv_equal ((const char *const *) shots, (const char *const *) self->shots));
+  if (!same)
+    {
+      if (self->shots_cancellable)
+        g_cancellable_cancel (self->shots_cancellable);
+      g_clear_object (&self->shots_cancellable);
+      self->shots_cancellable = g_cancellable_new ();
+      self->shots_fetching = FALSE;
+      g_strfreev (self->shots);
+      self->shots = g_strdupv (shots);
+      GtkWidget *old;
+      while ((old = gtk_widget_get_first_child (GTK_WIDGET (self->screenshots_box))))
+        gtk_flow_box_remove (self->screenshots_box, old);
+      guint n = shots ? g_strv_length (shots) : 0;
+      for (guint i = 0; i < n; i++)
+        {
+          GtkWidget *picture = gtk_picture_new ();
+          gtk_picture_set_content_fit (GTK_PICTURE (picture), GTK_CONTENT_FIT_COVER);
+          /* The least it may shrink to; it is as tall as its column is
+           * wide makes it, once it's there. */
+          gtk_widget_set_size_request (picture, 160, 90);
+          gtk_widget_add_css_class (picture, "card");
+          gchar *label = g_strdup_printf ("Screenshot %u of %u", i + 1, n);
+          gtk_picture_set_alternative_text (GTK_PICTURE (picture), label);
+          GtkWidget *child = gtk_flow_box_child_new ();
+          gtk_flow_box_child_set_child (GTK_FLOW_BOX_CHILD (child), picture);
+          gtk_widget_set_tooltip_text (child, "Show it larger");
+          gtk_accessible_update_property (GTK_ACCESSIBLE (child), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                          label, GTK_ACCESSIBLE_PROPERTY_DESCRIPTION,
+                                          "Press Enter to show it larger", -1);
+          g_free (label);
+          gtk_flow_box_append (self->screenshots_box, child);
+        }
+    }
+  update_shot_pictures (self);
+  adw_view_stack_page_set_visible (self->screenshots_page, self->shots != NULL);
+  fetch_shots (self);
+}
+
+/* ---------------- videos ---------------- */
+
+static void
+on_video_launched (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+  GogGameDetail *self = user_data;
+  GError *error = NULL;
+  if (!gtk_uri_launcher_launch_finish (GTK_URI_LAUNCHER (source), res, &error) &&
+      !self->disposed && !g_error_matches (error, GTK_DIALOG_ERROR, GTK_DIALOG_ERROR_DISMISSED))
+    {
+      gchar *msg = g_strdup_printf ("Could not open the video: %s", error->message);
+      toast (self, msg);
+      g_free (msg);
+    }
+  g_clear_error (&error);
+  g_object_unref (self);
+}
+
+static void
+on_video_activated (GtkListBox *list, GtkListBoxRow *row, gpointer user_data)
+{
+  (void) list;
+  GogGameDetail *self = user_data;
+  const char *id = g_object_get_data (G_OBJECT (row), "video-id");
+  if (!id)
+    return;
+  gchar *uri = g_strdup_printf ("https://www.youtube.com/watch?v=%s", id);
+  GtkUriLauncher *launcher = gtk_uri_launcher_new (uri);
+  gtk_uri_launcher_launch (launcher, self->parent_window, NULL, on_video_launched,
+                           g_object_ref (self));
+  g_object_unref (launcher);
+  g_free (uri);
+}
+
+/* The game's videos, as links to YouTube: the app plays no video itself. */
+static void
+build_videos (GogGameDetail *self, const GogGamesdbInfo *db)
+{
+  GtkWidget *old;
+  while ((old = gtk_widget_get_first_child (GTK_WIDGET (self->videos_list))))
+    gtk_list_box_remove (self->videos_list, old);
+  guint n = db && db->video_ids ? g_strv_length (db->video_ids) : 0;
+  for (guint i = 0; i < n; i++)
+    {
+      GtkWidget *row = adw_action_row_new ();
+      /* GOG calls most of them "Trailer": the ones that share a name are
+       * numbered, so they can be told apart also by ear. */
+      const char *name = *db->video_names[i] ? db->video_names[i] : "Video";
+      guint same = 0, before = 0;
+      for (guint j = 0; j < n; j++)
+        {
+          const char *other = *db->video_names[j] ? db->video_names[j] : "Video";
+          if (g_strcmp0 (other, name) == 0)
+            {
+              same++;
+              before += j < i;
+            }
+        }
+      gchar *title = same > 1 ? g_strdup_printf ("%s %u", name, before + 1) : g_strdup (name);
+      adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row), title);
+      adw_preferences_row_set_use_markup (ADW_PREFERENCES_ROW (row), FALSE);
+      adw_action_row_set_subtitle (ADW_ACTION_ROW (row), "Opens on YouTube in your web browser");
+      adw_action_row_add_prefix (ADW_ACTION_ROW (row),
+                                 gtk_image_new_from_icon_name ("media-playback-start-symbolic"));
+      adw_action_row_add_suffix (ADW_ACTION_ROW (row),
+                                 gtk_image_new_from_icon_name ("go-next-symbolic"));
+      gtk_list_box_row_set_activatable (GTK_LIST_BOX_ROW (row), TRUE);
+      g_object_set_data_full (G_OBJECT (row), "video-id", g_strdup (db->video_ids[i]), g_free);
+      gtk_list_box_append (self->videos_list, row);
+      g_free (title);
+    }
+  adw_view_stack_page_set_visible (self->videos_page, n > 0);
+}
+
+/* What refresh() shows that GOG's details can change: refreshed alone when
+ * they arrive while the page is open, so the buttons keep focus. */
+static void
+refresh_details (GogGameDetail *self)
+{
 
   gtk_label_set_label (self->title_label, gog_game_get_title (self->game));
 
@@ -734,26 +1169,31 @@ refresh (GogGameDetail *self)
     }
   add_info_list (self->info_grid, &row, "Installers in", installer_langs);
   g_strfreev (installer_langs);
-  gint64 released = gog_game_get_release_date (self->game);
-  if (released > 0)
-    {
-      GDateTime *dt = g_date_time_new_from_unix_utc (released);
-      gchar *date = dt ? g_date_time_format (dt, "%Y-%m-%d") : NULL;
-      add_info (self->info_grid, &row, "Released", date);
-      g_free (date);
-      if (dt)
-        g_date_time_unref (dt);
-    }
-  add_info_list (self->info_grid, &row, "Categories", (GStrv) gog_game_get_categories (self->game));
+  gchar *released = format_date (gog_game_get_release_date (self->game));
+  add_info (self->info_grid, &row, "Released", released);
   const GogGamesdbInfo *db = gog_game_get_gamesdb (self->game);
+  /* The game's own first release, when GOG's came later. */
+  gchar *first = db ? format_date (db->first_release) : NULL;
+  if (g_strcmp0 (first, released) != 0)
+    add_info (self->info_grid, &row, "First released", first);
+  g_free (first);
+  g_free (released);
+  add_info_list (self->info_grid, &row, "Categories", (GStrv) gog_game_get_categories (self->game));
   if (db)
     {
+      add_info_list (self->info_grid, &row, "Genres", db->genres);
       add_info_list (self->info_grid, &row, "Developer", db->developers);
       if (!strv_equal (db->publishers, db->developers))
         add_info_list (self->info_grid, &row, "Publisher", db->publishers);
       add_info (self->info_grid, &row, "Series", db->series);
       add_info_list (self->info_grid, &row, "Themes", db->themes);
       add_info_list (self->info_grid, &row, "Modes", db->game_modes);
+      if (db->rating > 0)
+        {
+          gchar *rating = g_strdup_printf ("%.0f out of 100", db->rating);
+          add_info (self->info_grid, &row, "Critics' rating", rating);
+          g_free (rating);
+        }
     }
   gtk_widget_set_visible (GTK_WIDGET (self->info_grid), row > 0);
 
@@ -779,6 +1219,17 @@ refresh (GogGameDetail *self)
     description = db->summary;
   gtk_label_set_label (self->description_label, description ? description : "");
 
+  build_screenshots (self, db);
+  build_videos (self, db);
+}
+
+static void
+refresh (GogGameDetail *self)
+{
+  if (!self->game)
+    return;
+
+  refresh_details (self);
   build_action_row (self);
   build_runner_row (self);
   build_extras (self);
@@ -879,6 +1330,7 @@ gog_game_detail_new (GtkWindow *parent_window, GogLibrary *library, GogConfig *c
   gtk_box_append (GTK_BOX (content), self->serials_group);
 
   AdwViewStack *stack = ADW_VIEW_STACK (adw_view_stack_new ());
+  self->stack = stack;
   GtkWidget *switcher = adw_view_switcher_new ();
   adw_view_switcher_set_stack (ADW_VIEW_SWITCHER (switcher), stack);
   adw_view_switcher_set_policy (ADW_VIEW_SWITCHER (switcher), ADW_VIEW_SWITCHER_POLICY_WIDE);
@@ -899,14 +1351,59 @@ gog_game_detail_new (GtkWindow *parent_window, GogLibrary *library, GogConfig *c
   adw_view_stack_add_titled_with_icon (stack, GTK_WIDGET (self->dlc_box),
                                        "dlc", "DLC", "applications-games-symbolic");
 
+  /* Arrow keys move between the thumbnails, Enter shows one larger. */
+  self->screenshots_box = GTK_FLOW_BOX (gtk_flow_box_new ());
+  gtk_flow_box_set_selection_mode (self->screenshots_box, GTK_SELECTION_NONE);
+  gtk_flow_box_set_homogeneous (self->screenshots_box, TRUE);
+  /* The flow box would go by the thumbnails' own width (510) and fit one
+   * a line. */
+  gtk_flow_box_set_min_children_per_line (self->screenshots_box, 3);
+  gtk_flow_box_set_max_children_per_line (self->screenshots_box, 3);
+  gtk_flow_box_set_column_spacing (self->screenshots_box, 8);
+  gtk_flow_box_set_row_spacing (self->screenshots_box, 8);
+  gtk_widget_set_valign (GTK_WIDGET (self->screenshots_box), GTK_ALIGN_START);
+  gtk_accessible_update_property (GTK_ACCESSIBLE (self->screenshots_box),
+                                  GTK_ACCESSIBLE_PROPERTY_LABEL, "Screenshots", -1);
+  g_signal_connect (self->screenshots_box, "child-activated", G_CALLBACK (on_shot_activated), self);
+  self->screenshots_page = adw_view_stack_add_titled_with_icon (
+      stack, GTK_WIDGET (self->screenshots_box), "screenshots", "Screenshots",
+      "image-x-generic-symbolic");
+  adw_view_stack_page_set_visible (self->screenshots_page, FALSE);
+
+  self->videos_list = GTK_LIST_BOX (gtk_list_box_new ());
+  gtk_list_box_set_selection_mode (self->videos_list, GTK_SELECTION_NONE);
+  gtk_widget_add_css_class (GTK_WIDGET (self->videos_list), "boxed-list");
+  gtk_widget_set_valign (GTK_WIDGET (self->videos_list), GTK_ALIGN_START);
+  gtk_accessible_update_property (GTK_ACCESSIBLE (self->videos_list),
+                                  GTK_ACCESSIBLE_PROPERTY_LABEL, "Videos", -1);
+  g_signal_connect (self->videos_list, "row-activated", G_CALLBACK (on_video_activated), self);
+  self->videos_page = adw_view_stack_add_titled_with_icon (
+      stack, GTK_WIDGET (self->videos_list), "videos", "Videos", "video-x-generic-symbolic");
+  adw_view_stack_page_set_visible (self->videos_page, FALSE);
+
+  g_signal_connect (stack, "notify::visible-child", G_CALLBACK (on_stack_child_changed), self);
+
   gtk_box_append (GTK_BOX (content), GTK_WIDGET (stack));
 
   return self;
 }
 
+static void
+on_game_gamesdb_changed (GObject *game, GParamSpec *pspec, gpointer user_data)
+{
+  (void) game;
+  (void) pspec;
+  refresh_details (user_data);
+}
+
 void
 gog_game_detail_set_game (GogGameDetail *self, GogGame *game)
 {
+  if (self->game)
+    g_clear_signal_handler (&self->gamesdb_handler, self->game);
   g_set_object (&self->game, game);
+  if (game)
+    self->gamesdb_handler = g_signal_connect (game, "notify::gamesdb",
+                                              G_CALLBACK (on_game_gamesdb_changed), self);
   refresh (self);
 }

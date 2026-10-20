@@ -20,10 +20,10 @@ your GOG login.
 - **Library browser** — scans a directory of GOG products (one subfolder per
   game), reads each product's `product_*.json` metadata, and presents titles,
   logos, descriptions, and sizes in an Adwaita grid.
-- **Search, filter, and sort** — live title search; filter by OS
-  (Windows / Linux / macOS), by language, by games with DLC or extras, and by
-  status (installed, not installed, new version on GOG); sort by title
-  (A–Z / Z–A), installed-first, or size.
+- **Search, filter, and sort** — live search by title, series, developer or
+  publisher; filter by OS (Windows / Linux / macOS), by language, by games
+  with DLC or extras, and by status (installed, not installed, new version on
+  GOG); sort by title (A–Z / Z–A), installed-first, or size.
 - **New games and updates from GOG** — through
   [lgogdownloader](https://github.com/Sude-/lgogdownloader), lists the games
   you own that are not downloaded yet and the ones with a new version. Each
@@ -61,12 +61,21 @@ your GOG login.
   them from GOG once per game in the background after a scan and keeps them
   in `gog-manager-categories.json` in the app's config folder, so they work offline;
   Preferences can fetch them all again.
-- **Box art and details** — cards show each game's box art, and its page
-  the background art, developer, publisher, series, themes and game modes,
-  from GOG's games database; cached in the config folder like the categories.
+- **Box art and details** — from GOG's games database: cards show each
+  game's box art, and its page the background art, genres, developer,
+  publisher, series, themes, game modes, critics' rating and first release
+  date. A **Screenshots** tab shows the screenshots and artwork (click or
+  press Enter for full size, then Left/Right for the next) and a **Videos**
+  tab links the trailers on YouTube. Filter by genre, theme, game mode,
+  series, developer or publisher (several at once, each list searchable), and
+  sort by rating, series (in release order) or developer. Cached in the
+  config folder like the categories; screenshots are fetched the first time
+  a game's Screenshots tab is opened. The page updates when the details
+  arrive while it is open.
 - **Views** — show the library as a grid of covers, a simple list or a
   detailed table (categories, platforms, status, size, release date,
-  languages, DLC and extras); the choice is remembered.
+  languages, DLC and extras, genres, developer, series, rating); the choice
+  is remembered.
 - **Release dates** — sort the library newest or oldest first.
 - **Newest Proton** — the default runner for new installs is the newest
   Proton on the computer (by the version each build records, so Heroic's
@@ -184,8 +193,8 @@ directly next to the executable are moved there on start:
 | `<app dir>/.gog-manager-configs/gog-manager-state.json` | Per-game install state (keyed by product id) |
 | `<app dir>/.gog-manager-configs/gog-manager-updates.json` | The last GOG check: what each game has to download |
 | `<app dir>/.gog-manager-configs/gog-manager-download.json` | Download choices: files at the same time, and each game's languages |
-| `<app dir>/.gog-manager-configs/gog-manager-gamesdb.json` | Details from GOG's games database (summary, developers, themes...) |
-| `<app dir>/.gog-manager-configs/gamesdb-images/` | Box art and backgrounds from GOG's games database |
+| `<app dir>/.gog-manager-configs/gog-manager-gamesdb.json` | Details from GOG's games database (summary, genres, developers, themes, rating, screenshot and video links...) |
+| `<app dir>/.gog-manager-configs/gamesdb-images/` | Box art, backgrounds and the screenshots you have looked at, from GOG's games database |
 | `$XDG_DATA_HOME/gog-manager/proton/<tag>/` | Downloaded GE-Proton builds |
 
 The GOG check and downloads use lgogdownloader's own settings in

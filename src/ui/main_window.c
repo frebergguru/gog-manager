@@ -54,11 +54,7 @@ struct _GogMainWindow
   GtkDropDown *language_dropdown;
   GStrv language_names;        /* GOG's names, for the dropdown's entries after "Any" */
   GtkDropDown *status_dropdown;
-  GtkMenuButton *category_button;
-  GtkBox *category_list;       /* the picker's check buttons */
-  GtkToggleButton *category_match_all;
-  GHashTable *category_selected; /* chosen category names (owned) */
-  gboolean category_rebuilding;  /* check buttons being made, not toggled */
+  struct _Picker *pickers[7];   /* by PickerKind */
   GtkWidget *status_bar;       /* bottom bar: progress or failure of the GOG lookups */
   GtkLabel *category_status;
   GtkWidget *status_dismiss;   /* shown for a failure, not while fetching */
@@ -92,6 +88,38 @@ window_gone (GogMainWindow *self)
 {
   return self->disposed || gtk_widget_in_destruction (GTK_WIDGET (self));
 }
+
+/* A filter where several values can be chosen (categories, genres,
+ * developers...): a button with a searchable list of check buttons. */
+typedef GStrv (*PickerValuesFunc) (GogGame *game); /* transfer full; NULL for none */
+
+typedef enum
+{
+  PICKER_CATEGORY,
+  PICKER_GENRE,
+  PICKER_THEME,
+  PICKER_MODE,
+  PICKER_SERIES,
+  PICKER_DEVELOPER,
+  PICKER_PUBLISHER,
+  N_PICKERS
+} PickerKind;
+G_STATIC_ASSERT (N_PICKERS == 7); /* the size of GogMainWindow.pickers */
+
+typedef struct _Picker
+{
+  GogMainWindow *window;
+  const char *heading;  /* "Category" */
+  const char *any;      /* "Any category" */
+  const char *empty;    /* shown when no game has any */
+  PickerValuesFunc values;
+  GtkMenuButton *button;
+  GtkBox *list;                /* the check buttons */
+  GtkSearchEntry *search;
+  GtkToggleButton *match_all;  /* NULL where a game has one value at most */
+  GHashTable *selected;        /* chosen names (owned) */
+  gboolean rebuilding;         /* check buttons being made, not toggled */
+} Picker;
 
 typedef struct
 {
@@ -195,11 +223,26 @@ filter_func (gpointer item, gpointer user_data)
   const char *search = gtk_editable_get_text (GTK_EDITABLE (self->search_entry));
   if (search && *search)
     {
-      gchar *title_lower = g_utf8_strdown (gog_game_get_title (game), -1);
+      /* The title, or the series, developer or publisher. */
+      const GogGamesdbInfo *db = gog_game_get_gamesdb (game);
+      GPtrArray *texts = g_ptr_array_new ();
+      g_ptr_array_add (texts, (gpointer) gog_game_get_title (game));
+      if (db && db->series)
+        g_ptr_array_add (texts, db->series);
+      for (GStrv d = db ? db->developers : NULL; d && *d; d++)
+        g_ptr_array_add (texts, *d);
+      for (GStrv d = db ? db->publishers : NULL; d && *d; d++)
+        g_ptr_array_add (texts, *d);
       gchar *search_lower = g_utf8_strdown (search, -1);
-      gboolean match = strstr (title_lower, search_lower) != NULL;
-      g_free (title_lower);
+      gboolean match = FALSE;
+      for (guint i = 0; i < texts->len && !match; i++)
+        {
+          gchar *lower = g_utf8_strdown (g_ptr_array_index (texts, i), -1);
+          match = strstr (lower, search_lower) != NULL;
+          g_free (lower);
+        }
       g_free (search_lower);
+      g_ptr_array_unref (texts);
       if (!match)
         return FALSE;
     }
@@ -253,16 +296,21 @@ filter_func (gpointer item, gpointer user_data)
         return FALSE;
     }
 
-  if (g_hash_table_size (self->category_selected) > 0)
+  for (guint k = 0; k < N_PICKERS; k++)
     {
-      /* Any of the chosen categories, or (Match all) every one of them. */
-      gboolean all = gtk_toggle_button_get_active (self->category_match_all);
-      const char *const *cats = gog_game_get_categories (game);
+      Picker *p = self->pickers[k];
+      guint wanted = g_hash_table_size (p->selected);
+      if (wanted == 0)
+        continue;
+      /* Any of the chosen ones, or (All of them) every one. */
+      gboolean all = p->match_all && gtk_toggle_button_get_active (p->match_all);
+      GStrv values = p->values (game);
       guint matched = 0;
-      for (const char *const *c = cats; c && *c; c++)
-        if (g_hash_table_contains (self->category_selected, *c))
+      for (GStrv v = values; v && *v; v++)
+        if (g_hash_table_contains (p->selected, *v))
           matched++;
-      if (all ? matched < g_hash_table_size (self->category_selected) : matched == 0)
+      g_strfreev (values);
+      if (all ? matched < wanted : matched == 0)
         return FALSE;
     }
 
@@ -313,6 +361,44 @@ compare_main_category (GogGame *ga, GogGame *gb)
   return g_utf8_collate (a, b);
 }
 
+/* By a text from GOG's games database; games without it go last. */
+static gint
+compare_gamesdb_text (const char *a, const char *b)
+{
+  if (!a || !b)
+    return (a == NULL) - (b == NULL);
+  return g_utf8_collate (a, b);
+}
+
+static const char *
+first_developer (GogGame *game)
+{
+  const GogGamesdbInfo *db = gog_game_get_gamesdb (game);
+  return db && db->developers[0] ? db->developers[0] : NULL;
+}
+
+static const char *
+series_of (GogGame *game)
+{
+  const GogGamesdbInfo *db = gog_game_get_gamesdb (game);
+  return db ? db->series : NULL;
+}
+
+/* The game's first release anywhere, else GOG's. */
+static gint64
+first_release_of (GogGame *game)
+{
+  const GogGamesdbInfo *db = gog_game_get_gamesdb (game);
+  return db && db->first_release > 0 ? db->first_release : gog_game_get_release_date (game);
+}
+
+static gdouble
+rating_of (GogGame *game)
+{
+  const GogGamesdbInfo *db = gog_game_get_gamesdb (game);
+  return db ? db->rating : 0;
+}
+
 static gint
 sort_func (gconstpointer a, gconstpointer b, gpointer user_data)
 {
@@ -361,6 +447,32 @@ sort_func (gconstpointer a, gconstpointer b, gpointer user_data)
           return ra > 0 ? -1 : 1;
         if (ra != rb)
           return (mode == 6) == (ra > rb) ? -1 : 1;
+        return g_utf8_collate (gog_game_get_title (ga), gog_game_get_title (gb));
+      }
+    case 8: /* Critics' rating, highest first; unrated last */
+      {
+        gdouble ra = rating_of (ga);
+        gdouble rb = rating_of (gb);
+        if (ra != rb)
+          return ra > rb ? -1 : 1;
+        return g_utf8_collate (gog_game_get_title (ga), gog_game_get_title (gb));
+      }
+    case 9: /* Series, in the order they came out */
+      {
+        gint by_series = compare_gamesdb_text (series_of (ga), series_of (gb));
+        if (by_series != 0)
+          return by_series;
+        gint64 ra = first_release_of (ga);
+        gint64 rb = first_release_of (gb);
+        if (series_of (ga) && ra != rb && ra > 0 && rb > 0)
+          return ra < rb ? -1 : 1;
+        return g_utf8_collate (gog_game_get_title (ga), gog_game_get_title (gb));
+      }
+    case 10: /* Developer */
+      {
+        gint by_developer = compare_gamesdb_text (first_developer (ga), first_developer (gb));
+        if (by_developer != 0)
+          return by_developer;
         return g_utf8_collate (gog_game_get_title (ga), gog_game_get_title (gb));
       }
     default: /* Title A-Z */
@@ -753,6 +865,44 @@ text_content (GogMainWindow *self, GogGame *game)
   return g_string_free (content, FALSE);
 }
 
+static gchar *
+text_gamesdb_list (GogGame *game, gsize offset)
+{
+  const GogGamesdbInfo *db = gog_game_get_gamesdb (game);
+  GStrv list = db ? G_STRUCT_MEMBER (GStrv, db, offset) : NULL;
+  return list ? g_strjoinv (", ", list) : g_strdup ("");
+}
+
+static gchar *
+text_genres (GogMainWindow *self, GogGame *game)
+{
+  (void) self;
+  return text_gamesdb_list (game, G_STRUCT_OFFSET (GogGamesdbInfo, genres));
+}
+
+static gchar *
+text_developers (GogMainWindow *self, GogGame *game)
+{
+  (void) self;
+  return text_gamesdb_list (game, G_STRUCT_OFFSET (GogGamesdbInfo, developers));
+}
+
+static gchar *
+text_series (GogMainWindow *self, GogGame *game)
+{
+  (void) self;
+  const char *series = series_of (game);
+  return g_strdup (series ? series : "");
+}
+
+static gchar *
+text_rating (GogMainWindow *self, GogGame *game)
+{
+  (void) self;
+  gdouble rating = rating_of (game);
+  return rating > 0 ? g_strdup_printf ("%.0f/100", rating) : g_strdup ("");
+}
+
 static void
 set_icon (GtkPicture *picture, GogGame *game)
 {
@@ -937,6 +1087,10 @@ build_details_view (GogMainWindow *self)
   add_text_column (self, view, "Released", text_released, 95);
   add_text_column (self, view, "Languages", text_languages, 160);
   add_text_column (self, view, "DLC & extras", text_content, 120);
+  add_text_column (self, view, "Genres", text_genres, 160);
+  add_text_column (self, view, "Developer", text_developers, 160);
+  add_text_column (self, view, "Series", text_series, 140);
+  add_text_column (self, view, "Rating", text_rating, 70);
 
   GtkWidget *scroller = gtk_scrolled_window_new ();
   gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scroller), GTK_WIDGET (view));
@@ -1063,90 +1217,154 @@ collate_strings (gconstpointer a, gconstpointer b, gpointer user_data)
   return g_utf8_collate (*(const char *const *) a, *(const char *const *) b);
 }
 
+/* ---------------- pickers ---------------- */
+
+static GStrv
+values_or_null (const char *const *values)
+{
+  return values && values[0] ? g_strdupv ((GStrv) values) : NULL;
+}
+
+static GStrv
+category_values (GogGame *game)
+{
+  return values_or_null (gog_game_get_categories (game));
+}
+
+#define GAMESDB_VALUES(name, field)                                                      \
+  static GStrv name (GogGame *game)                                                      \
+  {                                                                                      \
+    const GogGamesdbInfo *db = gog_game_get_gamesdb (game);                              \
+    return db ? values_or_null ((const char *const *) db->field) : NULL;                 \
+  }
+
+GAMESDB_VALUES (genre_values, genres)
+GAMESDB_VALUES (theme_values, themes)
+GAMESDB_VALUES (mode_values, game_modes)
+GAMESDB_VALUES (developer_values, developers)
+GAMESDB_VALUES (publisher_values, publishers)
+
+static GStrv
+series_values (GogGame *game)
+{
+  const GogGamesdbInfo *db = gog_game_get_gamesdb (game);
+  const char *one[] = { db ? db->series : NULL, NULL };
+  return values_or_null (one);
+}
+
 /* The picker button says what is chosen: "Any category", "Action", or
  * "Action + 2 more". */
 static void
-update_category_button (GogMainWindow *self)
+update_picker_button (Picker *p)
 {
-  guint n = g_hash_table_size (self->category_selected);
+  guint n = g_hash_table_size (p->selected);
   gchar *label;
   if (n == 0)
-    label = g_strdup ("Any category");
+    label = g_strdup (p->any);
   else
     {
       /* The first chosen one in the picker's (sorted) order. */
       const char *first = NULL;
-      for (GtkWidget *c = gtk_widget_get_first_child (GTK_WIDGET (self->category_list));
-           c && !first; c = gtk_widget_get_next_sibling (c))
+      for (GtkWidget *c = gtk_widget_get_first_child (GTK_WIDGET (p->list)); c && !first;
+           c = gtk_widget_get_next_sibling (c))
         if (GTK_IS_CHECK_BUTTON (c) && gtk_check_button_get_active (GTK_CHECK_BUTTON (c)))
           first = gtk_check_button_get_label (GTK_CHECK_BUTTON (c));
       if (!first)
         first = "?";
-      label = n == 1 ? g_strdup (first)
-                     : g_strdup_printf ("%s + %u more", first, n - 1);
+      label = n == 1 ? g_strdup (first) : g_strdup_printf ("%s + %u more", first, n - 1);
     }
-  gtk_menu_button_set_label (self->category_button, label);
-  gchar *accessible = g_strdup_printf ("Category: %s", label);
-  gtk_accessible_update_property (GTK_ACCESSIBLE (self->category_button),
-                                  GTK_ACCESSIBLE_PROPERTY_LABEL, accessible, -1);
+  gtk_menu_button_set_label (p->button, label);
+  /* A long name (a developer, say) mustn't widen the sidebar. */
+  GtkWidget *inner = gtk_widget_get_first_child (GTK_WIDGET (p->button));
+  for (GtkWidget *w = inner; w; w = gtk_widget_get_first_child (w))
+    if (GTK_IS_LABEL (w))
+      {
+        gtk_label_set_ellipsize (GTK_LABEL (w), PANGO_ELLIPSIZE_END);
+        break;
+      }
+  gtk_widget_set_tooltip_text (GTK_WIDGET (p->button), n > 0 ? label : NULL);
+  gchar *accessible = g_strdup_printf ("%s: %s", p->heading, label);
+  gtk_accessible_update_property (GTK_ACCESSIBLE (p->button), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                  accessible, -1);
   g_free (accessible);
   g_free (label);
 }
 
 static void
-on_category_toggled (GtkCheckButton *button, gpointer user_data)
+on_picker_toggled (GtkCheckButton *button, gpointer user_data)
 {
-  GogMainWindow *self = user_data;
-  if (self->category_rebuilding)
+  Picker *p = user_data;
+  if (p->rebuilding)
     return;
   const char *name = gtk_check_button_get_label (button);
   if (gtk_check_button_get_active (button))
-    g_hash_table_add (self->category_selected, g_strdup (name));
+    g_hash_table_add (p->selected, g_strdup (name));
   else
-    g_hash_table_remove (self->category_selected, name);
-  update_category_button (self);
-  on_filters_changed (NULL, self);
+    g_hash_table_remove (p->selected, name);
+  update_picker_button (p);
+  on_filters_changed (NULL, p->window);
 }
 
 static void
-on_category_match_toggled (GtkToggleButton *button, gpointer user_data)
+on_picker_match_toggled (GtkToggleButton *button, gpointer user_data)
 {
   (void) button;
-  GogMainWindow *self = user_data;
-  if (g_hash_table_size (self->category_selected) > 1)
-    on_filters_changed (NULL, self);
+  Picker *p = user_data;
+  if (g_hash_table_size (p->selected) > 1)
+    on_filters_changed (NULL, p->window);
 }
 
 static void
-on_category_clear_clicked (GtkButton *button, gpointer user_data)
+on_picker_clear_clicked (GtkButton *button, gpointer user_data)
 {
   (void) button;
-  GogMainWindow *self = user_data;
-  self->category_rebuilding = TRUE;
-  for (GtkWidget *c = gtk_widget_get_first_child (GTK_WIDGET (self->category_list)); c;
+  Picker *p = user_data;
+  p->rebuilding = TRUE;
+  for (GtkWidget *c = gtk_widget_get_first_child (GTK_WIDGET (p->list)); c;
        c = gtk_widget_get_next_sibling (c))
     if (GTK_IS_CHECK_BUTTON (c))
       gtk_check_button_set_active (GTK_CHECK_BUTTON (c), FALSE);
-  self->category_rebuilding = FALSE;
-  g_hash_table_remove_all (self->category_selected);
-  update_category_button (self);
-  on_filters_changed (NULL, self);
+  p->rebuilding = FALSE;
+  g_hash_table_remove_all (p->selected);
+  update_picker_button (p);
+  on_filters_changed (NULL, p->window);
 }
 
-/* One check button per category among the games with a card of their own,
+/* Typing in the picker narrows its list; chosen ones stay chosen. */
+static void
+on_picker_search_changed (GtkSearchEntry *entry, gpointer user_data)
+{
+  Picker *p = user_data;
+  gchar *wanted = g_utf8_strdown (gtk_editable_get_text (GTK_EDITABLE (entry)), -1);
+  for (GtkWidget *c = gtk_widget_get_first_child (GTK_WIDGET (p->list)); c;
+       c = gtk_widget_get_next_sibling (c))
+    if (GTK_IS_CHECK_BUTTON (c))
+      {
+        gchar *name = g_utf8_strdown (gtk_check_button_get_label (GTK_CHECK_BUTTON (c)), -1);
+        gtk_widget_set_visible (c, strstr (name, wanted) != NULL);
+        g_free (name);
+      }
+  g_free (wanted);
+}
+
+/* One check button per value among the games with a card of their own,
  * sorted. Choices that are still there are kept. */
 static void
-populate_category_picker (GogMainWindow *self)
+populate_picker (Picker *p)
 {
-  GHashTable *seen = g_hash_table_new (g_str_hash, g_str_equal);
-  GListModel *model = gog_library_get_model (self->library);
+  GHashTable *seen = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+  GListModel *model = gog_library_get_model (p->window->library);
   guint n = g_list_model_get_n_items (model);
   for (guint i = 0; i < n; i++)
     {
       GogGame *g = g_list_model_get_item (model, i);
       if (!gog_game_get_base_game (g))
-        for (const char *const *c = gog_game_get_categories (g); c && *c; c++)
-          g_hash_table_add (seen, (gpointer) *c);
+        {
+          GStrv values = p->values (g);
+          for (GStrv v = values; v && *v; v++)
+            g_hash_table_add (seen, g_strdup (*v));
+          g_strfreev (values);
+        }
       g_object_unref (g);
     }
   GPtrArray *names = g_ptr_array_new ();
@@ -1158,36 +1376,138 @@ populate_category_picker (GogMainWindow *self)
   g_ptr_array_sort_with_data (names, collate_strings, NULL);
 
   /* A choice no game has any more can't be unticked; drop it. */
-  g_hash_table_iter_init (&iter, self->category_selected);
+  g_hash_table_iter_init (&iter, p->selected);
   while (g_hash_table_iter_next (&iter, &key, NULL))
     if (!g_hash_table_contains (seen, key))
       g_hash_table_iter_remove (&iter);
 
-  self->category_rebuilding = TRUE;
+  /* The lists are refreshed as GOG's details arrive, maybe while one is
+   * open: leave one that hasn't changed alone, so it keeps focus. */
+  guint same = 0;
+  GtkWidget *c = gtk_widget_get_first_child (GTK_WIDGET (p->list));
+  for (; c && GTK_IS_CHECK_BUTTON (c) && same < names->len; c = gtk_widget_get_next_sibling (c))
+    {
+      if (g_strcmp0 (gtk_check_button_get_label (GTK_CHECK_BUTTON (c)),
+                     g_ptr_array_index (names, same)) != 0)
+        break;
+      same++;
+    }
+  if (names->len > 0 && same == names->len && !c)
+    {
+      g_ptr_array_unref (names);
+      g_hash_table_unref (seen);
+      update_picker_button (p);
+      return;
+    }
+
+  p->rebuilding = TRUE;
   GtkWidget *child;
-  while ((child = gtk_widget_get_first_child (GTK_WIDGET (self->category_list))))
-    gtk_box_remove (self->category_list, child);
+  while ((child = gtk_widget_get_first_child (GTK_WIDGET (p->list))))
+    gtk_box_remove (p->list, child);
   for (guint i = 0; i < names->len; i++)
     {
       const char *name = g_ptr_array_index (names, i);
       GtkWidget *check = gtk_check_button_new_with_label (name);
       gtk_check_button_set_active (GTK_CHECK_BUTTON (check),
-                                   g_hash_table_contains (self->category_selected, name));
-      g_signal_connect (check, "toggled", G_CALLBACK (on_category_toggled), self);
-      gtk_box_append (self->category_list, check);
+                                   g_hash_table_contains (p->selected, name));
+      g_signal_connect (check, "toggled", G_CALLBACK (on_picker_toggled), p);
+      gtk_box_append (p->list, check);
     }
   if (names->len == 0)
     {
-      GtkWidget *none = gtk_label_new ("No categories yet. They are fetched from GOG after a scan.");
+      GtkWidget *none = gtk_label_new (p->empty);
       gtk_label_set_wrap (GTK_LABEL (none), TRUE);
       gtk_label_set_max_width_chars (GTK_LABEL (none), 28);
       gtk_widget_add_css_class (none, "dim-label");
-      gtk_box_append (self->category_list, none);
+      gtk_box_append (p->list, none);
     }
-  self->category_rebuilding = FALSE;
+  /* A search is only worth it in a long list. */
+  gtk_widget_set_visible (GTK_WIDGET (p->search), names->len > 12);
+  gtk_editable_set_text (GTK_EDITABLE (p->search), "");
+  p->rebuilding = FALSE;
   g_ptr_array_unref (names);
   g_hash_table_unref (seen);
-  update_category_button (self);
+  update_picker_button (p);
+}
+
+static void
+picker_free (Picker *p)
+{
+  g_hash_table_unref (p->selected);
+  g_free (p);
+}
+
+/* Builds a picker under its heading in box. match_all: offer "All of
+ * them", for values a game can have several of. */
+static Picker *
+add_picker (GogMainWindow *self, GtkBox *box, const char *heading, const char *any,
+            const char *empty, PickerValuesFunc values, gboolean match_all)
+{
+  Picker *p = g_new0 (Picker, 1);
+  p->window = self;
+  p->heading = heading;
+  p->any = any;
+  p->empty = empty;
+  p->values = values;
+  p->selected = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+
+  GtkWidget *label = gtk_label_new (heading);
+  gtk_widget_add_css_class (label, "heading");
+  gtk_widget_set_halign (label, GTK_ALIGN_START);
+  gtk_box_append (box, label);
+
+  GtkWidget *picker = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
+  gtk_widget_set_margin_top (picker, 6);
+  gtk_widget_set_margin_bottom (picker, 6);
+  gtk_widget_set_margin_start (picker, 6);
+  gtk_widget_set_margin_end (picker, 6);
+  if (match_all)
+    {
+      GtkWidget *match_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+      gtk_widget_add_css_class (match_box, "linked");
+      GtkWidget *any_btn = gtk_toggle_button_new_with_label ("Any of them");
+      GtkWidget *all_btn = gtk_toggle_button_new_with_label ("All of them");
+      gtk_toggle_button_set_group (GTK_TOGGLE_BUTTON (all_btn), GTK_TOGGLE_BUTTON (any_btn));
+      gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (any_btn), TRUE);
+      gtk_widget_set_tooltip_text (any_btn, "Games with at least one of the chosen ones");
+      gtk_widget_set_tooltip_text (all_btn, "Only games with every chosen one");
+      gtk_widget_set_hexpand (any_btn, TRUE);
+      gtk_widget_set_hexpand (all_btn, TRUE);
+      gtk_box_append (GTK_BOX (match_box), any_btn);
+      gtk_box_append (GTK_BOX (match_box), all_btn);
+      gtk_box_append (GTK_BOX (picker), match_box);
+      p->match_all = GTK_TOGGLE_BUTTON (all_btn);
+      g_signal_connect (all_btn, "toggled", G_CALLBACK (on_picker_match_toggled), p);
+    }
+
+  p->search = GTK_SEARCH_ENTRY (gtk_search_entry_new ());
+  gchar *search_label = g_strdup_printf ("Find %s", any + strlen ("Any "));
+  gtk_search_entry_set_placeholder_text (p->search, search_label);
+  set_accessible_label (GTK_WIDGET (p->search), search_label);
+  g_free (search_label);
+  g_signal_connect (p->search, "search-changed", G_CALLBACK (on_picker_search_changed), p);
+  gtk_box_append (GTK_BOX (picker), GTK_WIDGET (p->search));
+
+  p->list = GTK_BOX (gtk_box_new (GTK_ORIENTATION_VERTICAL, 2));
+  GtkWidget *list_scroller = gtk_scrolled_window_new ();
+  gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (list_scroller), GTK_POLICY_NEVER,
+                                  GTK_POLICY_AUTOMATIC);
+  gtk_scrolled_window_set_propagate_natural_height (GTK_SCROLLED_WINDOW (list_scroller), TRUE);
+  gtk_scrolled_window_set_max_content_height (GTK_SCROLLED_WINDOW (list_scroller), 360);
+  gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (list_scroller), GTK_WIDGET (p->list));
+  gtk_box_append (GTK_BOX (picker), list_scroller);
+
+  GtkWidget *clear = gtk_button_new_with_label ("Clear");
+  g_signal_connect (clear, "clicked", G_CALLBACK (on_picker_clear_clicked), p);
+  gtk_box_append (GTK_BOX (picker), clear);
+
+  GtkWidget *popover = gtk_popover_new ();
+  gtk_popover_set_child (GTK_POPOVER (popover), picker);
+  p->button = GTK_MENU_BUTTON (gtk_menu_button_new ());
+  gtk_menu_button_set_popover (p->button, popover);
+  gtk_box_append (box, GTK_WIDGET (p->button));
+  populate_picker (p);
+  return p;
 }
 
 /* Gives every game its categories from the cache. */
@@ -1207,7 +1527,7 @@ apply_categories (GogMainWindow *self)
       g_object_unref (g);
     }
   g_hash_table_unref (cache);
-  populate_category_picker (self);
+  populate_picker (self->pickers[PICKER_CATEGORY]);
 }
 
 /* Gives every game what GOG's games database says about it. */
@@ -1230,6 +1550,8 @@ apply_gamesdb (GogMainWindow *self)
       g_object_unref (g);
     }
   g_hash_table_unref (cache);
+  for (guint k = PICKER_GENRE; k < N_PICKERS; k++)
+    populate_picker (self->pickers[k]);
 }
 
 static void
@@ -1798,54 +2120,23 @@ build_sidebar (GogMainWindow *self)
   gtk_box_append (GTK_BOX (box), GTK_WIDGET (self->language_dropdown));
   g_signal_connect (self->language_dropdown, "notify::selected", G_CALLBACK (on_filter_dropdown_changed), self);
 
-  GtkWidget *category_heading = gtk_label_new ("Category");
-  gtk_widget_add_css_class (category_heading, "heading");
-  gtk_widget_set_halign (category_heading, GTK_ALIGN_START);
-  gtk_box_append (GTK_BOX (box), category_heading);
-  /* Several can be chosen: a button with a list of check buttons. */
-  self->category_selected = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
-  GtkWidget *picker = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
-  gtk_widget_set_margin_top (picker, 6);
-  gtk_widget_set_margin_bottom (picker, 6);
-  gtk_widget_set_margin_start (picker, 6);
-  gtk_widget_set_margin_end (picker, 6);
-  GtkWidget *match_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
-  gtk_widget_add_css_class (match_box, "linked");
-  GtkWidget *match_any = gtk_toggle_button_new_with_label ("Any of them");
-  GtkWidget *match_all = gtk_toggle_button_new_with_label ("All of them");
-  gtk_toggle_button_set_group (GTK_TOGGLE_BUTTON (match_all), GTK_TOGGLE_BUTTON (match_any));
-  gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (match_any), TRUE);
-  gtk_widget_set_tooltip_text (match_any, "Games with at least one of the chosen categories");
-  gtk_widget_set_tooltip_text (match_all, "Only games with every chosen category");
-  gtk_widget_set_hexpand (match_any, TRUE);
-  gtk_widget_set_hexpand (match_all, TRUE);
-  gtk_box_append (GTK_BOX (match_box), match_any);
-  gtk_box_append (GTK_BOX (match_box), match_all);
-  gtk_box_append (GTK_BOX (picker), match_box);
-  self->category_match_all = GTK_TOGGLE_BUTTON (match_all);
-  g_signal_connect (match_all, "toggled", G_CALLBACK (on_category_match_toggled), self);
-
-  self->category_list = GTK_BOX (gtk_box_new (GTK_ORIENTATION_VERTICAL, 2));
-  GtkWidget *list_scroller = gtk_scrolled_window_new ();
-  gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (list_scroller), GTK_POLICY_NEVER,
-                                  GTK_POLICY_AUTOMATIC);
-  gtk_scrolled_window_set_propagate_natural_height (GTK_SCROLLED_WINDOW (list_scroller), TRUE);
-  gtk_scrolled_window_set_max_content_height (GTK_SCROLLED_WINDOW (list_scroller), 360);
-  gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (list_scroller),
-                                 GTK_WIDGET (self->category_list));
-  gtk_box_append (GTK_BOX (picker), list_scroller);
-
-  GtkWidget *clear = gtk_button_new_with_label ("Clear");
-  g_signal_connect (clear, "clicked", G_CALLBACK (on_category_clear_clicked), self);
-  gtk_box_append (GTK_BOX (picker), clear);
-
-  GtkWidget *popover = gtk_popover_new ();
-  gtk_popover_set_child (GTK_POPOVER (popover), picker);
-  self->category_button = GTK_MENU_BUTTON (gtk_menu_button_new ());
-  gtk_menu_button_set_popover (self->category_button, popover);
-  gtk_menu_button_set_label (self->category_button, "Any category");
-  set_accessible_label (GTK_WIDGET (self->category_button), "Category: Any category");
-  gtk_box_append (GTK_BOX (box), GTK_WIDGET (self->category_button));
+  /* Several can be chosen in each. Categories come from GOG's store, the
+   * rest from its games database. */
+  const char *later = "None yet. They are fetched from GOG after a scan.";
+  self->pickers[PICKER_CATEGORY] = add_picker (self, GTK_BOX (box), "Category", "Any category",
+                                               later, category_values, TRUE);
+  self->pickers[PICKER_GENRE] =
+      add_picker (self, GTK_BOX (box), "Genre", "Any genre", later, genre_values, TRUE);
+  self->pickers[PICKER_THEME] =
+      add_picker (self, GTK_BOX (box), "Theme", "Any theme", later, theme_values, TRUE);
+  self->pickers[PICKER_MODE] =
+      add_picker (self, GTK_BOX (box), "Game Mode", "Any game mode", later, mode_values, TRUE);
+  self->pickers[PICKER_SERIES] =
+      add_picker (self, GTK_BOX (box), "Series", "Any series", later, series_values, FALSE);
+  self->pickers[PICKER_DEVELOPER] = add_picker (self, GTK_BOX (box), "Developer",
+                                                "Any developer", later, developer_values, FALSE);
+  self->pickers[PICKER_PUBLISHER] = add_picker (self, GTK_BOX (box), "Publisher",
+                                                "Any publisher", later, publisher_values, FALSE);
 
   GtkWidget *status_heading = gtk_label_new ("Status");
   gtk_widget_add_css_class (status_heading, "heading");
@@ -1865,7 +2156,8 @@ build_sidebar (GogMainWindow *self)
   gtk_box_append (GTK_BOX (box), sort_heading);
   GtkStringList *sort_list = gtk_string_list_new (
       (const char *[]) { "Title A–Z", "Title Z–A", "Installed first", "Size (largest)",
-                         "Language", "Category", "Newest first", "Oldest first", NULL });
+                         "Language", "Category", "Newest first", "Oldest first",
+                         "Critics' rating", "Series", "Developer", NULL });
   self->sort_dropdown = GTK_DROP_DOWN (gtk_drop_down_new (G_LIST_MODEL (sort_list), NULL));
   set_accessible_label (GTK_WIDGET (self->sort_dropdown), "Sort By");
   gtk_box_append (GTK_BOX (box), GTK_WIDGET (self->sort_dropdown));
@@ -1949,7 +2241,8 @@ gog_main_window_finalize (GObject *object)
   GogMainWindow *self = GOG_MAIN_WINDOW (object);
   g_clear_object (&self->library);
   g_strfreev (self->language_names);
-  g_clear_pointer (&self->category_selected, g_hash_table_unref);
+  for (guint k = 0; k < N_PICKERS; k++)
+    g_clear_pointer (&self->pickers[k], picker_free);
   gog_config_free (self->config);
   gog_state_free (self->state);
   G_OBJECT_CLASS (gog_main_window_parent_class)->finalize (object);
