@@ -113,13 +113,118 @@ your GOG login.
 - `tar` — used by the GE-Proton fetcher
 - `unzip` — used when extracting certain installers
 - [lgogdownloader](https://github.com/Sude-/lgogdownloader) — only needed to
-  check GOG for new games and updates and download them. Install it from your
-  distribution's packages and run `lgogdownloader --login` once. GOG Manager
+  check GOG for new games and updates, download them and check their files.
+  See [Setting up lgogdownloader](#setting-up-lgogdownloader). GOG Manager
   checks whether it is installed and, if it isn't, says how to get it instead
   of offering the check.
 - **Wine** and/or **Proton** — only needed to install and run Windows games
 
 See [Compiling.md](Compiling.md) for exact package names and build steps.
+
+---
+
+## Setting up lgogdownloader
+
+GOG Manager talks to GOG through
+[lgogdownloader](https://github.com/Sude-/lgogdownloader): it holds your GOG
+login, and GOG Manager runs it for the check, downloads and file checks. It is
+tested with lgogdownloader 3.19; older versions may lack some of the options it
+uses, so take the newest your distribution offers.
+
+### 1. Install it
+
+**Debian** — in the official archive. Debian 13 "trixie" has 3.17:
+
+```sh
+sudo apt install lgogdownloader
+```
+
+On Debian 12 "bookworm" the regular package is 3.9; take 3.15 from
+[backports](https://backports.debian.org/Instructions/) instead:
+
+```sh
+sudo apt install -t bookworm-backports lgogdownloader
+```
+
+**Ubuntu**, Linux Mint, Pop!_OS and other Ubuntu-based distributions — in the
+`universe` component (Ubuntu 26.04 has 3.18, 24.04 has 3.12):
+
+```sh
+sudo add-apt-repository universe
+sudo apt update
+sudo apt install lgogdownloader
+```
+
+**Arch Linux**, Manjaro, EndeavourOS — not in the official repositories, but in
+the [AUR](https://aur.archlinux.org/packages/lgogdownloader). With an AUR helper:
+
+```sh
+yay -S lgogdownloader        # or: paru -S lgogdownloader
+pamac build lgogdownloader   # Manjaro's own tool
+```
+
+**Fedora** — in the official repositories (Fedora 43 and newer):
+
+```sh
+sudo dnf install lgogdownloader
+```
+
+**Red Hat Enterprise Linux**, AlmaLinux, Rocky Linux, CentOS Stream — there is
+no package, not in EPEL either. Build it from source as below.
+
+**From source** (any distribution): install the build dependencies listed in
+[lgogdownloader's README](https://github.com/Sude-/lgogdownloader#build-dependencies)
+for your distribution (CMake, Ninja, libcurl, Boost, jsoncpp, RHash, tinyxml2,
+tidy, zlib), then:
+
+```sh
+git clone https://github.com/Sude-/lgogdownloader.git
+cd lgogdownloader
+cmake -B build -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -GNinja
+ninja -C build
+sudo ninja -C build install
+```
+
+Check that it runs: `lgogdownloader --version`.
+
+### 2. Log in
+
+Once, in a terminal:
+
+```sh
+lgogdownloader --login
+```
+
+It asks for your GOG e-mail address and password, and saves the login in
+`~/.config/lgogdownloader/` (it stays logged in from then on; GOG Manager never
+sees your password). If GOG asks for more than that (two-step verification, a
+captcha) and the login fails, use the browser login instead (lgogdownloader
+3.15 and newer) and follow what it prints:
+
+```sh
+lgogdownloader --browser-login
+```
+
+Check it worked:
+
+```sh
+lgogdownloader --check-login-status
+```
+
+It should say `Login status: Logged in`. If GOG Manager later says
+lgogdownloader is not logged in (GOG ends logins now and then), run
+`lgogdownloader --login` again.
+
+### 3. Point GOG Manager at your games
+
+GOG Manager tells lgogdownloader where to download (`--directory`): the library
+folder chosen in GOG Manager, with one folder per game named as lgogdownloader
+names it. If you already download with lgogdownloader, choose that folder as
+the library. Platforms, and other settings GOG Manager doesn't set itself, come
+from lgogdownloader's `~/.config/lgogdownloader/config.cfg`.
+
+Then open **New Games and Updates on GOG** in GOG Manager (the update button
+in the header bar) and press **Check Now**.
 
 ---
 
@@ -200,7 +305,7 @@ directly next to the executable are moved there on start:
 | `<app dir>/.gog-manager-configs/gog-manager.cfg` | Library path (if set), install root, and configured runners |
 | `<app dir>/.gog-manager-configs/gog-manager-state.json` | Per-game install state (keyed by product id) |
 | `<app dir>/.gog-manager-configs/gog-manager-updates.json` | The last GOG check: what each game has to download |
-| `<app dir>/.gog-manager-configs/gog-manager-download.json` | Download choices: files at the same time, and each game's languages |
+| `<app dir>/.gog-manager-configs/gog-manager-download.json` | Download choices: files at the same time, speed limit, hidden games, each game's languages; GOG's notifications from the last check |
 | `<app dir>/.gog-manager-configs/gog-manager-gamesdb.json` | Details from GOG's games database (summary, genres, developers, themes, rating, screenshot and video links...) |
 | `<app dir>/.gog-manager-configs/gamesdb-images/` | Box art, backgrounds and the screenshots you have looked at, from GOG's games database |
 | `$XDG_DATA_HOME/gog-manager/proton/<tag>/` | Downloaded GE-Proton builds |
