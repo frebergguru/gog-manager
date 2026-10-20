@@ -79,6 +79,11 @@ gog_game_detail_init (GogGameDetail *self)
 
 static void refresh (GogGameDetail *self);
 
+/* The page's widest content, and the banner's width at it (less the
+ * margins). */
+#define PAGE_WIDTH 760
+#define BANNER_WIDTH (PAGE_WIDTH - 2 * 18)
+
 static void
 emit_changed (GogGameDetail *self)
 {
@@ -756,7 +761,14 @@ refresh (GogGameDetail *self)
   const char *banner = db && db->background_path ? db->background_path
                                                   : gog_game_get_logo_path (self->game);
   gtk_picture_set_filename (self->logo, banner);
-  gtk_widget_set_visible (GTK_WIDGET (self->logo), banner != NULL);
+  GdkPaintable *art = gtk_picture_get_paintable (self->logo);
+  double ratio = art ? gdk_paintable_get_intrinsic_aspect_ratio (art) : 0;
+  /* As tall as the art is at the page's full width, so it shows whole
+   * there; a narrower window trims its sides. */
+  if (ratio > 0)
+    gtk_widget_set_size_request (GTK_WIDGET (self->logo), -1,
+                                 (int) CLAMP (BANNER_WIDTH / ratio, 120, 360));
+  gtk_widget_set_visible (GTK_WIDGET (self->logo), ratio > 0);
 
   const char *serials = gog_game_get_serials (self->game);
   gtk_label_set_label (self->serials_label, serials ? serials : "");
@@ -794,7 +806,7 @@ gog_game_detail_new (GtkWindow *parent_window, GogLibrary *library, GogConfig *c
   adw_toast_overlay_set_child (self->toast_overlay, scroller);
 
   GtkWidget *clamp = adw_clamp_new ();
-  adw_clamp_set_maximum_size (ADW_CLAMP (clamp), 760);
+  adw_clamp_set_maximum_size (ADW_CLAMP (clamp), PAGE_WIDTH);
   gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scroller), clamp);
 
   GtkWidget *content = gtk_box_new (GTK_ORIENTATION_VERTICAL, 16);
@@ -804,10 +816,9 @@ gog_game_detail_new (GtkWindow *parent_window, GogLibrary *library, GogConfig *c
   gtk_widget_set_margin_bottom (content, 24);
   adw_clamp_set_child (ADW_CLAMP (clamp), content);
 
-  /* No fixed height: GtkPicture keeps the art's proportions at the
-   * page's width, so nothing is cropped. */
+  /* Its height follows the art's shape; see refresh(). */
   self->logo = GTK_PICTURE (gtk_picture_new ());
-  gtk_picture_set_content_fit (self->logo, GTK_CONTENT_FIT_CONTAIN);
+  gtk_picture_set_content_fit (self->logo, GTK_CONTENT_FIT_COVER);
   gtk_widget_add_css_class (GTK_WIDGET (self->logo), "card");
   gtk_box_append (GTK_BOX (content), GTK_WIDGET (self->logo));
 
