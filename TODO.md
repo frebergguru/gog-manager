@@ -101,6 +101,20 @@ API ourselves: it holds the login and handles GOG's quirks.
   - [ ] Screenshots and videos (`game.screenshots`, `game.videos`) on the
         game page.
   - [ ] Refresh the game page when details arrive while it is open.
+- [ ] **Free on GOG now** (`catalog.gog.com/v1/catalog`, no login needed):
+      now and then (e.g. once a day, and on demand), look for games at
+      100% off and show "Free on GOG now: X (until …)" with a link to the
+      store page. Leave out games already in the library.
+      - Query: `price=between:0,0&discounted=eq:true&productType=in:game,pack`
+        plus `countryCode`, `currencyCode` and `locale`; deals differ by
+        country, so take the country from the system locale or a setting.
+        (`price=between:0,0` alone gives the ~440 always-free products,
+        mostly demos.) Tested 2026-10-20: the filters work; no 100% deal
+        was running that day.
+      - GOG's front-page giveaways ("claim" while logged in) don't always
+        appear as a 100% discount in the catalog, and there is no
+        documented way to list or claim them; lgogdownloader can't either.
+      - Opt-in, and not only shown by colour; announce it to screen readers.
 - [ ] **`reviews.gog.com`**: user ratings and reviews.
 - [ ] **Achievements and stats** (`gameplay.gog.com`, needs the Galaxy
       login): show them read-only. Games only report them through Galaxy,
