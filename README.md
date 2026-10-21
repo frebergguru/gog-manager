@@ -127,11 +127,18 @@ See [Compiling.md](Compiling.md) for exact package names and build steps.
 
 GOG Manager talks to GOG through
 [lgogdownloader](https://github.com/Sude-/lgogdownloader): it holds your GOG
-login, and GOG Manager runs it for the check, downloads and file checks. It is
+login, and GOG Manager runs it for the check, downloads and file checks.
+
+**With the AppImage there is nothing to install:** it comes with lgogdownloader,
+the newest release when the AppImage was built. Skip to
+[logging in](#2-log-in). The AppImage uses its own copy even when your system
+has one too.
+
+Built from source, GOG Manager uses the lgogdownloader on your `PATH`. It is
 tested with lgogdownloader 3.19; older versions may lack some of the options it
 uses, so take the newest your distribution offers.
 
-### 1. Install it
+### 1. Install it (not needed with the AppImage)
 
 **Debian** — in the official archive. Debian 13 "trixie" has 3.17:
 
@@ -189,7 +196,13 @@ Check that it runs: `lgogdownloader --version`.
 
 ### 2. Log in
 
-Once, in a terminal:
+**In GOG Manager:** open **New Games and Updates on GOG** (the update button in
+the header bar) and press **Log In to GOG…**. It opens GOG's login page in your
+web browser; log in there, then copy the address of the page the browser ends
+on (it starts with `https://embed.gog.com/on_login_success`) and paste it into
+GOG Manager. That's all, and GOG Manager never sees your password.
+
+**Or in a terminal**, once:
 
 ```sh
 lgogdownloader --login

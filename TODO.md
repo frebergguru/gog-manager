@@ -55,11 +55,10 @@ API ourselves: it holds the login and handles GOG's quirks.
 - [x] **Notifications**: `--notifications` with a full check, shown in the
       download window.
 - [x] **Repair**: Check Files on the game page runs `--repair`.
-- [ ] **Set up lgogdownloader from GOG Manager**, as easy as possible for
-      beginners: install it (bundle it in the AppImage, or offer the
-      distribution's package) and log in without a terminal, by driving
-      `--browser-login` (it prints an auth.gog.com address and reads back
-      the address the browser ends up on).
+- [x] **Set up lgogdownloader from GOG Manager**: the AppImage bundles the
+      newest release, and Log In to GOG drives `--browser-login`.
+  - [ ] For builds from source: offer to install the distribution's package
+        (PackageKit) when lgogdownloader is missing.
 - [ ] **Your GOG tags**: `--list tags` and `--tag` as an extra filter in the
       sidebar. Low priority: in one library only GOG's default tags exist
       (Next to play, Completed, Favorite, Backlog), with no games in them.

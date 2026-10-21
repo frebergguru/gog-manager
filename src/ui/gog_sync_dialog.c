@@ -7,6 +7,7 @@
 #include "dialog_window.h"
 #include "../installer_engine.h"
 #include "../text_util.h"
+#include "login_dialog.h"
 
 #define N_SLOTS 8 /* the most downloads at the same time */
 #define N_PARTS 4
@@ -71,6 +72,7 @@ struct _SyncCtx
   GtkTextView *log_view;
   GtkButton *check_button;
   GtkButton *quick_button;
+  GtkWidget *login_button; /* in the header bar */
   GtkButton *select_all_button;
   GtkButton *download_button;
   GtkButton *cancel_button;
@@ -180,6 +182,7 @@ set_busy (SyncCtx *ctx, gboolean busy)
 {
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->check_button), !busy);
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->quick_button), !busy);
+  gtk_widget_set_sensitive (ctx->login_button, !busy);
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->select_all_button), !busy && ctx->items->len > 0);
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->download_button), !busy && any_checked (ctx));
   gtk_widget_set_sensitive (ctx->results_box, !busy);
@@ -767,9 +770,13 @@ on_check_finished (GogSyncJob *job, gboolean success, const gchar *error_message
       append_log_line (ctx, error_message ? error_message : "The check failed.");
       announce (ctx, error_message ? error_message : "The check failed.");
     }
+  gboolean needs_login = !success && gog_sync_job_needs_login (job);
   g_signal_handlers_disconnect_by_data (job, ctx);
   g_clear_object (&ctx->job);
   set_busy (ctx, FALSE);
+  /* What to do about it is one button away. */
+  if (needs_login)
+    gtk_widget_grab_focus (ctx->login_button);
 }
 
 typedef struct
@@ -907,6 +914,14 @@ on_check_clicked (GtkButton *button, gpointer user_data)
   GogSyncJob *job = gog_sync_job_new_check (ctx->library_dir);
   g_signal_connect (job, "finished", G_CALLBACK (on_check_finished), ctx);
   start_job (ctx, job);
+}
+
+static void
+on_login_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  SyncCtx *ctx = user_data;
+  gog_show_login_dialog (ctx->window, NULL, NULL);
 }
 
 static void
@@ -1177,7 +1192,13 @@ show_dialog (GtkWindow *parent, const char *library_dir, GogLibrary *library,
   gtk_widget_add_controller (GTK_WIDGET (window), shortcuts);
 
   GtkWidget *toolbar_view = adw_toolbar_view_new ();
-  adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (toolbar_view), adw_header_bar_new ());
+  GtkWidget *header = adw_header_bar_new ();
+  ctx->login_button = gtk_button_new_with_label ("Log In to GOG…");
+  gtk_widget_set_tooltip_text (ctx->login_button,
+                               "Log lgogdownloader in to your GOG account, in your web browser");
+  g_signal_connect (ctx->login_button, "clicked", G_CALLBACK (on_login_clicked), ctx);
+  adw_header_bar_pack_start (ADW_HEADER_BAR (header), ctx->login_button);
+  adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (toolbar_view), header);
 
   GtkWidget *outer = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
   gtk_widget_set_margin_start (outer, 18);
@@ -1334,12 +1355,13 @@ show_dialog (GtkWindow *parent, const char *library_dir, GogLibrary *library,
   else
     {
       gtk_label_set_text (ctx->summary_label,
-                          "This needs lgogdownloader, which was not found. Install it from your "
-                          "distribution's packages, run \"lgogdownloader --login\" once in a "
-                          "terminal, and open this again.");
+                          "This needs lgogdownloader, which was not found. The GOG Manager "
+                          "AppImage comes with it; otherwise install it from your "
+                          "distribution's packages (see the README) and open this again.");
       gtk_widget_set_visible (ctx->results_scroll, FALSE);
       gtk_widget_set_sensitive (GTK_WIDGET (ctx->check_button), FALSE);
       gtk_widget_set_sensitive (GTK_WIDGET (ctx->quick_button), FALSE);
+      gtk_widget_set_sensitive (ctx->login_button, FALSE);
       gtk_widget_set_sensitive (GTK_WIDGET (ctx->select_all_button), FALSE);
       gtk_widget_set_sensitive (GTK_WIDGET (ctx->download_button), FALSE);
     }

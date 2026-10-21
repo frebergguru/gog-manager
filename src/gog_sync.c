@@ -11,7 +11,8 @@
 #include <errno.h>
 #include <glib/gstdio.h>
 
-#define LGOG "lgogdownloader"
+/* The lgogdownloader to run: see lgog_program(). */
+#define LGOG ((gchar *) lgog_program ())
 #define RESULTS_FILE "gog-manager-updates.json"
 #define SETTINGS_FILE "gog-manager-download.json"
 #define MAX_SLOTS 16 /* download threads tracked; the setting allows 8 */
@@ -51,13 +52,78 @@ gog_sync_item_free (GogSyncItem *item)
   g_free (item);
 }
 
+/* The AppImage's own lgogdownloader (the newest release when it was built),
+ * else the one on PATH. */
+static gchar *bundled_lgog;
+
+static const char *
+lgog_program (void)
+{
+  static gsize once;
+  if (g_once_init_enter (&once))
+    {
+      const char *appdir = g_getenv ("APPDIR");
+      gchar *path = appdir ? g_build_filename (appdir, "usr", "bin", "lgogdownloader", NULL) : NULL;
+      if (path && g_file_test (path, G_FILE_TEST_IS_EXECUTABLE))
+        bundled_lgog = path;
+      else
+        g_free (path);
+      g_once_init_leave (&once, 1);
+    }
+  return bundled_lgog ? bundled_lgog : "lgogdownloader";
+}
+
+/* The bundled lgogdownloader's libcurl was built elsewhere and may look for
+ * the CA certificates where this system has none, so it is told where they
+ * are. NULL if none of the usual places has them. */
+static const char *
+ca_bundle (void)
+{
+  static const char *const places[] = {
+    "/etc/ssl/certs/ca-certificates.crt", /* Debian, Ubuntu, Arch */
+    "/etc/pki/tls/certs/ca-bundle.crt",   /* Fedora, RHEL */
+    "/etc/ssl/ca-bundle.pem",             /* openSUSE */
+    "/etc/ssl/cert.pem",                  /* Alpine, Void, others */
+  };
+  for (guint i = 0; i < G_N_ELEMENTS (places); i++)
+    if (g_file_test (places[i], G_FILE_TEST_IS_REGULAR))
+      return places[i];
+  return NULL;
+}
+
 gboolean
 gog_sync_is_available (void)
 {
-  gchar *path = g_find_program_in_path (LGOG);
+  if (lgog_program () == bundled_lgog && bundled_lgog)
+    return TRUE;
+  gchar *path = g_find_program_in_path ("lgogdownloader");
   gboolean found = path != NULL;
   g_free (path);
   return found;
+}
+
+gboolean
+gog_sync_is_bundled (void)
+{
+  lgog_program ();
+  return bundled_lgog != NULL;
+}
+
+gchar **
+gog_sync_lgog_argv (const char *const *args)
+{
+  GPtrArray *argv = g_ptr_array_new ();
+  g_ptr_array_add (argv, (gpointer) lgog_program ());
+  for (const char *const *a = args; a && *a; a++)
+    g_ptr_array_add (argv, (gpointer) *a);
+  const char *ca = bundled_lgog ? ca_bundle () : NULL;
+  if (ca)
+    {
+      g_ptr_array_add (argv, (gpointer) "--cacert");
+      g_ptr_array_add (argv, (gpointer) ca);
+    }
+  g_ptr_array_add (argv, NULL);
+  return (gchar **) g_ptr_array_free (argv, FALSE);
 }
 
 gchar *
@@ -955,6 +1021,7 @@ struct _GogSyncJob
   GPtrArray *items;   /* check result */
   GStrv only_games;   /* check only these, NULL for all */
   gboolean quick;          /* check only what GOG flags as updated or new */
+  gboolean needs_login;    /* it failed because lgogdownloader isn't logged in */
   gboolean include_hidden; /* --include-hidden-products, as set when the job was made */
   gboolean include_patches; /* without the usual --exclude patches */
   guint rate_limit;        /* --limit-rate for downloads, 0 for none */
@@ -1061,6 +1128,12 @@ gog_sync_job_new_repair (const char *library_dir, const char *gamename)
   self->include_hidden = gog_sync_get_include_hidden ();
   self->include_patches = gog_sync_get_include_patches ();
   return self;
+}
+
+gboolean
+gog_sync_job_needs_login (GogSyncJob *self)
+{
+  return self->needs_login;
 }
 
 const char *
@@ -1278,6 +1351,12 @@ with_job_options (GogSyncJob *job, gchar **argv, gchar *rate)
       download = download || g_str_equal (*a, "--download");
     }
   gboolean login = argv[1] && g_str_equal (argv[1], "--check-login-status");
+  const char *ca = bundled_lgog && g_str_equal (argv[0], bundled_lgog) ? ca_bundle () : NULL;
+  if (ca)
+    {
+      g_ptr_array_add (full, (gpointer) "--cacert");
+      g_ptr_array_add (full, (gpointer) ca);
+    }
   if (job->include_hidden && !login)
     g_ptr_array_add (full, (gpointer) "--include-hidden-products");
   if (download && job->rate_limit > 0)
@@ -1676,9 +1755,10 @@ check_login (GogSyncJob *job, GError **error)
   g_clear_error (&run_error);
   if (!logged_in)
     {
+      job->needs_login = TRUE;
       g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,
-                           "lgogdownloader is not logged in to GOG. Open a terminal, run "
-                           "\"lgogdownloader --login\" and try again.");
+                           "lgogdownloader is not logged in to GOG. Log in with \"Log In to "
+                           "GOG\" in the New Games and Updates window, and try again.");
       return FALSE;
     }
   return ok;

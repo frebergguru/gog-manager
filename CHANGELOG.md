@@ -72,6 +72,17 @@ All notable changes to GOG Manager are listed here. The format follows
   the top of its About tab, with working links; links in changelogs work
   too. The CD keys in that file are shown when there is no `serials.txt`.
   Downloads now ask for `--save-game-details-json` themselves.
+- The AppImage comes with lgogdownloader, so GOG checks and downloads work
+  without installing it: each AppImage build takes the newest
+  lgogdownloader release (looked up at most once a day) and bundles it,
+  stripped like the rest. GOG Manager uses that copy and tells it where the
+  system's CA certificates are; built from source, it uses the one on
+  `PATH` as before.
+- **Log In to GOG…** in the download window logs lgogdownloader in without
+  a terminal: it opens GOG's login page in the web browser (lgogdownloader's
+  `--browser-login`), and you paste back the address the browser ends on.
+  GOG Manager never sees the password. A check that fails because of the
+  login points to the button.
 - "Include patches" in the download settings (off by default): checks,
   downloads and file checks then leave out `--exclude patches`, and a game
   lists its patches as a part of their own next to Game, DLC and Extras.

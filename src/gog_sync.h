@@ -135,8 +135,18 @@ gchar *gog_sync_get_notifications (void);
  * NULL when all are zero. Exposed for tests. Transfer full. */
 gchar *gog_sync_describe_notifications (const char *output);
 
-/* TRUE if lgogdownloader is on PATH. */
+/* TRUE if lgogdownloader can be run: the AppImage's own copy, or one on
+ * PATH. */
 gboolean gog_sync_is_available (void);
+
+/* TRUE when the AppImage's own lgogdownloader is used (so there is no
+ * lgogdownloader command in a terminal to point people to). */
+gboolean gog_sync_is_bundled (void);
+
+/* argv to run lgogdownloader with args (the program, then args, then what
+ * the bundled copy needs). Transfer full: free with g_free() only; the
+ * strings are args' and static ones. */
+gchar **gog_sync_lgog_argv (const char *const *args);
 
 /* Folds lgogdownloader `--status` output into one item per game that has
  * files to fetch. DLC is counted under its game: lgogdownloader downloads it
@@ -218,6 +228,10 @@ gchar *gog_sync_describe_repair (const char *output);
  *   "finished" (gboolean success, gchar *error_message) — NULL on success. */
 void gog_sync_job_start  (GogSyncJob *self);
 void gog_sync_job_cancel (GogSyncJob *self);
+
+/* After a job that failed: TRUE when it was because lgogdownloader isn't
+ * logged in to GOG. */
+gboolean gog_sync_job_needs_login (GogSyncJob *self);
 
 /* After a successful check. Element type: GogSyncItem*, owned by the job. */
 GPtrArray *gog_sync_job_get_items (GogSyncJob *self);

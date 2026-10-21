@@ -10,6 +10,9 @@
 # schemas, GdkPixbuf loaders and Adwaita theme that GTK loads at runtime. Drop
 # it into your GOG/Games folder, `chmod +x` it, and run.
 #
+# It also bundles lgogdownloader, built from the newest release on GitHub each
+# time this runs, so GOG checks and downloads work without installing it.
+#
 # It does NOT bundle the GPU driver (Vulkan/OpenGL is always taken from the host
 # system) or optional external helpers (wine, curl, tar) — those must exist on
 # whatever machine runs it.
@@ -22,6 +25,10 @@
 #     (same as a normal build — see Compiling.md section 2)
 #   - patchelf, and one of wget/curl (to fetch the packaging tools)
 #   - python3 (for the strip check, packaging/check-stripped.sh)
+#   - git, CMake and lgogdownloader's build dependencies (Boost, jsoncpp,
+#     RHash, tinyxml2, tidy, libcurl, zlib); see
+#     https://github.com/Sude-/lgogdownloader#build-dependencies
+#     Set LGOG_TAG=v3.19 (say) to build a given release instead of the newest.
 #   - FUSE is NOT required; the script runs the tools in extract-and-run mode.
 #
 set -euo pipefail
@@ -74,6 +81,47 @@ meson compile -C "$BUILD_DIR"
 log "Staging install tree into $APPDIR"
 rm -rf "$APPDIR"
 DESTDIR="$APPDIR" meson install -C "$BUILD_DIR" --no-rebuild --strip
+
+# --- 1b. lgogdownloader, the newest release ----------------------------------
+#
+# Each AppImage carries the release that is newest when it is built
+# (lgogdownloader gets a few a year). GitHub is asked at most once a day: the
+# answer is kept in $TOOLS/lgogdownloader-latest and reused for 24 hours. Only
+# plain vX.Y tags count; the tarball is kept in $TOOLS per version.
+
+mkdir -p "$TOOLS"
+LGOG_REPO="https://github.com/Sude-/lgogdownloader"
+LGOG_LATEST="$TOOLS/lgogdownloader-latest"
+if [ -z "${LGOG_TAG:-}" ]; then
+  if [ -s "$LGOG_LATEST" ] && [ -n "$(find "$LGOG_LATEST" -mmin -1440)" ]; then
+    LGOG_TAG="$(cat "$LGOG_LATEST")"
+    log "Newest lgogdownloader release (looked up in the last day): $LGOG_TAG"
+  else
+    log "Looking up the newest lgogdownloader release"
+    LGOG_TAG="$(git ls-remote --tags --refs "$LGOG_REPO.git" 'v*' |
+      sed 's|.*refs/tags/||' | grep -E '^v[0-9]+(\.[0-9]+)*$' | sort -V | tail -n 1)"
+    [ -n "$LGOG_TAG" ] && printf '%s\n' "$LGOG_TAG" > "$LGOG_LATEST"
+  fi
+fi
+if [ -z "$LGOG_TAG" ]; then
+  echo "error: could not find an lgogdownloader release at $LGOG_REPO" >&2
+  exit 1
+fi
+LGOG_VERSION="${LGOG_TAG#v}"
+LGOG_SRC="$TOOLS/lgogdownloader-$LGOG_VERSION"
+fetch "$LGOG_REPO/archive/refs/tags/$LGOG_TAG.tar.gz" "$TOOLS/lgogdownloader-$LGOG_VERSION.tar.gz"
+if [ ! -f "$LGOG_SRC/CMakeLists.txt" ]; then
+  rm -rf "$LGOG_SRC"
+  tar -xzf "$TOOLS/lgogdownloader-$LGOG_VERSION.tar.gz" -C "$TOOLS"
+fi
+
+log "Building lgogdownloader $LGOG_VERSION"
+cmake -S "$LGOG_SRC" -B "$LGOG_SRC/build" -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+cmake --build "$LGOG_SRC/build"
+DESTDIR="$APPDIR" cmake --install "$LGOG_SRC/build" --strip
+# Its licence (WTFPL) travels with it.
+install -Dm644 "$LGOG_SRC/COPYING" "$APPDIR/usr/share/doc/lgogdownloader/COPYING"
 
 # --- 2. Fetch packaging tools --------------------------------------------------
 
@@ -130,6 +178,7 @@ log "Bundling dependencies and building AppImage"
 "$LD" \
   --appdir "$APPDIR" \
   --plugin gtk \
+  --executable "$APPDIR/usr/bin/lgogdownloader" \
   --desktop-file "$APPDIR/usr/share/applications/$DESKTOP_ID.desktop" \
   --icon-file "$APPDIR/usr/share/icons/hicolor/scalable/apps/$DESKTOP_ID.svg" \
   --output appimage
