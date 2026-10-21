@@ -91,6 +91,14 @@ gint64        gog_game_get_id (GogGame *self);
 void          gog_game_set_id (GogGame *self, gint64 id);
 const char   *gog_game_get_slug (GogGame *self);
 void          gog_game_set_slug (GogGame *self, const char *slug);
+/* lgogdownloader's name for the game ("beneath_a_steel_sky"), which names
+ * its library folder; NULL if not known. */
+const char   *gog_game_get_gamename (GogGame *self);
+void          gog_game_set_gamename (GogGame *self, const char *gamename);
+/* The id a game gets while GOG's isn't known (a folder of installers
+ * without lgogdownloader's product file): negative, and the same for the
+ * same gamename every time, so its install record survives rescans. */
+gint64        gog_game_local_id (const char *gamename);
 const char   *gog_game_get_title (GogGame *self);
 void          gog_game_set_title (GogGame *self, const char *title);
 const char   *gog_game_get_folder_path (GogGame *self);

@@ -524,12 +524,50 @@ os_label (GogOs os)
 }
 
 static void
+on_rename_for_check_response (const char *response, gpointer user_data)
+{
+  GogGameDetail *self = user_data;
+  if (g_strcmp0 (response, "rename") != 0)
+    return;
+  GError *error = NULL;
+  if (!gog_library_rename_folder (self->library, self->game, &error))
+    {
+      toast (self, error->message);
+      g_clear_error (&error);
+      return;
+    }
+  gchar *library_dir = gog_config_effective_library_path (self->config);
+  gog_show_repair_dialog (self->parent_window, library_dir, self->game);
+  g_free (library_dir);
+}
+
+static void
 on_check_files_clicked (GtkButton *button, gpointer user_data)
 {
   (void) button;
   GogGameDetail *self = user_data;
   gchar *library_dir = gog_config_effective_library_path (self->config);
-  gog_show_repair_dialog (self->parent_window, library_dir, self->game);
+  /* lgogdownloader finds a game only in a folder named as on GOG. */
+  if (gog_library_folder_misnamed (self->game, library_dir))
+    {
+      gchar *folder = g_path_get_basename (gog_game_get_folder_path (self->game));
+      gchar *body = g_strdup_printf ("%s is in the folder \u201c%s\u201d, but lgogdownloader "
+                                     "only looks for it in a folder named \u201c%s\u201d, as on "
+                                     "GOG. Rename the folder to check the files? Installed games "
+                                     "keep working.",
+                                     gog_game_get_title (self->game), folder,
+                                     gog_game_get_gamename (self->game));
+      GogAlert *alert = gog_alert_new ("Rename the Game's Folder?", body);
+      gog_alert_add_response (alert, "cancel", "_Cancel", ADW_RESPONSE_DEFAULT);
+      gog_alert_add_response (alert, "rename", "_Rename and Check", ADW_RESPONSE_SUGGESTED);
+      gog_alert_set_default_response (alert, "rename");
+      gog_alert_set_close_response (alert, "cancel");
+      gog_alert_present (alert, self->parent_window, on_rename_for_check_response, self);
+      g_free (body);
+      g_free (folder);
+    }
+  else
+    gog_show_repair_dialog (self->parent_window, library_dir, self->game);
   g_free (library_dir);
 }
 

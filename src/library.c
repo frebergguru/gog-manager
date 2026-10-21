@@ -8,6 +8,7 @@
 #include "gog_sync.h"
 #include <glib/gstdio.h>
 #include <string.h>
+#include <errno.h>
 
 struct _GogLibrary
 {
@@ -76,6 +77,126 @@ gog_library_find_by_id (GogLibrary *self, gint64 id)
         return g;
     }
   return NULL;
+}
+
+GogGame *
+gog_library_find_by_gamename (GogLibrary *self, const char *gamename)
+{
+  if (!gamename)
+    return NULL;
+  guint n = g_list_model_get_n_items (G_LIST_MODEL (self->store));
+  for (guint i = 0; i < n; i++)
+    {
+      GogGame *g = g_list_model_get_item (G_LIST_MODEL (self->store), i);
+      g_object_unref (g); /* the store keeps it alive; transfer none */
+      if (gog_game_get_downloaded (g) && !gog_game_get_base_game (g) &&
+          g_strcmp0 (gog_game_get_gamename (g), gamename) == 0)
+        return g;
+    }
+  return NULL;
+}
+
+gboolean
+gog_library_folder_misnamed (GogGame *game, const char *library_dir)
+{
+  const char *folder = gog_game_get_folder_path (game);
+  const char *gamename = gog_game_get_gamename (game);
+  if (!folder || !gamename || !library_dir || gog_game_get_base_game (game))
+    return FALSE;
+  gchar *parent = g_path_get_dirname (folder);
+  gchar *parent_canon = g_canonicalize_filename (parent, NULL);
+  gchar *library_canon = g_canonicalize_filename (library_dir, NULL);
+  gchar *base = g_path_get_basename (folder);
+  gboolean misnamed = g_strcmp0 (parent_canon, library_canon) == 0 && g_strcmp0 (base, gamename) != 0;
+  g_free (parent);
+  g_free (parent_canon);
+  g_free (library_canon);
+  g_free (base);
+  return misnamed;
+}
+
+/* path with its leading old_dir replaced by new_dir; NULL when path isn't
+ * old_dir or in it. */
+static gchar *
+moved_path (const char *path, const char *old_dir, const char *new_dir)
+{
+  if (!path)
+    return NULL;
+  gsize n = strlen (old_dir);
+  if (strncmp (path, old_dir, n) != 0 || (path[n] != '\0' && path[n] != G_DIR_SEPARATOR))
+    return NULL;
+  return g_strconcat (new_dir, path + n, NULL);
+}
+
+static void
+move_string (gchar **path, const char *old_dir, const char *new_dir)
+{
+  gchar *moved = moved_path (*path, old_dir, new_dir);
+  if (moved)
+    {
+      g_free (*path);
+      *path = moved;
+    }
+}
+
+gboolean
+gog_library_rename_folder (GogLibrary *self, GogGame *game, GError **error)
+{
+  const char *gamename = gog_game_get_gamename (game);
+  const char *folder = gog_game_get_folder_path (game);
+  if (!gamename || !folder || strchr (gamename, G_DIR_SEPARATOR))
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                   "GOG's name for %s is not known", gog_game_get_title (game));
+      return FALSE;
+    }
+  gchar *old_dir = g_strdup (folder);
+  gchar *parent = g_path_get_dirname (old_dir);
+  gchar *new_dir = g_build_filename (parent, gamename, NULL);
+  g_free (parent);
+  gboolean ok = FALSE;
+  if (g_file_test (new_dir, G_FILE_TEST_EXISTS))
+    g_set_error (error, G_IO_ERROR, G_IO_ERROR_EXISTS,
+                 "There is already a folder named %s in the library", gamename);
+  else if (g_rename (old_dir, new_dir) != 0)
+    {
+      int saved = errno;
+      g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (saved),
+                   "Could not rename %s to %s: %s", old_dir, gamename, g_strerror (saved));
+    }
+  else
+    ok = TRUE;
+
+  /* The game and its DLC (in its dlc folder) now live under new_dir. */
+  guint n = ok ? g_list_model_get_n_items (G_LIST_MODEL (self->store)) : 0;
+  for (guint i = 0; i < n; i++)
+    {
+      GogGame *g = g_list_model_get_item (G_LIST_MODEL (self->store), i);
+      gchar *moved = moved_path (gog_game_get_folder_path (g), old_dir, new_dir);
+      if (moved)
+        {
+          gog_game_set_folder_path (g, moved);
+          g_free (moved);
+          if ((moved = moved_path (gog_game_get_icon_path (g), old_dir, new_dir)))
+            gog_game_set_icon_path (g, moved);
+          g_free (moved);
+          if ((moved = moved_path (gog_game_get_logo_path (g), old_dir, new_dir)))
+            gog_game_set_logo_path (g, moved);
+          g_free (moved);
+          GPtrArray *installers = gog_game_get_installers (g);
+          for (guint k = 0; installers && k < installers->len; k++)
+            move_string (&((GogInstallerInfo *) g_ptr_array_index (installers, k))->file_path,
+                         old_dir, new_dir);
+          GPtrArray *extras = gog_game_get_extras (g);
+          for (guint k = 0; extras && k < extras->len; k++)
+            move_string (&((GogExtraInfo *) g_ptr_array_index (extras, k))->file_path, old_dir,
+                         new_dir);
+        }
+      g_object_unref (g);
+    }
+  g_free (old_dir);
+  g_free (new_dir);
+  return ok;
 }
 
 /* g_ptr_array_sort passes pointers to the elements, not the strings.
@@ -243,6 +364,116 @@ gog_library_language_from_installer_name (const char *filename, const char **out
       g_free (tag);
     }
   return FALSE;
+}
+
+/* A version ("1.0", "2.0.0.3", "v1.2") rather than part of a name. */
+static gboolean
+is_version_token (const char *token)
+{
+  const char *t = token[0] == 'v' ? token + 1 : token;
+  return g_ascii_isdigit (t[0]) && strchr (t, '.') != NULL;
+}
+
+/* A build number or hash at the end of a name ("20150", "8cc13b9d0a"). */
+static gboolean
+is_build_token (const char *token)
+{
+  gsize len = strlen (token);
+  gboolean digits = TRUE, hex = len >= 8;
+  for (const char *c = token; *c; c++)
+    {
+      digits = digits && g_ascii_isdigit (*c);
+      hex = hex && g_ascii_isxdigit (*c);
+    }
+  return len > 0 && (digits || hex);
+}
+
+/* The tokens of name up to the first version, or with trailing build
+ * tokens (min_len and longer, short numbers can be the name's own: "doom_2")
+ * taken off; NULL if nothing is left, or nothing was taken off (GOG's
+ * installer names always carry a version or build). */
+static gchar *
+strip_version (const char *name, gsize min_len)
+{
+  gchar **tokens = g_strsplit (name, "_", -1);
+  guint n = g_strv_length (tokens);
+  guint keep = n;
+  for (guint i = 1; i < n; i++)
+    if (is_version_token (tokens[i]))
+      {
+        keep = i;
+        break;
+      }
+  if (keep == n)
+    while (keep > 1 && is_build_token (tokens[keep - 1]) && strlen (tokens[keep - 1]) >= min_len)
+      keep--;
+  if (keep == n)
+    {
+      g_strfreev (tokens);
+      return NULL;
+    }
+  g_free (tokens[keep]);
+  tokens[keep] = NULL;
+  gchar *out = keep > 0 ? g_strjoinv ("_", tokens) : NULL;
+  g_strfreev (tokens);
+  return out;
+}
+
+gchar *
+gog_library_gamename_from_installer (const char *filename)
+{
+  gchar *lower = g_ascii_strdown (filename, -1);
+  const char *dot = strrchr (lower, '.');
+  gchar *result = NULL;
+  for (const char *c = lower; *c; c++)
+    if (!(g_ascii_isalnum (*c) || strchr ("_.()-", *c)))
+      goto out;
+  if (!dot || g_str_has_prefix (lower, "patch_"))
+    goto out;
+
+  gchar *stem = g_strndup (lower, (gsize) (dot - lower));
+  /* Language and build tags: "_(german)_(24519)". */
+  gchar *tag = strstr (stem, "_(");
+  if (tag)
+    *tag = '\0';
+  if (g_str_equal (dot, ".exe") && g_str_has_prefix (stem, "setup_"))
+    {
+      /* "setup_<name>_<version>_(<build>)": the build tag alone will do. */
+      result = strip_version (stem + strlen ("setup_"), 4);
+      if (!result && tag)
+        result = g_strdup (stem + strlen ("setup_"));
+    }
+  else if (g_str_equal (dot, ".sh"))
+    {
+      /* "gog_<name>_<version>.sh", "<name>_en_gog_<n>_<build>.sh" or
+       * "<name>_<version in tokens>_<build>.sh". */
+      gchar *gog = strstr (stem, "_en_gog_");
+      if (gog)
+        *gog = '\0';
+      gboolean gog_prefix = g_str_has_prefix (stem, "gog_");
+      const char *name = gog_prefix ? stem + strlen ("gog_") : stem;
+      result = gog ? g_strdup (name) : strip_version (name, 1);
+      if (!result && gog_prefix)
+        result = g_strdup (name);
+    }
+  else if (g_str_equal (dot, ".pkg") || g_str_equal (dot, ".dmg"))
+    {
+      gchar *locale = strstr (stem, "_enus_");
+      if (locale)
+        *locale = '\0';
+      result = locale ? g_strdup (stem) : strip_version (stem, 1);
+    }
+  g_free (stem);
+
+  /* lgogdownloader's names are lower-case letters, digits and "_". */
+  for (const char *c = result; c && *c; c++)
+    if (!(g_ascii_isalnum (*c) || *c == '_'))
+      g_clear_pointer (&result, g_free);
+  if (result && (!*result || *result == '_'))
+    g_clear_pointer (&result, g_free);
+out:
+  g_free (lower);
+  return result;
 }
 
 /* Sum the size of a main installer file plus any split "<stem>-N.bin"
@@ -594,12 +825,105 @@ product_info (json_object *root, json_object *details)
   return info;
 }
 
+/* A folder of GOG installers without lgogdownloader's product file (they
+ * came from GOG's website, say): the game is made from the installers'
+ * names, and from the last GOG check (known: gamename -> GogSyncItem*) for
+ * its title and id when that listed it. NULL when nothing in it is named
+ * like a GOG installer. */
 static GogGame *
-parse_game_dir (const char *dir_path)
+parse_installers_only_dir (const char *dir_path, GHashTable *known)
+{
+  GDir *d = g_dir_open (dir_path, 0, NULL);
+  if (!d)
+    return NULL;
+  /* The name GOG knows wins, then a Windows installer's (the clearest
+   * pattern), then whichever most installers give. */
+  gchar *best = NULL;
+  int best_score = 0;
+  GHashTable *counts = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+  const char *name;
+  while ((name = g_dir_read_name (d)))
+    {
+      if (!is_installer_file (name))
+        continue;
+      gchar *gamename = gog_library_gamename_from_installer (name);
+      if (!gamename)
+        continue;
+      int count = GPOINTER_TO_INT (g_hash_table_lookup (counts, gamename)) + 1;
+      g_hash_table_insert (counts, g_strdup (gamename), GINT_TO_POINTER (count));
+      int score = count + (g_str_has_prefix (name, "setup_") ? 1000 : 0) +
+                  (known && g_hash_table_contains (known, gamename) ? 100000 : 0);
+      if (score > best_score)
+        {
+          g_free (best);
+          best = g_steal_pointer (&gamename);
+          best_score = score;
+        }
+      g_free (gamename);
+    }
+  g_dir_close (d);
+  g_hash_table_unref (counts);
+  if (!best)
+    return NULL;
+
+  GogSyncItem *item = known ? g_hash_table_lookup (known, best) : NULL;
+  GogGame *game = gog_game_new ();
+  gog_game_set_id (game, item && item->product_id > 0 ? item->product_id : gog_game_local_id (best));
+  gog_game_set_gamename (game, best);
+  gog_game_set_slug (game, best);
+  gchar *title = item && item->title ? g_strdup (item->title) : gog_sync_pretty_name (best);
+  gog_game_set_title (game, title);
+  g_free (title);
+  gog_game_set_folder_path (game, dir_path);
+  gog_game_set_product_type (game, GOG_PRODUCT_GAME);
+  gog_game_set_description (game, "");
+  gog_game_set_product_info (game, gog_product_info_new ());
+  gchar *serials = read_serials (dir_path);
+  gog_game_set_serials (game, serials);
+  g_free (serials);
+  scan_installers (game, dir_path, NULL);
+  scan_extras (game, dir_path, NULL);
+  GPtrArray *installers = gog_game_get_installers (game);
+  for (guint i = 0; installers && i < installers->len; i++)
+    gog_game_set_supports_os (game, ((GogInstallerInfo *) g_ptr_array_index (installers, i))->os,
+                              TRUE);
+  g_free (best);
+  return game;
+}
+
+/* lgogdownloader saves "product_<gamename>.json"; NULL if the name isn't
+ * one of its names. */
+static gchar *
+gamename_from_product_file (const char *path)
+{
+  gchar *base = g_path_get_basename (path);
+  gchar *name = NULL;
+  if (g_str_has_prefix (base, "product_") && g_str_has_suffix (base, ".json"))
+    {
+      name = g_strndup (base + strlen ("product_"),
+                        strlen (base) - strlen ("product_") - strlen (".json"));
+      for (const char *c = name; *c; c++)
+        if (!(g_ascii_isalnum (*c) || *c == '_'))
+          {
+            g_clear_pointer (&name, g_free);
+            break;
+          }
+      if (name && !*name)
+        g_clear_pointer (&name, g_free);
+    }
+  g_free (base);
+  return name;
+}
+
+/* known: see parse_installers_only_dir(); NULL for a DLC folder, which
+ * needs its product file. */
+static GogGame *
+parse_game_dir (const char *dir_path, GHashTable *known)
 {
   gchar *product_json_path = find_prefixed_file (dir_path, "product_");
   if (!product_json_path)
-    return NULL;
+    return known ? parse_installers_only_dir (dir_path, known) : NULL;
+  gchar *gamename = gamename_from_product_file (product_json_path);
 
   GError *error = NULL;
   json_object *root = ju_load_file (product_json_path, &error);
@@ -609,6 +933,7 @@ parse_game_dir (const char *dir_path)
       g_warning ("Failed to parse product json in %s: %s", dir_path,
                  error ? error->message : "unknown error");
       g_clear_error (&error);
+      g_free (gamename);
       return NULL;
     }
 
@@ -621,6 +946,8 @@ parse_game_dir (const char *dir_path)
   if (!slug || !*slug || strchr (slug, '/') || strcmp (slug, ".") == 0 || strcmp (slug, "..") == 0)
     slug = basename;
   gog_game_set_slug (game, slug);
+  gog_game_set_gamename (game, gamename);
+  g_free (gamename);
   gog_game_set_title (game, ju_get_string (root, "title", basename));
   gog_game_set_folder_path (game, dir_path);
 
@@ -771,6 +1098,17 @@ scan_thread_func (GTask *task, gpointer source_object, gpointer task_data,
 
   data->games = g_ptr_array_new_with_free_func (g_object_unref);
 
+  /* The last GOG check's titles and ids, for folders of installers that
+   * have no product file. */
+  GPtrArray *results = gog_sync_load_results (NULL);
+  GHashTable *known = g_hash_table_new (g_str_hash, g_str_equal);
+  for (guint i = 0; i < results->len; i++)
+    {
+      GogSyncItem *item = g_ptr_array_index (results, i);
+      if (item->gamename && item->product_id > 0)
+        g_hash_table_insert (known, item->gamename, item);
+    }
+
   for (guint i = 0; i < entries->len; i++)
     {
       if (g_cancellable_is_cancelled (cancellable))
@@ -780,7 +1118,7 @@ scan_thread_func (GTask *task, gpointer source_object, gpointer task_data,
       if (!g_file_test (path, G_FILE_TEST_IS_DIR))
         continue;
 
-      GogGame *game = parse_game_dir (path);
+      GogGame *game = parse_game_dir (path, known);
       if (game)
         g_ptr_array_add (data->games, game);
 
@@ -793,8 +1131,9 @@ scan_thread_func (GTask *task, gpointer source_object, gpointer task_data,
           while ((dlc_name = g_dir_read_name (dd)))
             {
               gchar *dlc_path = g_build_filename (dlc_root, dlc_name, NULL);
-              GogGame *dlc = g_file_test (dlc_path, G_FILE_TEST_IS_DIR) ? parse_game_dir (dlc_path)
-                                                                         : NULL;
+              GogGame *dlc = g_file_test (dlc_path, G_FILE_TEST_IS_DIR)
+                                 ? parse_game_dir (dlc_path, NULL)
+                                 : NULL;
               if (dlc)
                 {
                   /* Its product file doesn't name the game; the folder does. */
@@ -815,6 +1154,8 @@ scan_thread_func (GTask *task, gpointer source_object, gpointer task_data,
     }
 
   g_ptr_array_unref (entries);
+  g_hash_table_unref (known);
+  g_ptr_array_unref (results);
   g_task_return_boolean (task, TRUE);
 }
 
@@ -897,6 +1238,7 @@ gog_library_set_not_downloaded (GogLibrary *self, GPtrArray *items)
     {
       GogSyncItem *item = g_ptr_array_index (items, i);
       if (item->kind != GOG_SYNC_NEW_GAME || g_hash_table_contains (folders, item->gamename) ||
+          gog_library_find_by_gamename (self, item->gamename) ||
           (item->product_id > 0 && gog_library_find_by_id (self, item->product_id)))
         continue;
       GogGame *game = gog_game_new ();

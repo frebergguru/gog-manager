@@ -652,6 +652,238 @@ test_config_files_move_to_config_folder (void)
   g_free (tmp);
 }
 
+static void
+remove_tree (const char *path)
+{
+  GDir *d = g_dir_open (path, 0, NULL);
+  const char *name;
+  while (d && (name = g_dir_read_name (d)))
+    {
+      gchar *child = g_build_filename (path, name, NULL);
+      if (g_file_test (child, G_FILE_TEST_IS_DIR) && !g_file_test (child, G_FILE_TEST_IS_SYMLINK))
+        remove_tree (child);
+      else
+        g_remove (child);
+      g_free (child);
+    }
+  if (d)
+    g_dir_close (d);
+  g_rmdir (path);
+}
+
+static GogLibrary *
+scan (const char *root)
+{
+  GogLibrary *library = gog_library_new ();
+  gboolean done = FALSE;
+  gog_library_scan_async (library, root, NULL, on_scan_done, &done);
+  while (!done)
+    g_main_context_iteration (NULL, TRUE);
+  while (g_main_context_iteration (NULL, FALSE))
+    ;
+  return library;
+}
+
+/* lgogdownloader's names from GOG's installer file names. */
+static void
+test_gamename_from_installer (void)
+{
+  static const char *const cases[][2] = {
+    { "setup_beneath_a_steel_sky_1.0_(20270).exe", "beneath_a_steel_sky" },
+    { "setup_akalabeth_world_of_doom_1.02_cs_(77607).exe", "akalabeth_world_of_doom" },
+    { "setup_alone_in_the_dark_2_1.0_(28043).exe", "alone_in_the_dark_2" },
+    { "setup_the_witcher_3_wild_hunt_v4.04a_redkit_(64bit)_(77663).exe", "the_witcher_3_wild_hunt" },
+    { "setup_doom_64_(german)_(44337).exe", "doom_64" },
+    { "setup_foo_20150.exe", "foo" },
+    { "beneath_a_steel_sky_en_gog_2_20150.sh", "beneath_a_steel_sky" },
+    { "gog_akalabeth_world_of_doom_2.0.0.3.sh", "akalabeth_world_of_doom" },
+    { "stardew_valley_1_6_15_24356_8cc13b9d0a_76869.sh", "stardew_valley" },
+    { "beneath_a_steel_sky_enUS_1_0_33348.pkg", "beneath_a_steel_sky" },
+    { "setup_beneath_a_steel_sky_1.0_(20270)-1.bin", NULL },
+    { "patch_doom_3_1.0_to_1.1.exe", NULL },
+    { "Setup Something.exe", NULL },
+    { "install.sh", NULL },
+    { "setup_tool.exe", NULL },
+    { "setup_tool_(1234).exe", "tool" },
+    { "my_game.pkg", NULL },
+    { "readme.txt", NULL },
+  };
+  for (gsize i = 0; i < G_N_ELEMENTS (cases); i++)
+    {
+      gchar *name = gog_library_gamename_from_installer (cases[i][0]);
+      g_assert_cmpstr (name, ==, cases[i][1]);
+      g_free (name);
+    }
+}
+
+/* A folder of installers from GOG's website (no product file), in a folder
+ * with a name of the user's own: found, named from the last GOG check, and
+ * a folder that holds no GOG installer is left out. */
+static void
+test_scan_folder_without_product_file (void)
+{
+  gchar *tmp = g_dir_make_tmp ("gog-installers-XXXXXX", NULL);
+  gchar *fake = g_build_filename (tmp, "gog-manager.AppImage", NULL);
+  g_setenv ("APPIMAGE", fake, TRUE); /* the config folder goes in tmp */
+  gchar *root = g_build_filename (tmp, "library", NULL);
+  gchar *bass = g_build_filename (root, "Beneath a Steel Sky", NULL);
+  gchar *other = g_build_filename (root, "Old Tools", NULL);
+  gchar *unknown = g_build_filename (root, "Some Game", NULL);
+  g_assert_cmpint (g_mkdir_with_parents (bass, 0755), ==, 0);
+  g_assert_cmpint (g_mkdir_with_parents (other, 0755), ==, 0);
+  g_assert_cmpint (g_mkdir_with_parents (unknown, 0755), ==, 0);
+  write_file (bass, "setup_beneath_a_steel_sky_1.0_(20270).exe", "x");
+  write_file (bass, "beneath_a_steel_sky_en_gog_2_20150.sh", "x");
+  write_file (other, "Setup Tool.exe", "x");
+  write_file (other, "notes.txt", "x");
+  write_file (unknown, "setup_some_game_2.1_(1234).exe", "x");
+
+  /* The last check listed both as not downloaded; it knows one's id. */
+  GPtrArray *items = g_ptr_array_new_with_free_func ((GDestroyNotify) gog_sync_item_free);
+  GogSyncItem *item = g_new0 (GogSyncItem, 1);
+  item->gamename = g_strdup ("beneath_a_steel_sky");
+  item->kind = GOG_SYNC_NEW_GAME;
+  item->files = g_ptr_array_new ();
+  item->title = g_strdup ("Beneath a Steel Sky (1994)");
+  item->product_id = 1207658695;
+  g_ptr_array_add (items, item);
+  gog_sync_save_results (items);
+
+  GogLibrary *library = scan (root);
+  g_assert_cmpuint (g_list_model_get_n_items (gog_library_get_model (library)), ==, 2);
+  GogGame *game = gog_library_find_by_id (library, 1207658695);
+  g_assert_nonnull (game);
+  g_assert_cmpstr (gog_game_get_title (game), ==, "Beneath a Steel Sky (1994)");
+  g_assert_cmpstr (gog_game_get_gamename (game), ==, "beneath_a_steel_sky");
+  g_assert_cmpuint (gog_game_get_installers (game)->len, ==, 2);
+  g_assert_true (gog_game_get_supports_os (game, GOG_OS_WINDOWS));
+  g_assert_true (gog_game_get_supports_os (game, GOG_OS_LINUX));
+  g_assert_false (gog_game_get_supports_os (game, GOG_OS_MAC));
+  g_assert_true (gog_game_get_downloaded (game));
+  /* Not listed again as a game to download. */
+  gog_library_set_not_downloaded (library, items);
+  g_assert_cmpuint (g_list_model_get_n_items (gog_library_get_model (library)), ==, 2);
+
+  /* Not in the check: a readable name and a stable local id. */
+  GogGame *some = gog_library_find_by_id (library, gog_game_local_id ("some_game"));
+  g_assert_nonnull (some);
+  g_assert_cmpint (gog_game_get_id (some), <, 0);
+  g_assert_cmpstr (gog_game_get_title (some), ==, "Some Game");
+
+  g_object_unref (library);
+  g_ptr_array_unref (items);
+  g_unsetenv ("APPIMAGE");
+  remove_tree (tmp);
+  g_free (unknown);
+  g_free (other);
+  g_free (bass);
+  g_free (root);
+  g_free (fake);
+  g_free (tmp);
+}
+
+/* An install made under the local id moves to GOG's id once it is known. */
+static void
+test_install_record_follows_gog_id (void)
+{
+  gchar *tmp = g_dir_make_tmp ("gog-state-XXXXXX", NULL);
+  gchar *fake = g_build_filename (tmp, "gog-manager.AppImage", NULL);
+  g_setenv ("APPIMAGE", fake, TRUE);
+
+  GogGame *before = gog_game_new ();
+  gog_game_set_gamename (before, "some_game");
+  gog_game_set_id (before, gog_game_local_id ("some_game"));
+  gog_game_set_installed (before, TRUE);
+  gog_game_set_install_path (before, "/games/some_game");
+  GogState *state = gog_state_load ();
+  gog_state_update_from_game (state, before);
+  g_assert_true (gog_state_save (state, NULL));
+  gog_state_free (state);
+
+  GogGame *after = gog_game_new ();
+  gog_game_set_gamename (after, "some_game");
+  gog_game_set_id (after, 42);
+  state = gog_state_load ();
+  gog_state_apply_to_game (state, after);
+  g_assert_true (gog_game_get_installed (after));
+  g_assert_cmpstr (gog_game_get_install_path (after), ==, "/games/some_game");
+  /* And it is kept under the new id. */
+  g_assert_true (gog_state_save (state, NULL));
+  gog_state_free (state);
+  GogGame *again = gog_game_new ();
+  gog_game_set_id (again, 42);
+  state = gog_state_load ();
+  gog_state_apply_to_game (state, again);
+  g_assert_true (gog_game_get_installed (again));
+  gog_state_free (state);
+
+  g_object_unref (before);
+  g_object_unref (after);
+  g_object_unref (again);
+  g_unsetenv ("APPIMAGE");
+  remove_tree (tmp);
+  g_free (fake);
+  g_free (tmp);
+}
+
+/* A renamed game folder is noticed, and renaming it back moves the game's
+ * paths (and its DLC's) along. A folder of that name already there stops it. */
+static void
+test_rename_misnamed_folder (void)
+{
+  gchar *tmp = g_dir_make_tmp ("gog-rename-XXXXXX", NULL);
+  gchar *fake = g_build_filename (tmp, "gog-manager.AppImage", NULL);
+  g_setenv ("APPIMAGE", fake, TRUE);
+  gchar *root = g_build_filename (tmp, "library", NULL);
+  gchar *renamed = g_build_filename (root, "My Favourite Game", NULL);
+  gchar *dlc = g_build_filename (renamed, "dlc", "fav_dlc", NULL);
+  gchar *right = g_build_filename (root, "fav_game", NULL);
+  g_assert_cmpint (g_mkdir_with_parents (dlc, 0755), ==, 0);
+  write_file (renamed, "product_fav_game.json", "{\"id\": 7, \"title\": \"Fav\"}");
+  write_file (renamed, "setup_fav_game_1.0_(1).exe", "x");
+  write_file (dlc, "product_fav_dlc.json",
+              "{\"id\": 8, \"title\": \"Fav DLC\", \"game_type\": \"dlc\"}");
+
+  GogLibrary *library = scan (root);
+  GogGame *game = gog_library_find_by_id (library, 7);
+  g_assert_nonnull (game);
+  g_assert_cmpstr (gog_game_get_gamename (game), ==, "fav_game");
+  g_assert_true (gog_library_folder_misnamed (game, root));
+  g_assert_true (gog_library_find_by_gamename (library, "fav_game") == game);
+
+  /* Blocked by a folder already named so. */
+  g_assert_cmpint (g_mkdir (right, 0755), ==, 0);
+  GError *error = NULL;
+  g_assert_false (gog_library_rename_folder (library, game, &error));
+  g_assert_error (error, G_IO_ERROR, G_IO_ERROR_EXISTS);
+  g_clear_error (&error);
+  g_rmdir (right);
+
+  g_assert_true (gog_library_rename_folder (library, game, &error));
+  g_assert_no_error (error);
+  g_assert_cmpstr (gog_game_get_folder_path (game), ==, right);
+  g_assert_false (gog_library_folder_misnamed (game, root));
+  GogInstallerInfo *installer = g_ptr_array_index (gog_game_get_installers (game), 0);
+  gchar *expected = g_build_filename (right, "setup_fav_game_1.0_(1).exe", NULL);
+  g_assert_cmpstr (installer->file_path, ==, expected);
+  g_assert_true (g_file_test (expected, G_FILE_TEST_IS_REGULAR));
+  g_free (expected);
+  GogGame *dlc_game = gog_library_find_by_id (library, 8);
+  expected = g_build_filename (right, "dlc", "fav_dlc", NULL);
+  g_assert_cmpstr (gog_game_get_folder_path (dlc_game), ==, expected);
+  g_free (expected);
+
+  g_object_unref (library);
+  g_unsetenv ("APPIMAGE");
+  remove_tree (tmp);
+  g_free (right);
+  g_free (dlc);
+  g_free (renamed);
+  g_free (root);
+  g_free (fake);
+  g_free (tmp);
+}
+
 /* The estimate, and free space for an install folder that doesn't exist
  * yet: the nearest folder above it is asked. */
 static void
@@ -685,5 +917,10 @@ main (int argc, char *argv[])
   g_test_add_func ("/install/uninstall_protects_folders", test_uninstall_protects_folders);
   g_test_add_func ("/config/files_move_to_config_folder", test_config_files_move_to_config_folder);
   g_test_add_func ("/install/space", test_install_space);
+  g_test_add_func ("/library/gamename_from_installer", test_gamename_from_installer);
+  g_test_add_func ("/library/scan_folder_without_product_file",
+                   test_scan_folder_without_product_file);
+  g_test_add_func ("/config/install_record_follows_gog_id", test_install_record_follows_gog_id);
+  g_test_add_func ("/library/rename_misnamed_folder", test_rename_misnamed_folder);
   return g_test_run ();
 }

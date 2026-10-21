@@ -26,7 +26,14 @@ login. GOG Manager can show GOG's login page for it.
 
 - **Library browser** — scans a directory of GOG products (one subfolder per
   game), reads each product's `product_*.json` metadata, and presents titles,
-  logos, descriptions, and sizes in an Adwaita grid.
+  logos, descriptions, and sizes in an Adwaita grid. A folder of installers
+  downloaded from GOG's website (no `product_*.json`) is recognised from the
+  installers' names, whatever the folder is called; once a GOG check has
+  listed the game, it gets its title, cover and details too.
+- **Renamed folders** — lgogdownloader keeps each game in a folder named as
+  on GOG and doesn't see one with another name, so a download would make a
+  second copy. Such games are marked in the download window, and before a
+  download or **Check Files** GOG Manager offers to rename the folder back.
 - **Search, filter, and sort** — live search by title, series, developer or
   publisher; filter by OS (Windows / Linux / macOS), by language, by games
   with DLC or extras, and by status (installed, not installed, new version on

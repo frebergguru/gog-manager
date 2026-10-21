@@ -134,6 +134,9 @@ append_log_line (SyncCtx *ctx, const char *line)
 static gchar *
 title_for (SyncCtx *ctx, const char *gamename)
 {
+  GogGame *known = gog_library_find_by_gamename (ctx->library, gamename);
+  if (known)
+    return g_strdup (gog_game_get_title (known));
   GListModel *model = gog_library_get_model (ctx->library);
   guint n = g_list_model_get_n_items (model);
   gchar *title = NULL;
@@ -257,6 +260,32 @@ add_name (GString *names, GHashTable *seen, const char *name)
   g_string_append_printf (names, "%s%s", names->len ? ", " : "", name);
 }
 
+/* The library's game with this gamename when its folder has another name
+ * (lgogdownloader then sees no folder and would download a second copy),
+ * else NULL. Transfer none. */
+static GogGame *
+misnamed_game (SyncCtx *ctx, const char *gamename)
+{
+  GogGame *game = gog_library_find_by_gamename (ctx->library, gamename);
+  return game && gog_library_folder_misnamed (game, ctx->library_dir) ? game : NULL;
+}
+
+/* subtitle, with a note first when the game's folder has another name.
+ * Takes subtitle. */
+static gchar *
+with_folder_note (GameRow *game, gchar *subtitle)
+{
+  GogGame *misnamed = misnamed_game (game->ctx, game->item->gamename);
+  if (!misnamed)
+    return subtitle;
+  gchar *folder = g_path_get_basename (gog_game_get_folder_path (misnamed));
+  gchar *out = g_strdup_printf ("In your library in the folder \u201c%s\u201d · %s", folder,
+                                subtitle);
+  g_free (folder);
+  g_free (subtitle);
+  return out;
+}
+
 /* Counts and names per part, for the files the chosen languages take. */
 static void
 refresh_game (GameRow *game)
@@ -266,6 +295,7 @@ refresh_game (GameRow *game)
       gchar *subtitle = g_strdup_printf (game->item->n_files == 1 ? "%u file to download"
                                                                   : "%u files to download",
                                          game->item->n_files);
+      subtitle = with_folder_note (game, subtitle);
       adw_action_row_set_subtitle (game->plain_row, subtitle);
       g_free (subtitle);
       update_download_button (game->ctx);
@@ -325,6 +355,7 @@ refresh_game (GameRow *game)
       subtitle = bytes ? g_strdup_printf ("%s — %s", summary->str, bytes) : g_strdup (summary->str);
       g_free (bytes);
     }
+  subtitle = with_folder_note (game, subtitle);
   adw_expander_row_set_subtitle (game->row, subtitle);
   g_free (subtitle);
   g_string_free (summary, TRUE);
@@ -1089,7 +1120,7 @@ chosen_requests (SyncCtx *ctx, guint64 *bytes)
 }
 
 static void
-start_download (SyncCtx *ctx)
+run_download (SyncCtx *ctx)
 {
   GArray *requests = chosen_requests (ctx, NULL);
   if (requests->len > 0)
@@ -1102,6 +1133,97 @@ start_download (SyncCtx *ctx)
       start_job (ctx, job);
     }
   g_array_unref (requests);
+}
+
+/* The chosen games whose library folder has another name than GOG's. */
+static GPtrArray *
+chosen_misnamed (SyncCtx *ctx)
+{
+  GPtrArray *games = g_ptr_array_new ();
+  GArray *requests = chosen_requests (ctx, NULL);
+  for (guint i = 0; i < requests->len; i++)
+    {
+      GogGame *game = misnamed_game (ctx, g_array_index (requests, GogSyncRequest, i).gamename);
+      if (game)
+        g_ptr_array_add (games, game);
+    }
+  g_array_unref (requests);
+  return games;
+}
+
+static void
+on_misnamed_response (const char *response, gpointer user_data)
+{
+  SyncCtx *ctx = user_data;
+  if (ctx->job || g_strcmp0 (response, "cancel") == 0)
+    return;
+  if (g_strcmp0 (response, "rename") == 0)
+    {
+      GPtrArray *games = chosen_misnamed (ctx);
+      for (guint i = 0; i < games->len; i++)
+        {
+          GogGame *game = g_ptr_array_index (games, i);
+          gchar *old = g_path_get_basename (gog_game_get_folder_path (game));
+          GError *error = NULL;
+          gchar *line;
+          if (gog_library_rename_folder (ctx->library, game, &error))
+            line = g_strdup_printf ("Renamed the folder \u201c%s\u201d to \u201c%s\u201d.", old,
+                                    gog_game_get_gamename (game));
+          else
+            {
+              line = g_strdup_printf ("Could not rename the folder \u201c%s\u201d: %s.", old,
+                                      error->message);
+              g_clear_error (&error);
+            }
+          append_log_line (ctx, line);
+          g_free (line);
+          g_free (old);
+        }
+      g_ptr_array_unref (games);
+      for (guint i = 0; i < ctx->games->len; i++)
+        refresh_game (g_ptr_array_index (ctx->games, i));
+    }
+  run_download (ctx);
+}
+
+/* lgogdownloader keeps each game in a folder named as on GOG. A game whose
+ * folder was renamed looks missing to it, so it would download all of it
+ * again into a new folder: offer to rename the folder back first. */
+static void
+start_download (SyncCtx *ctx)
+{
+  GPtrArray *games = chosen_misnamed (ctx);
+  if (games->len == 0)
+    {
+      g_ptr_array_unref (games);
+      run_download (ctx);
+      return;
+    }
+  GString *body = g_string_new (games->len == 1
+                                    ? "This game is in a folder with another name than GOG's. "
+                                    : "These games are in folders with other names than GOG's. ");
+  g_string_append (body, "lgogdownloader only looks for a game in a folder named as on GOG, so "
+                         "it would download all of it again as a second copy.\n\n");
+  for (guint i = 0; i < games->len; i++)
+    {
+      GogGame *game = g_ptr_array_index (games, i);
+      gchar *folder = g_path_get_basename (gog_game_get_folder_path (game));
+      g_string_append_printf (body, "\u2022 %s: \u201c%s\u201d \u2192 \u201c%s\u201d\n",
+                              gog_game_get_title (game), folder, gog_game_get_gamename (game));
+      g_free (folder);
+    }
+  g_string_append (body, "\nRenaming changes nothing else: installed games keep working.");
+  GogAlert *alert = gog_alert_new (games->len == 1 ? "Rename the Game's Folder?"
+                                                   : "Rename the Games' Folders?",
+                                   body->str);
+  gog_alert_add_response (alert, "cancel", "_Cancel", ADW_RESPONSE_DEFAULT);
+  gog_alert_add_response (alert, "copy", "Download a _Second Copy", ADW_RESPONSE_DEFAULT);
+  gog_alert_add_response (alert, "rename", "_Rename and Download", ADW_RESPONSE_SUGGESTED);
+  gog_alert_set_default_response (alert, "rename");
+  gog_alert_set_close_response (alert, "cancel");
+  gog_alert_present (alert, ctx->window, on_misnamed_response, ctx);
+  g_string_free (body, TRUE);
+  g_ptr_array_unref (games);
 }
 
 static void

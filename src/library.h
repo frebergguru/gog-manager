@@ -38,6 +38,26 @@ GStrv gog_library_get_all_languages (GogLibrary *self);
 gboolean gog_library_language_from_installer_name (const char *filename, const char **out_code,
                                                    const char **out_name);
 
+/* lgogdownloader's name for a game ("beneath_a_steel_sky") from the name
+ * of one of its GOG installers ("setup_beneath_a_steel_sky_1.0_(20270).exe",
+ * "beneath_a_steel_sky_en_gog_2_20150.sh"...), or NULL when the file isn't
+ * named like a GOG installer. Transfer full. */
+gchar *gog_library_gamename_from_installer (const char *filename);
+
+/* Whether game's folder is in library_dir but not named after its
+ * gamename, where lgogdownloader looks for it: a download would then make
+ * a second copy, and a file check would find nothing. */
+gboolean gog_library_folder_misnamed (GogGame *game, const char *library_dir);
+
+/* Renames a misnamed game folder to its gamename, and updates the paths of
+ * the loaded games in it (the game, its DLC, installers and extras). Fails
+ * when a folder of that name is already there. */
+gboolean gog_library_rename_folder (GogLibrary *self, GogGame *game, GError **error);
+
+/* The downloaded, loaded game (not DLC) with this gamename, or NULL.
+ * Transfer none. */
+GogGame *gog_library_find_by_gamename (GogLibrary *self, const char *gamename);
+
 /* Look up a loaded game by product id, or NULL. Transfer none. */
 GogGame *gog_library_find_by_id (GogLibrary *self, gint64 id);
 

@@ -320,6 +320,28 @@ gog_state_apply_to_game (GogState *state, GogGame *game)
   gint64 *id_ptr = g_new (gint64, 1);
   *id_ptr = id;
   json_object *rec = g_hash_table_lookup (state->by_id, id_ptr);
+  if (!rec && id > 0 && gog_game_get_gamename (game))
+    {
+      /* Installed while GOG's id wasn't known (see gog_game_local_id()):
+       * the record moves to the id. */
+      gint64 *local = g_new (gint64, 1);
+      *local = gog_game_local_id (gog_game_get_gamename (game));
+      rec = g_hash_table_lookup (state->by_id, local);
+      json_object *games = ju_get_obj (state->root, "games");
+      if (rec && games)
+        {
+          gchar *old_key = g_strdup_printf ("%" G_GINT64_FORMAT, *local);
+          gchar *new_key = g_strdup_printf ("%" G_GINT64_FORMAT, id);
+          json_object_get (rec);
+          json_object_object_del (games, old_key);
+          json_object_object_add (games, new_key, rec);
+          g_hash_table_remove (state->by_id, local);
+          g_hash_table_insert (state->by_id, g_steal_pointer (&id_ptr), rec);
+          g_free (old_key);
+          g_free (new_key);
+        }
+      g_free (local);
+    }
   g_free (id_ptr);
   if (!rec)
     return;

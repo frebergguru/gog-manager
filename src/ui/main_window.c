@@ -140,15 +140,16 @@ static void on_sort_changed (GtkWidget *widget, gpointer user_data);
 static void set_accessible_label (GtkWidget *widget, const char *label);
 static void card_item_update (GtkListItem *item, GogGame *game);
 
-/* Whether the last GOG check found a new version of game. The library
- * folder of a game is named after its lgogdownloader game name. */
+/* Whether the last GOG check found a new version of game, by its
+ * lgogdownloader name (else its folder's, which is normally the same). */
 static gboolean
 has_gog_update (GogMainWindow *self, GogGame *game)
 {
   const char *folder = gog_game_get_folder_path (game);
   if (!self->gog_updates || !folder)
     return FALSE;
-  gchar *name = g_path_get_basename (folder);
+  gchar *name = gog_game_get_gamename (game) ? g_strdup (gog_game_get_gamename (game))
+                                             : g_path_get_basename (folder);
   gboolean found = g_hash_table_contains (self->gog_updates, name);
   g_free (name);
   return found;

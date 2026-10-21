@@ -6,6 +6,21 @@ All notable changes to GOG Manager are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Folders of installers downloaded from GOG's website, without
+  lgogdownloader's `product_*.json`, show up in the library: the game is
+  recognised from the installers' names, whatever the folder is called, and
+  gets its title, cover and details once a GOG check has listed it. An
+  install made before that keeps its record when GOG's id becomes known.
+- A game whose folder has another name than GOG's is marked in the download
+  window, and before downloading it or checking its files GOG Manager offers
+  to rename the folder back, instead of lgogdownloader downloading a second
+  copy.
+
+### Fixed
+- The "Update on GOG" mark and Check Files go by GOG's name for the game,
+  not its folder's.
+
 ## [0.6.0] - 2026-10-21
 
 ### Added

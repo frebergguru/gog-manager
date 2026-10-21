@@ -11,6 +11,7 @@ struct _GogGame
 
   gint64 id;
   gchar *slug;
+  gchar *gamename;
   gchar *title;
   gchar *folder_path;
   gchar *icon_path;
@@ -98,6 +99,7 @@ gog_game_finalize (GObject *object)
 
   g_clear_object (&self->base_game);
   g_free (self->slug);
+  g_free (self->gamename);
   g_free (self->title);
   g_free (self->folder_path);
   g_free (self->icon_path);
@@ -222,6 +224,33 @@ gog_game_set_slug (GogGame *self, const char *slug)
 {
   g_free (self->slug);
   self->slug = g_strdup (slug);
+}
+
+const char *
+gog_game_get_gamename (GogGame *self)
+{
+  return self->gamename;
+}
+
+void
+gog_game_set_gamename (GogGame *self, const char *gamename)
+{
+  g_free (self->gamename);
+  self->gamename = g_strdup (gamename);
+}
+
+gint64
+gog_game_local_id (const char *gamename)
+{
+  /* FNV-1a, folded to 62 bits so the negation can't overflow. */
+  guint64 h = 14695981039346656037ULL;
+  for (const char *c = gamename ? gamename : ""; *c; c++)
+    {
+      h ^= (guchar) *c;
+      h *= 1099511628211ULL;
+    }
+  h &= G_GUINT64_CONSTANT (0x3fffffffffffffff);
+  return -(gint64) MAX (h, 1);
 }
 
 const char *

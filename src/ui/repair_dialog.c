@@ -186,8 +186,10 @@ gog_show_repair_dialog (GtkWindow *parent, const char *library_dir, GogGame *gam
       return;
     }
 
-  /* The folder is the game's lgogdownloader name. */
-  gchar *gamename = g_path_get_basename (gog_game_get_folder_path (game));
+  /* lgogdownloader's name for it, which is also its folder's (see
+   * gog_library_folder_misnamed()). */
+  gchar *gamename = gog_game_get_gamename (game) ? g_strdup (gog_game_get_gamename (game))
+                                                 : g_path_get_basename (gog_game_get_folder_path (game));
   ctx->job = gog_sync_job_new_repair (library_dir, gamename);
   g_free (gamename);
   g_signal_connect (ctx->job, "progress", G_CALLBACK (on_progress), ctx);
