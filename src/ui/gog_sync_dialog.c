@@ -9,11 +9,13 @@
 #include "../text_util.h"
 
 #define N_SLOTS 8 /* the most downloads at the same time */
-#define N_PARTS 3
+#define N_PARTS 4
 
+/* Patches are only listed when the download settings include them. */
 static const GogSyncPart parts[N_PARTS] = { GOG_SYNC_PART_GAME, GOG_SYNC_PART_DLC,
-                                            GOG_SYNC_PART_EXTRA };
-static const char *const part_titles[N_PARTS] = { "Game", "DLC", "Extras" };
+                                            GOG_SYNC_PART_EXTRA, GOG_SYNC_PART_PATCH };
+static const char *const part_titles[N_PARTS] = { "Game", "DLC", "Extras", "Patches" };
+static const char *const part_names[N_PARTS] = { "game files", "DLC", "extras", "patches" };
 
 typedef struct _SyncCtx SyncCtx;
 
@@ -64,6 +66,7 @@ struct _SyncCtx
   AdwSpinRow *threads_row;
   AdwSpinRow *rate_row;
   AdwSwitchRow *hidden_row;
+  AdwSwitchRow *patches_row;
   GtkWidget *log_scroll;
   GtkTextView *log_view;
   GtkButton *check_button;
@@ -510,7 +513,7 @@ add_game_row (SyncCtx *ctx, GtkWidget *list, GogSyncItem *item)
       gtk_check_button_set_active (GTK_CHECK_BUTTON (part_check), TRUE);
       gtk_widget_set_valign (part_check, GTK_ALIGN_CENTER);
       gchar *part_label = g_strdup_printf ("Download the %s of %s",
-                                           p == 0 ? "game files" : p == 1 ? "DLC" : "extras",
+                                           part_names[p],
                                            title);
       gtk_accessible_update_property (GTK_ACCESSIBLE (part_check), GTK_ACCESSIBLE_PROPERTY_LABEL,
                                       part_label, -1);
@@ -1055,6 +1058,8 @@ update_settings_summary (SyncCtx *ctx)
     g_string_append (text, "No speed limit");
   if (adw_switch_row_get_active (ctx->hidden_row))
     g_string_append (text, " · Hidden games too");
+  if (adw_switch_row_get_active (ctx->patches_row))
+    g_string_append (text, " · Patches too");
   adw_expander_row_set_subtitle (ctx->settings_row, text->str);
   g_string_free (text, TRUE);
 }
@@ -1080,6 +1085,14 @@ on_hidden_changed (AdwSwitchRow *row, GParamSpec *pspec, gpointer user_data)
 {
   (void) pspec;
   gog_sync_set_include_hidden (adw_switch_row_get_active (row));
+  update_settings_summary (user_data);
+}
+
+static void
+on_patches_changed (AdwSwitchRow *row, GParamSpec *pspec, gpointer user_data)
+{
+  (void) pspec;
+  gog_sync_set_include_patches (adw_switch_row_get_active (row));
   update_settings_summary (user_data);
 }
 
@@ -1265,10 +1278,19 @@ show_dialog (GtkWindow *parent, const char *library_dir, GogLibrary *library,
   adw_switch_row_set_active (ctx->hidden_row, gog_sync_get_include_hidden ());
   adw_expander_row_add_row (ctx->settings_row, GTK_WIDGET (ctx->hidden_row));
 
+  ctx->patches_row = ADW_SWITCH_ROW (adw_switch_row_new ());
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (ctx->patches_row), "Include patches");
+  adw_action_row_set_subtitle (ADW_ACTION_ROW (ctx->patches_row),
+                               "GOG's patches for older versions. Rarely needed: the installers "
+                               "are always the newest version. From the next check");
+  adw_switch_row_set_active (ctx->patches_row, gog_sync_get_include_patches ());
+  adw_expander_row_add_row (ctx->settings_row, GTK_WIDGET (ctx->patches_row));
+
   update_settings_summary (ctx);
   g_signal_connect (ctx->threads_row, "notify::value", G_CALLBACK (on_threads_changed), ctx);
   g_signal_connect (ctx->rate_row, "notify::value", G_CALLBACK (on_rate_changed), ctx);
   g_signal_connect (ctx->hidden_row, "notify::active", G_CALLBACK (on_hidden_changed), ctx);
+  g_signal_connect (ctx->patches_row, "notify::active", G_CALLBACK (on_patches_changed), ctx);
   gtk_list_box_append (GTK_LIST_BOX (settings_list), GTK_WIDGET (ctx->settings_row));
   gtk_box_append (GTK_BOX (outer), settings_list);
 

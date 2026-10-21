@@ -306,6 +306,24 @@ gog_sync_set_include_hidden (gboolean include)
   json_object_put (root);
 }
 
+gboolean
+gog_sync_get_include_patches (void)
+{
+  json_object *root = load_settings ();
+  gboolean include = ju_get_bool (root, "include_patches", FALSE);
+  json_object_put (root);
+  return include;
+}
+
+void
+gog_sync_set_include_patches (gboolean include)
+{
+  json_object *root = load_settings ();
+  json_object_object_add (root, "include_patches", json_object_new_boolean (include));
+  save_settings (root);
+  json_object_put (root);
+}
+
 guint
 gog_sync_get_game_languages (const char *gamename)
 {
@@ -683,10 +701,12 @@ add_details (GHashTable *table, json_object *product, gboolean is_dlc, guint *of
             continue;
           gint64 type = ju_get_int64 (f, "type", 0);
           FileDetails *d = g_new0 (FileDetails, 1);
-          /* GFTYPE_*: base 1 2 4 8, DLC 16 32 64 128 */
-          d->part = (type & (2 | 32)) || l == 1 ? GOG_SYNC_PART_EXTRA
-                    : (type & (16 | 64 | 128)) || is_dlc ? GOG_SYNC_PART_DLC
-                                                         : GOG_SYNC_PART_GAME;
+          /* GFTYPE_*: base 1 2 4 8, DLC 16 32 64 128 (installer, extra,
+           * patch, language pack) */
+          d->part = (type & (2 | 32)) || l == 1   ? GOG_SYNC_PART_EXTRA
+                    : (type & (4 | 64)) || l == 2 ? GOG_SYNC_PART_PATCH
+                    : (type & (16 | 128)) || is_dlc ? GOG_SYNC_PART_DLC
+                                                    : GOG_SYNC_PART_GAME;
           d->languages = (guint) ju_get_int64 (f, "language", 0);
           const char *size = ju_get_string (f, "size", NULL);
           d->size = size ? g_ascii_strtoull (size, NULL, 10) : (guint64) ju_get_int64 (f, "size", 0);
@@ -833,7 +853,9 @@ gog_sync_load_results (gint64 *out_checked_unix)
           file->label = g_strdup (ju_get_string (jf, "label", NULL));
           file->dlc_title = g_strdup (ju_get_string (jf, "dlc", NULL));
           gint64 part = ju_get_int64 (jf, "part", GOG_SYNC_PART_GAME);
-          file->part = part == GOG_SYNC_PART_DLC || part == GOG_SYNC_PART_EXTRA ? (GogSyncPart) part
+          file->part = part == GOG_SYNC_PART_DLC || part == GOG_SYNC_PART_EXTRA ||
+                               part == GOG_SYNC_PART_PATCH
+                           ? (GogSyncPart) part
                                                                                 : GOG_SYNC_PART_GAME;
           file->languages = (guint) ju_get_int64 (jf, "languages", 0);
           file->size = (guint64) ju_get_int64 (jf, "size", 0);
@@ -912,6 +934,7 @@ typedef enum
 {
   JOB_CHECK,
   JOB_DOWNLOAD,
+  JOB_REPAIR,
 } JobKind;
 
 struct _GogSyncJob
@@ -927,10 +950,13 @@ struct _GogSyncJob
   GHashTable *sizes;  /* filename -> guint64* */
   GHashTable *file_games; /* filename -> the item's gamename */
   GPtrArray *failures; /* GogSyncFailure*, after a download */
+  gchar *repair_game;  /* repair only */
+  gchar *summary;      /* after a repair */
   GPtrArray *items;   /* check result */
   GStrv only_games;   /* check only these, NULL for all */
   gboolean quick;          /* check only what GOG flags as updated or new */
   gboolean include_hidden; /* --include-hidden-products, as set when the job was made */
+  gboolean include_patches; /* without the usual --exclude patches */
   guint rate_limit;        /* --limit-rate for downloads, 0 for none */
 
   GThread *thread;
@@ -960,6 +986,8 @@ gog_sync_job_finalize (GObject *object)
   if (self->thread)
     g_thread_unref (self->thread);
   g_free (self->library_dir);
+  g_free (self->repair_game);
+  g_free (self->summary);
   g_strfreev (self->only_games);
   if (self->requests)
     {
@@ -1011,6 +1039,7 @@ gog_sync_job_new_check (const char *library_dir)
   self->kind = JOB_CHECK;
   self->library_dir = g_strdup (library_dir);
   self->include_hidden = gog_sync_get_include_hidden ();
+  self->include_patches = gog_sync_get_include_patches ();
   return self;
 }
 
@@ -1020,6 +1049,24 @@ gog_sync_job_new_check_games (const char *library_dir, const char *const *gamena
   GogSyncJob *self = gog_sync_job_new_check (library_dir);
   self->only_games = g_strdupv ((gchar **) gamenames);
   return self;
+}
+
+GogSyncJob *
+gog_sync_job_new_repair (const char *library_dir, const char *gamename)
+{
+  GogSyncJob *self = g_object_new (GOG_TYPE_SYNC_JOB, NULL);
+  self->kind = JOB_REPAIR;
+  self->library_dir = g_strdup (library_dir);
+  self->repair_game = g_strdup (gamename);
+  self->include_hidden = gog_sync_get_include_hidden ();
+  self->include_patches = gog_sync_get_include_patches ();
+  return self;
+}
+
+const char *
+gog_sync_job_get_summary (GogSyncJob *self)
+{
+  return self->summary;
 }
 
 GogSyncJob *
@@ -1039,6 +1086,7 @@ gog_sync_job_new_download (const char *library_dir, const GogSyncRequest *reques
   self->library_dir = g_strdup (library_dir);
   self->threads = CLAMP (threads, 1, 8);
   self->include_hidden = gog_sync_get_include_hidden ();
+  self->include_patches = gog_sync_get_include_patches ();
   self->rate_limit = gog_sync_get_rate_limit ();
   self->requests = g_array_new (FALSE, FALSE, sizeof (GogSyncRequest));
   for (guint i = 0; i < n_requests; i++)
@@ -1209,8 +1257,9 @@ flush_line (GogSyncJob *job, GString *buf, gboolean by_cr, LineFunc on_line, gpo
 }
 
 /* argv with the job's own options: hidden games for every listing and
- * download, the speed limit for downloads. Only when they are set, so the
- * commands are otherwise exactly the usual ones. The strings are argv's
+ * download, the speed limit for downloads, and patches (by dropping
+ * "--exclude patches"). Only when they are set, so the commands are
+ * otherwise exactly the usual ones. The strings are argv's
  * (and static ones); free the array only. */
 static gchar **
 with_job_options (GogSyncJob *job, gchar **argv, gchar *rate)
@@ -1219,6 +1268,12 @@ with_job_options (GogSyncJob *job, gchar **argv, gchar *rate)
   gboolean download = FALSE;
   for (gchar **a = argv; *a; a++)
     {
+      if (job->include_patches && g_str_equal (*a, "--exclude") && a[1] &&
+          g_str_equal (a[1], "patches"))
+        {
+          a++;
+          continue;
+        }
       g_ptr_array_add (full, *a);
       download = download || g_str_equal (*a, "--download");
     }
@@ -1607,10 +1662,19 @@ check_login (GogSyncJob *job, GError **error)
 {
   gchar *argv[] = { LGOG, "--check-login-status", NULL };
   GString *out = g_string_new (NULL);
-  gboolean ok = run_streaming (job, argv, collect_line, out, error);
+  GError *run_error = NULL;
+  gboolean ok = run_streaming (job, argv, collect_line, out, &run_error);
   gboolean logged_in = ok && strstr (out->str, "Login status: Logged in") != NULL;
+  /* It may say so and fail too; the reason is the login either way. */
+  gboolean logged_out = strstr (out->str, "Not logged in") != NULL;
   g_string_free (out, TRUE);
-  if (ok && !logged_in)
+  if (!ok && !logged_out)
+    {
+      g_propagate_error (error, run_error);
+      return FALSE;
+    }
+  g_clear_error (&run_error);
+  if (!logged_in)
     {
       g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,
                            "lgogdownloader is not logged in to GOG. Open a terminal, run "
@@ -1828,6 +1892,9 @@ parts_include (GogSyncPart parts)
     g_string_append (out, "di,dl,");
   if (parts & GOG_SYNC_PART_EXTRA)
     g_string_append (out, "be,de,");
+  /* Only ever listed when patches are included; see with_job_options(). */
+  if (parts & GOG_SYNC_PART_PATCH)
+    g_string_append (out, "bp,dp,");
   if (out->len)
     g_string_truncate (out, out->len - 1);
   return g_string_free (out, FALSE);
@@ -1975,13 +2042,15 @@ download_sync (GogSyncJob *job, GError **error)
       Batch *batch = &g_array_index (batches, Batch, b);
       g_ptr_array_add (batch->names, NULL);
       gchar *regex = names_regex ((const char *const *) batch->names->pdata);
-      gchar *include = parts_include (batch->parts);
+      gchar *include = parts_include (job->include_patches ? batch->parts
+                                                           : batch->parts & ~GOG_SYNC_PART_PATCH);
       gchar *language = languages_arg (batch->languages);
       /* The options the library is downloaded with. Old versions are
        * deleted afterwards, only those a new download replaced. */
       gchar *argv[] = { LGOG, "--download", "--threads", threads, "--exclude", "patches",
                         "--include", include, "--language", language, "--save-serials",
-                        "--save-icon", "--save-logo", "--save-product-json", "--directory",
+                        "--save-icon", "--save-logo", "--save-product-json",
+                        "--save-game-details-json", "--directory",
                         job->library_dir, "--game", regex, NULL };
       ok = run_streaming (job, argv, log_line, &state, error);
       clear_slots (job, &state);
@@ -2086,12 +2155,131 @@ download_sync (GogSyncJob *job, GError **error)
   return ok;
 }
 
+/* "1 file", "2 files". Transfer full. */
+static gchar *
+count_text (guint n, const char *one, const char *several)
+{
+  return g_strdup_printf ("%u %s", n, n == 1 ? one : several);
+}
+
+gchar *
+gog_sync_describe_repair (const char *output)
+{
+  guint files = 0, parts = 0, damaged = 0, missing = 0, other_size = 0, unchecked = 0;
+  gchar **lines = g_strsplit_set (output ? output : "", "\r\n", -1);
+  for (gchar **l = lines; *l; l++)
+    {
+      gchar *line = g_strstrip (*l);
+      if (g_str_has_prefix (line, "Repairing file "))
+        files++;
+      else if (g_str_has_prefix (line, "Chunk ") && strstr (line, "): "))
+        {
+          parts++;
+          if (!g_str_has_suffix (line, "): OK"))
+            damaged++;
+        }
+      else if (strstr (line, "doesn't exist") || strstr (line, "does not exist"))
+        missing++;
+      else if (strstr (line, "don't match") || strstr (line, "do not match"))
+        other_size++;
+      else if (g_str_has_prefix (line, "XML:") && (strstr (line, "Fail") || strstr (line, "fail") ||
+                                                   strstr (line, "not valid") ||
+                                                   strstr (line, "Not valid")))
+        unchecked++;
+    }
+  g_strfreev (lines);
+
+  GString *out = g_string_new (NULL);
+  gchar *n_files = count_text (files, "file", "files");
+  if (files == 0)
+    g_string_append (out, "No downloaded files of this game were found to check.");
+  else if (damaged == 0 && other_size == 0 && unchecked == 0)
+    g_string_append_printf (out, "Checked %s: everything matches GOG.", n_files);
+  else
+    {
+      g_string_append_printf (out, "Checked %s.", n_files);
+      if (damaged > 0)
+        {
+          gchar *n = count_text (damaged, "damaged part was", "damaged parts were");
+          g_string_append_printf (out, " %s downloaded again.", n);
+          g_free (n);
+        }
+      if (other_size > 0)
+        {
+          gchar *n = count_text (other_size, "file is", "files are");
+          g_string_append_printf (out, " %s not the size GOG has (another version): Check Now in "
+                                       "the download window offers the new one.", n);
+          g_free (n);
+        }
+      if (unchecked > 0)
+        {
+          gchar *n = count_text (unchecked, "file, so it", "files, so they");
+          g_string_append_printf (out, " GOG has no checksums for %s could not be checked.", n);
+          g_free (n);
+        }
+    }
+  if (missing > 0)
+    {
+      gchar *n = count_text (missing, "file that isn't downloaded (another language or part) was",
+                             "files that aren't downloaded (other languages or parts) were");
+      g_string_append_printf (out, " %s skipped.", n);
+      g_free (n);
+    }
+  g_free (n_files);
+  (void) parts;
+  return g_string_free (out, FALSE);
+}
+
+static void
+repair_line (GogSyncJob *job, const char *line, gboolean by_cr, gpointer data)
+{
+  (void) by_cr;
+  GString *collected = data;
+  g_string_append (collected, line);
+  g_string_append_c (collected, '\n');
+  if (strstr (line, "Getting game info") || strstr (line, "Getting game names"))
+    {
+      job_progress (job, -1, "Getting the game's files from GOG…");
+      return;
+    }
+  if (g_str_has_prefix (line, "Repairing file "))
+    {
+      gchar *name = g_path_get_basename (line + strlen ("Repairing file "));
+      gchar *msg = g_strdup_printf ("Checking %s…", name);
+      job_progress (job, -1, msg);
+      g_free (msg);
+      g_free (name);
+    }
+  job_log (job, line);
+}
+
+static gboolean
+repair_sync (GogSyncJob *job, GError **error)
+{
+  job_progress (job, -1, "Checking the GOG login…");
+  if (!check_login (job, error))
+    return FALSE;
+  const char *names[] = { job->repair_game, NULL };
+  gchar *regex = names_regex (names);
+  gchar *argv[] = { LGOG, "--repair", "--exclude", "patches", "--directory", job->library_dir,
+                    "--game", regex, NULL };
+  GString *out = g_string_new (NULL);
+  gboolean ok = run_streaming (job, argv, repair_line, out, error);
+  if (ok)
+    job->summary = gog_sync_describe_repair (out->str);
+  g_string_free (out, TRUE);
+  g_free (regex);
+  return ok;
+}
+
 static gpointer
 job_thread_func (gpointer data)
 {
   GogSyncJob *job = data;
   GError *error = NULL;
-  gboolean ok = job->kind == JOB_CHECK ? check_sync (job, &error) : download_sync (job, &error);
+  gboolean ok = job->kind == JOB_CHECK    ? check_sync (job, &error)
+                : job->kind == JOB_REPAIR ? repair_sync (job, &error)
+                                          : download_sync (job, &error);
   queue_signal (job, SIG_FINISHED, 0, ok,
                 ok ? NULL : (error ? error->message : "lgogdownloader failed"));
   g_clear_error (&error);

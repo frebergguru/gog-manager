@@ -52,6 +52,7 @@ ui_sources = [
   'src/ui/gog_sync_dialog.c',
   'src/ui/preferences_dialog.c',
   'src/ui/dialog_window.c',
+  'src/ui/repair_dialog.c',
 ]
 
 executable('gog-manager',

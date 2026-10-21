@@ -54,21 +54,25 @@ API ourselves: it holds the login and handles GOG's quirks.
       not used: it clears the flags for the whole account (and Galaxy).
 - [x] **Notifications**: `--notifications` with a full check, shown in the
       download window.
-- [ ] **Repair**: `--repair` to check downloaded files against GOG's hashes
-      (the update check uses `--size-only` today).
+- [x] **Repair**: Check Files on the game page runs `--repair`.
+- [ ] **Set up lgogdownloader from GOG Manager**, as easy as possible for
+      beginners: install it (bundle it in the AppImage, or offer the
+      distribution's package) and log in without a terminal, by driving
+      `--browser-login` (it prints an auth.gog.com address and reads back
+      the address the browser ends up on).
 - [ ] **Your GOG tags**: `--list tags` and `--tag` as an extra filter in the
       sidebar. Low priority: in one library only GOG's default tags exist
       (Next to play, Completed, Favorite, Backlog), with no games in them.
 - [x] **Hidden games**: `--include-hidden-products` as a download setting
       (off by default).
-- [ ] **Game details JSON**: `--save-game-details-json` (the
-      `account/gameDetails/<id>.json` data: changelog, messages, CD keys).
+- [x] **Game details JSON**: `--save-game-details-json`; the game page shows
+      its messages, and its CD keys when there is no serials.txt.
 - [x] **Free space**: checked by GOG Manager itself before downloading
       (lgogdownloader's `--check-free-space` counts files already on disk
       too) and before installing.
 - [x] **Download speed limit**: `--limit-rate` as a download setting.
-- [ ] **Patches and language packs**: offer them, instead of always
-      excluding patches.
+- [x] **Patches and language packs**: language packs were always downloaded
+      with their game; patches are a download setting now.
 - [ ] **Galaxy cloud saves**: `--galaxy-show-cloud-saves`,
       `--galaxy-download-cloud-saves`, `--galaxy-upload-cloud-saves`
       (with `--cloud-whitelist` and `--wine-prefix` for our Wine/Proton

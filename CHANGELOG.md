@@ -62,6 +62,19 @@ All notable changes to GOG Manager are listed here. The format follows
   flagged as updated or new (lgogdownloader's `--list games --updated` and
   `--new`), which takes seconds instead of minutes; the other games keep
   what the last full check found. GOG's flags are left as they are.
+- **Check Files…** on a downloaded game's page: lgogdownloader's `--repair`
+  compares the files with GOG's checksums, part by part, and downloads
+  damaged parts again, in a window with its output and a summary such as
+  "Checked 3 files: everything matches GOG." A file of another size (another
+  version) is reported, not replaced.
+- GOG's messages about a game (from the `game-details.json`
+  lgogdownloader saves, e.g. how to claim Cyberpunk 2077's art booklet) at
+  the top of its About tab, with working links; links in changelogs work
+  too. The CD keys in that file are shown when there is no `serials.txt`.
+  Downloads now ask for `--save-game-details-json` themselves.
+- "Include patches" in the download settings (off by default): checks,
+  downloads and file checks then leave out `--exclude patches`, and a game
+  lists its patches as a part of their own next to Game, DLC and Extras.
 
 ### Changed
 - Details cached by 0.5.0 are fetched again once, to get the new fields.
@@ -74,6 +87,8 @@ All notable changes to GOG Manager are listed here. The format follows
   bullets. Line breaks in GOG's HTML source no longer show as empty lines.
 
 ### Fixed
+- When lgogdownloader isn't logged in, the GOG windows say so (and how to
+  log in) instead of "lgogdownloader exited with status 1".
 - An age rating's reasons could end in a stray line break from GOG
   ("BR 10 (Violência" with ")" on the next line).
 - An extra or DLC whose name has "&" in it (such as "guides & reference")

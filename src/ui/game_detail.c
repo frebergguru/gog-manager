@@ -11,6 +11,7 @@
 #include "dialog_window.h"
 #include "../text_util.h"
 #include "../gamesdb.h"
+#include "repair_dialog.h"
 
 struct _GogGameDetail
 {
@@ -28,12 +29,14 @@ struct _GogGameDetail
   GtkLabel *badges_label;
   GtkGrid *info_grid; /* "Developer  id Software" and so on, rebuilt by refresh() */
   GtkBox *action_box;
+  GtkBox *tools_box; /* Check Files, under the actions */
   GtkWidget *runner_group;
   AdwComboRow *runner_row;
   GPtrArray *runner_choices; /* GogRunnerInfo*, parallel to runner_row's model */
   gulong runner_handler;
   GtkLabel *description_label;
   GtkLabel *copyright_label;
+  GtkBox *messages_box;     /* GOG's messages about the game, above the description */
   GtkBox *links_box;        /* Store Page, Support, Forum */
   GtkBox *requirements_box; /* a group per system and level */
   AdwViewStackPage *requirements_page;
@@ -518,6 +521,33 @@ os_label (GogOs os)
     case GOG_OS_MAC: return "macOS";
     default: return "Unknown system";
     }
+}
+
+static void
+on_check_files_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  GogGameDetail *self = user_data;
+  gchar *library_dir = gog_config_effective_library_path (self->config);
+  gog_show_repair_dialog (self->parent_window, library_dir, self->game);
+  g_free (library_dir);
+}
+
+/* Every downloaded game's files can be checked against GOG's. */
+static void
+build_tools_row (GogGameDetail *self)
+{
+  clear_box (self->tools_box);
+  gboolean show = gog_game_get_downloaded (self->game) && gog_game_get_folder_path (self->game) &&
+                  !gog_game_get_base_game (self->game);
+  gtk_widget_set_visible (GTK_WIDGET (self->tools_box), show);
+  if (!show)
+    return;
+  GtkWidget *check = gtk_button_new_with_label ("Check Files…");
+  gtk_widget_set_tooltip_text (check, "Compare the downloaded files with GOG's checksums and "
+                                      "download damaged parts again (lgogdownloader --repair)");
+  g_signal_connect (check, "clicked", G_CALLBACK (on_check_files_clicked), self);
+  gtk_box_append (self->tools_box, check);
 }
 
 static void
@@ -1253,6 +1283,28 @@ build_about_extras (GogGameDetail *self, const GogStoreInfo *store)
   gtk_widget_set_visible (GTK_WIDGET (self->links_box),
                           gtk_widget_get_first_child (GTK_WIDGET (self->links_box)) != NULL);
 
+  while ((old = gtk_widget_get_first_child (GTK_WIDGET (self->messages_box))))
+    gtk_box_remove (self->messages_box, old);
+  for (GStrv m = product->messages; *m; m++)
+    {
+      if (m == product->messages)
+        {
+          GtkWidget *heading = gtk_label_new ("From GOG");
+          gtk_widget_add_css_class (heading, "heading");
+          gtk_label_set_xalign (GTK_LABEL (heading), 0.0);
+          gtk_box_append (self->messages_box, heading);
+        }
+      GtkWidget *label = gtk_label_new (NULL);
+      gtk_label_set_markup (GTK_LABEL (label), *m);
+      gtk_label_set_wrap (GTK_LABEL (label), TRUE);
+      gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+      gtk_label_set_selectable (GTK_LABEL (label), TRUE);
+      gtk_widget_add_css_class (label, "card");
+      gtk_widget_add_css_class (label, "gog-message");
+      gtk_box_append (self->messages_box, label);
+    }
+  gtk_widget_set_visible (GTK_WIDGET (self->messages_box), product->messages[0] != NULL);
+
   const char *copyright = store ? store->copyright : NULL;
   gtk_label_set_label (self->copyright_label, copyright ? copyright : "");
   gtk_widget_set_visible (GTK_WIDGET (self->copyright_label), copyright != NULL);
@@ -1400,6 +1452,7 @@ refresh (GogGameDetail *self)
 
   refresh_details (self);
   build_action_row (self);
+  build_tools_row (self);
   build_runner_row (self);
   build_extras (self);
   build_dlc (self);
@@ -1462,6 +1515,8 @@ gog_game_detail_new (GtkWindow *parent_window, GogLibrary *library, GogConfig *c
 
   self->action_box = GTK_BOX (gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8));
   gtk_box_append (GTK_BOX (content), GTK_WIDGET (self->action_box));
+  self->tools_box = GTK_BOX (gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8));
+  gtk_box_append (GTK_BOX (content), GTK_WIDGET (self->tools_box));
 
   self->runner_group = adw_preferences_group_new ();
   self->runner_row = ADW_COMBO_ROW (adw_combo_row_new ());
@@ -1520,6 +1575,9 @@ gog_game_detail_new (GtkWindow *parent_window, GogLibrary *library, GogConfig *c
   gtk_widget_set_valign (GTK_WIDGET (self->description_label), GTK_ALIGN_START);
   GtkWidget *about = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
   gtk_widget_set_valign (about, GTK_ALIGN_START);
+  self->messages_box = GTK_BOX (gtk_box_new (GTK_ORIENTATION_VERTICAL, 6));
+  gtk_widget_set_visible (GTK_WIDGET (self->messages_box), FALSE);
+  gtk_box_append (GTK_BOX (about), GTK_WIDGET (self->messages_box));
   gtk_box_append (GTK_BOX (about), GTK_WIDGET (self->description_label));
   self->links_box = GTK_BOX (gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8));
   gtk_box_append (GTK_BOX (about), GTK_WIDGET (self->links_box));

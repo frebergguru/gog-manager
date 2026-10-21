@@ -78,6 +78,10 @@ row.gog-part-row label.title {
   font-size: 0.9em;
 }
 
+.gog-message {
+  padding: 12px;
+}
+
 .gog-serials {
   padding: 12px;
 }

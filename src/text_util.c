@@ -92,7 +92,7 @@ typedef struct
   GString *markup;
   gboolean has_text;
   gboolean last_space;
-  char open[8];       /* inline tags open in it: 'b', 'i', 't' */
+  char open[8];       /* inline tags open in it: 'b', 'i', 't', 'a' (a link) */
   guint n_open;
 } Block;
 
@@ -108,6 +108,12 @@ block_free (Block *b)
 {
   g_string_free (b->markup, TRUE);
   g_free (b);
+}
+
+static const char *
+closer (char tag)
+{
+  return tag == 'b' ? "</b>" : tag == 'i' ? "</i>" : tag == 'a' ? "</a>" : "</tt>";
 }
 
 static void
@@ -127,7 +133,7 @@ end_block (Changelog *c)
   while (b->n_open > 0)
     {
       char t = b->open[--b->n_open];
-      g_string_append (b->markup, t == 'b' ? "</b>" : t == 'i' ? "</i>" : "</tt>");
+      g_string_append (b->markup, closer (t));
     }
   g_ptr_array_add (c->blocks, b);
 }
@@ -174,14 +180,43 @@ add_text (Changelog *c, const char *text, gsize len)
     }
 }
 
+/* href: for a link ('a'), already escaped for markup. */
 static void
-open_inline (Changelog *c, char tag)
+open_inline (Changelog *c, char tag, const char *href)
 {
   Block *b = c->cur ? c->cur : start_block (c, BLOCK_PARAGRAPH);
   if (b->n_open >= G_N_ELEMENTS (b->open))
     return;
   b->open[b->n_open++] = tag;
-  g_string_append (b->markup, tag == 'b' ? "<b>" : tag == 'i' ? "<i>" : "<tt>");
+  if (tag == 'a')
+    g_string_append_printf (b->markup, "<a href=\"%s\">", href);
+  else
+    g_string_append (b->markup, tag == 'b' ? "<b>" : tag == 'i' ? "<i>" : "<tt>");
+}
+
+/* The href of an <a> tag, escaped for markup; NULL unless it is a web
+ * address. attrs runs to the tag's '>'. */
+static gchar *
+link_target (const char *attrs, gsize len)
+{
+  gchar *tag = g_strndup (attrs, len);
+  gchar *found = NULL;
+  const char *h = strstr (tag, "href=");
+  if (h && (h[5] == '"' || h[5] == '\''))
+    {
+      char quote = h[5];
+      const char *start = h + 6;
+      const char *end = strchr (start, quote);
+      if (end)
+        {
+          gchar *url = g_strndup (start, (gsize) (end - start));
+          if (g_str_has_prefix (url, "https://") || g_str_has_prefix (url, "http://"))
+            found = g_markup_escape_text (url, -1);
+          g_free (url);
+        }
+    }
+  g_free (tag);
+  return found;
 }
 
 static void
@@ -196,11 +231,12 @@ close_inline (Changelog *c, char tag)
     {
       g_string_truncate (b->markup, b->markup->len - 1);
       b->last_space = FALSE;
-      g_string_append (b->markup, tag == 'b' ? "</b> " : tag == 'i' ? "</i> " : "</tt> ");
+      g_string_append (b->markup, closer (tag));
+      g_string_append_c (b->markup, ' ');
       b->last_space = TRUE;
     }
   else
-    g_string_append (b->markup, tag == 'b' ? "</b>" : tag == 'i' ? "</i>" : "</tt>");
+    g_string_append (b->markup, closer (tag));
 }
 
 static gboolean
@@ -210,7 +246,8 @@ tag_is (const char *name, gsize len, const char *want)
 }
 
 static void
-handle_tag (Changelog *c, const char *name, gsize len, gboolean closing)
+handle_tag (Changelog *c, const char *name, gsize len, gboolean closing, const char *attrs,
+            gsize attrs_len)
 {
   if (len == 2 && (name[0] == 'h' || name[0] == 'H') && name[1] >= '1' && name[1] <= '6')
     {
@@ -257,11 +294,24 @@ handle_tag (Changelog *c, const char *name, gsize len, gboolean closing)
       end_block (c);
     }
   else if (tag_is (name, len, "strong") || tag_is (name, len, "b"))
-    closing ? close_inline (c, 'b') : open_inline (c, 'b');
+    closing ? close_inline (c, 'b') : open_inline (c, 'b', NULL);
   else if (tag_is (name, len, "em") || tag_is (name, len, "i"))
-    closing ? close_inline (c, 'i') : open_inline (c, 'i');
+    closing ? close_inline (c, 'i') : open_inline (c, 'i', NULL);
   else if (tag_is (name, len, "code"))
-    closing ? close_inline (c, 't') : open_inline (c, 't');
+    closing ? close_inline (c, 't') : open_inline (c, 't', NULL);
+  else if (tag_is (name, len, "a"))
+    {
+      if (closing)
+        close_inline (c, 'a');
+      else
+        {
+          /* Only links to web pages; a link without one is just text. */
+          gchar *href = link_target (attrs, attrs_len);
+          if (href)
+            open_inline (c, 'a', href);
+          g_free (href);
+        }
+    }
 }
 
 gchar *
@@ -285,7 +335,7 @@ text_changelog_markup (const char *html)
           gsize len = 0;
           while (g_ascii_isalnum (name[len]))
             len++;
-          handle_tag (&c, name, len, closing);
+          handle_tag (&c, name, len, closing, name + len, (gsize) (end - (name + len)));
           p = end + 1;
         }
       else if (*p == '&')

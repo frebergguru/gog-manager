@@ -352,6 +352,7 @@ gog_product_info_new (void)
   GogProductInfo *info = g_new0 (GogProductInfo, 1);
   info->screenshots = g_new0 (gchar *, 1);
   info->video_ids = g_new0 (gchar *, 1);
+  info->messages = g_new0 (gchar *, 1);
   return info;
 }
 
@@ -367,6 +368,7 @@ gog_product_info_free (GogProductInfo *info)
   g_free (info->forum_url);
   g_strfreev (info->screenshots);
   g_strfreev (info->video_ids);
+  g_strfreev (info->messages);
   g_free (info);
 }
 

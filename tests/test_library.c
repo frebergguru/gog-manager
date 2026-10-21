@@ -89,6 +89,9 @@ test_scan_reads_product_info (void)
   gchar *root = g_dir_make_tmp ("gog-library-test-XXXXXX", NULL);
   gchar *dir = g_build_filename (root, "info", NULL);
   g_assert_cmpint (g_mkdir (dir, 0755), ==, 0);
+  write_file (dir, "game-details.json",
+              "{\"cdKey\": \"<span>Doom 3:</span><span>AAAA BB</span>\","
+              " \"messages\": [\"<p>Claim it at <a href=\\\"https://example.com/x?a=1&b=2\\\">the site</a>.</p>\"]}");
   write_file (dir, "product_info.json",
               "{\"id\": 5, \"title\": \"Info\","
               " \"description\": {\"lead\": \"<p>Short.</p>\"},"
@@ -121,11 +124,18 @@ test_scan_reads_product_info (void)
   g_assert_cmpstr (info->screenshots[0], ==, "https://images.gog-statics.com/eb3e88{formatter}.{ext}");
   g_assert_cmpuint (g_strv_length (info->video_ids), ==, 1);
   g_assert_cmpstr (info->video_ids[0], ==, "B4J3TdI55MA");
+  /* game-details.json: GOG's messages with their links, and the CD keys
+   * when there's no serials.txt. */
+  g_assert_cmpuint (g_strv_length (info->messages), ==, 1);
+  g_assert_cmpstr (info->messages[0], ==,
+                   "Claim it at <a href=\"https://example.com/x?a=1&amp;b=2\">the site</a>.");
+  g_assert_cmpstr (gog_game_get_serials (g), ==, "Doom 3:\nAAAA BB");
 
   while (g_main_context_iteration (NULL, FALSE))
     ;
   g_object_unref (library);
   remove_file (dir, "product_info.json");
+  remove_file (dir, "game-details.json");
   g_rmdir (dir);
   g_rmdir (root);
   g_free (dir);
@@ -368,6 +378,30 @@ test_gog_sync_parse_status (void)
   g_free (notes);
   g_assert_null (gog_sync_describe_notifications ("New forum replies: 0\nUpdated games: 0\n"));
   g_assert_null (gog_sync_describe_notifications (NULL));
+
+  /* lgogdownloader --repair, as it printed for Truxton. */
+  gchar *repair = gog_sync_describe_repair (
+      "\r\rGetting game info 1 / 1\n"
+      "Repairing file /games/truxton/setup_truxton_36_(64bit)_(72706).exe\n"
+      "XML: Using remote file\nXML: Valid XML\nXML: Parsing finished\n\n"
+      "setup_truxton_36_(64bit)_(72706).exe\n\tMD5:\tb68daf8ede\n\tChunks:\t2\n\n"
+      "\rChunk 0 (10485760 bytes): OK\r\rChunk 1 (1857456 bytes): OK\r\n");
+  g_assert_cmpstr (repair, ==, "Checked 1 file: everything matches GOG.");
+  g_free (repair);
+  repair = gog_sync_describe_repair (
+      "Repairing file /g/a.exe\nChunk 0 (10 bytes): OK\rChunk 1 (10 bytes): CORRUPTED\n"
+      "Repairing file /g/b.bin\nFilesizes don't match\n"
+      "Repairing file /g/c.bin\nXML: Failed\n"
+      "File doesn't exist: /g/d.bin\n");
+  g_assert_cmpstr (repair, ==,
+                   "Checked 3 files. 1 damaged part was downloaded again. 1 file is not the size "
+                   "GOG has (another version): Check Now in the download window offers the new "
+                   "one. GOG has no checksums for 1 file, so it could not be checked. 1 file that "
+                   "isn't downloaded (another language or part) was skipped.");
+  g_free (repair);
+  repair = gog_sync_describe_repair ("");
+  g_assert_cmpstr (repair, ==, "No downloaded files of this game were found to check.");
+  g_free (repair);
 
   gchar *pretty = gog_sync_pretty_name ("broken_sword_4");
   g_assert_cmpstr (pretty, ==, "Broken Sword 4");

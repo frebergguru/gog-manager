@@ -476,6 +476,48 @@ scan_extras (GogGame *game, const char *dir, json_object *root)
 }
 
 
+/* GOG's CD keys from game-details.json ("<span>DOOM 3:</span><span>KEY
+ * </span>..."), one per line like serials.txt; NULL if none. */
+static gchar *
+details_cd_keys (json_object *details)
+{
+  const char *html = ju_get_string (details, "cdKey", NULL);
+  if (!html || !*html)
+    return NULL;
+  GString *out = g_string_new (NULL);
+  gchar **parts = g_strsplit (html, "<span>", -1);
+  for (gchar **p = parts; *p; p++)
+    {
+      gchar *plain = text_strip_html (*p);
+      if (*plain)
+        g_string_append_printf (out, "%s%s", out->len ? "\n" : "", plain);
+      g_free (plain);
+    }
+  g_strfreev (parts);
+  return out->len ? g_string_free (out, FALSE) : (g_string_free (out, TRUE), NULL);
+}
+
+/* GOG's messages about a game (how to claim a bonus, say), as markup. */
+static GStrv
+details_messages_markup (json_object *messages)
+{
+  GStrvBuilder *b = g_strv_builder_new ();
+  for (size_t i = 0; messages && i < json_object_array_length (messages); i++)
+    {
+      json_object *m = json_object_array_get_idx (messages, i);
+      if (!json_object_is_type (m, json_type_string))
+        continue;
+      gchar *markup = text_changelog_markup (json_object_get_string (m));
+      if (*markup)
+        g_strv_builder_take (b, markup);
+      else
+        g_free (markup);
+    }
+  GStrv out = g_strv_builder_end (b);
+  g_strv_builder_unref (b);
+  return out;
+}
+
 /* A page on GOG's own site; NULL for anything else. */
 static gchar *
 gog_page (json_object *links, const char *key)
@@ -495,11 +537,14 @@ plain_id (const char *id, gboolean hex_only)
   return TRUE;
 }
 
-/* The product json's details beyond what the scan uses itself. */
+/* The product json's details beyond what the scan uses itself, and the
+ * messages in game-details.json (details; may be NULL). */
 static GogProductInfo *
-product_info (json_object *root)
+product_info (json_object *root, json_object *details)
 {
   GogProductInfo *info = gog_product_info_new ();
+  g_strfreev (info->messages);
+  info->messages = details_messages_markup (ju_get_array (details, "messages"));
   gchar *lead = text_strip_html (ju_get_string (ju_get_obj (root, "description"), "lead", ""));
   info->lead = *lead ? lead : (g_free (lead), NULL);
   gchar *changelog = text_changelog_markup (ju_get_string (root, "changelog", ""));
@@ -603,7 +648,14 @@ parse_game_dir (const char *dir_path)
   gog_game_set_supports_os (game, GOG_OS_MAC, ju_get_bool (compat, "osx", FALSE));
 
   gog_game_set_languages (game, ju_get_languages (root));
-  gog_game_set_product_info (game, product_info (root));
+  /* lgogdownloader's --save-game-details-json (GOG's account data for the
+   * game); "null" for some. */
+  gchar *details_path = g_build_filename (dir_path, "game-details.json", NULL);
+  json_object *details = ju_load_file (details_path, NULL);
+  g_free (details_path);
+  if (details && !json_object_is_type (details, json_type_object))
+    g_clear_pointer (&details, json_object_put);
+  gog_game_set_product_info (game, product_info (root, details));
 
   json_object *related = ju_get_array (root, "related_products");
   if (related)
@@ -635,8 +687,13 @@ parse_game_dir (const char *dir_path)
   g_free (logo);
 
   gchar *serials = read_serials (dir_path);
+  /* The keys are in game-details.json too, should serials.txt be gone. */
+  if (!serials)
+    serials = details_cd_keys (details);
   gog_game_set_serials (game, serials);
   g_free (serials);
+  if (details)
+    json_object_put (details);
 
   scan_installers (game, dir_path, root);
   scan_extras (game, dir_path, root);

@@ -15,10 +15,10 @@ G_BEGIN_DECLS
  * allocated string (never NULL; empty string for NULL/empty input). */
 gchar *text_strip_html (const char *html);
 
-/* A changelog's HTML as Pango markup for a label: version headings
- * (<h1>-<h4>) large and bold, section headings (<h5>, <h6>) bold, one
- * bullet per line with nested lists indented, empty items dropped, and
- * <strong>, <em> and <code> kept. Whitespace is HTML's: line breaks in the
+/* GOG's HTML (changelogs, messages) as Pango markup for a label: version
+ * headings (<h1>-<h4>) large and bold, section headings (<h5>, <h6>) bold,
+ * one bullet per line with nested lists indented, empty items dropped, and
+ * <strong>, <em>, <code> and links to web pages kept. Whitespace is HTML's: line breaks in the
  * source are spaces. Never NULL; empty when there is no text. */
 gchar *text_changelog_markup (const char *html);
 

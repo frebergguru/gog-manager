@@ -26,9 +26,12 @@ typedef enum
   GOG_SYNC_PART_GAME  = 1 << 0, /* the game's installers and language packs */
   GOG_SYNC_PART_DLC   = 1 << 1, /* DLC installers and language packs */
   GOG_SYNC_PART_EXTRA = 1 << 2, /* extras (manuals, soundtracks...), the game's and its DLC's */
+  GOG_SYNC_PART_PATCH = 1 << 3, /* patches, the game's and its DLC's; only listed with
+                                 * gog_sync_get_include_patches() */
 } GogSyncPart;
 
-#define GOG_SYNC_PART_ALL (GOG_SYNC_PART_GAME | GOG_SYNC_PART_DLC | GOG_SYNC_PART_EXTRA)
+#define GOG_SYNC_PART_ALL                                                                    \
+  (GOG_SYNC_PART_GAME | GOG_SYNC_PART_DLC | GOG_SYNC_PART_EXTRA | GOG_SYNC_PART_PATCH)
 
 typedef struct
 {
@@ -103,6 +106,10 @@ void  gog_sync_set_rate_limit (guint kilobytes_per_second);
  * account page (--include-hidden-products); off by default. */
 gboolean gog_sync_get_include_hidden (void);
 void     gog_sync_set_include_hidden (gboolean include);
+/* Whether checks, downloads and file checks take GOG's patches too, instead
+ * of leaving them out (--exclude patches); off by default. */
+gboolean gog_sync_get_include_patches (void);
+void     gog_sync_set_include_patches (gboolean include);
 guint gog_sync_get_game_languages (const char *gamename);
 void  gog_sync_set_game_languages (const char *gamename, guint languages);
 
@@ -187,6 +194,19 @@ typedef struct
  * language and part, which deletes the old versions (and only them). */
 GogSyncJob *gog_sync_job_new_download (const char *library_dir, const GogSyncRequest *requests,
                                        guint n_requests, guint threads);
+
+/* Checks a downloaded game's files against GOG's checksums (lgogdownloader
+ * --repair, patches left out as in the library): a damaged part of a file
+ * is downloaded again in place. A file of another size (another version)
+ * is reported but left alone, and files not downloaded are skipped. */
+GogSyncJob *gog_sync_job_new_repair (const char *library_dir, const char *gamename);
+
+/* After a repair: what it found, readable; NULL before or after other
+ * jobs. */
+const char *gog_sync_job_get_summary (GogSyncJob *self);
+
+/* That text from --repair output. Exposed for tests. Transfer full. */
+gchar *gog_sync_describe_repair (const char *output);
 
 /* Signals (all emitted on the main-loop thread):
  *   "progress" (gdouble fraction, gchar *message) — fraction -1 when unknown.

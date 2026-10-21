@@ -64,7 +64,7 @@ GogExtraInfo *gog_extra_info_new (void);
 void          gog_extra_info_free (GogExtraInfo *info);
 
 /* The rest of what the product json lgogdownloader saves says about a
- * game. Left out: the images (lgogdownloader saves the icon and logo), the
+ * game, and the messages from its game-details.json. Left out: the images (lgogdownloader saves the icon and logo), the
  * patches (not downloaded), and the DLC lists (related_products links
  * them). */
 typedef struct
@@ -77,6 +77,8 @@ typedef struct
   gboolean in_development;
   GStrv screenshots;  /* url_formats as GogGamesdbInfo has them; never NULL */
   GStrv video_ids;    /* YouTube video ids; never NULL */
+  GStrv messages;     /* GOG's messages about the game (game-details.json), Pango
+                       * markup with links; never NULL */
 } GogProductInfo;
 
 GogProductInfo *gog_product_info_new (void);
