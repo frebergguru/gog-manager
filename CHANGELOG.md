@@ -84,8 +84,13 @@ All notable changes to GOG Manager are listed here. The format follows
   (lgogdownloader's `--browser-login`). The page loads only https, keeps
   nothing afterwards, and GOG Manager never sees the password. Without
   WebKit, or with "Use My Web Browser Instead", the page opens in the web
-  browser and the address it ends on is pasted. A check that fails because
-  of the login points to the button.
+  browser and the address it ends on is pasted. Once the address is passed
+  on, the page closes and the window shows only how it went ("You're Logged
+  In to GOG" with a check mark, or what went wrong). The download window's
+  button shows whether lgogdownloader is logged in ("Logged In to GOG",
+  greyed out, once it is; asked when the window opens, after a login and
+  after each check), and a check that fails because of the login points to
+  it.
 - The AppImage bundles WebKitGTK for that (it grows from about 46 to 105
   MB). Its helper programs' path is made relative and the AppImage starts
   GOG Manager in its own folder; the folder it was started from still sets

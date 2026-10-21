@@ -8,6 +8,7 @@
 #include "../installer_engine.h"
 #include "../text_util.h"
 #include "login_dialog.h"
+#include <string.h>
 
 #define N_SLOTS 8 /* the most downloads at the same time */
 #define N_PARTS 4
@@ -73,6 +74,8 @@ struct _SyncCtx
   GtkButton *check_button;
   GtkButton *quick_button;
   GtkWidget *login_button; /* in the header bar */
+  int logged_in;            /* -1 not known yet, else whether lgogdownloader is */
+  GCancellable *login_check; /* the check when the window opens */
   GtkButton *select_all_button;
   GtkButton *download_button;
   GtkButton *cancel_button;
@@ -89,6 +92,9 @@ struct _SyncCtx
 static void
 ctx_free (SyncCtx *ctx)
 {
+  if (ctx->login_check)
+    g_cancellable_cancel (ctx->login_check);
+  g_clear_object (&ctx->login_check);
   if (ctx->job)
     {
       /* The job's queued idles may still fire after the dialog is gone. */
@@ -177,12 +183,32 @@ any_checked (SyncCtx *ctx)
   return FALSE;
 }
 
+/* "Log In to GOG…" while lgogdownloader isn't logged in (or it isn't known
+ * yet), greyed "Logged In to GOG" once it is. */
+static void
+update_login_button (SyncCtx *ctx)
+{
+  gboolean in = ctx->logged_in == 1;
+  gtk_button_set_label (GTK_BUTTON (ctx->login_button), in ? "Logged In to GOG" : "Log In to GOG…");
+  gtk_widget_set_tooltip_text (ctx->login_button,
+                               in ? "lgogdownloader is logged in to your GOG account"
+                                  : "Log lgogdownloader in to your GOG account");
+  gtk_widget_set_sensitive (ctx->login_button, !ctx->busy && !in && gog_sync_is_available ());
+}
+
+static void
+set_login_state (SyncCtx *ctx, gboolean logged_in)
+{
+  ctx->logged_in = logged_in;
+  update_login_button (ctx);
+}
+
 static void
 set_busy (SyncCtx *ctx, gboolean busy)
 {
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->check_button), !busy);
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->quick_button), !busy);
-  gtk_widget_set_sensitive (ctx->login_button, !busy);
+  update_login_button (ctx);
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->select_all_button), !busy && ctx->items->len > 0);
   gtk_widget_set_sensitive (GTK_WIDGET (ctx->download_button), !busy && any_checked (ctx));
   gtk_widget_set_sensitive (ctx->results_box, !busy);
@@ -191,6 +217,7 @@ set_busy (SyncCtx *ctx, gboolean busy)
   /* Closing mid-run would orphan the job; use Cancel instead (see
    * on_close_request). */
   ctx->busy = busy;
+  update_login_button (ctx);
 }
 
 static void
@@ -773,6 +800,9 @@ on_check_finished (GogSyncJob *job, gboolean success, const gchar *error_message
   gboolean needs_login = !success && gog_sync_job_needs_login (job);
   g_signal_handlers_disconnect_by_data (job, ctx);
   g_clear_object (&ctx->job);
+  /* A check gets past the login only when lgogdownloader is logged in. */
+  if (success || needs_login)
+    ctx->logged_in = success;
   set_busy (ctx, FALSE);
   /* What to do about it is one button away. */
   if (needs_login)
@@ -916,12 +946,67 @@ on_check_clicked (GtkButton *button, gpointer user_data)
   start_job (ctx, job);
 }
 
+/* The login window may outlive this one (it doesn't, being modal over it,
+ * but its callback comes from its "destroy"), so it gets a weak ref. */
+static void
+on_logged_in (gboolean logged_in, gpointer user_data)
+{
+  GWeakRef *ref = user_data;
+  GtkWindow *window = g_weak_ref_get (ref);
+  g_weak_ref_clear (ref);
+  g_free (ref);
+  SyncCtx *ctx = window ? g_object_get_data (G_OBJECT (window), "sync-ctx") : NULL;
+  if (ctx && logged_in)
+    set_login_state (ctx, TRUE);
+  if (window)
+    g_object_unref (window);
+}
+
 static void
 on_login_clicked (GtkButton *button, gpointer user_data)
 {
   (void) button;
   SyncCtx *ctx = user_data;
-  gog_show_login_dialog (ctx->window, NULL, NULL);
+  GWeakRef *ref = g_new0 (GWeakRef, 1);
+  g_weak_ref_init (ref, ctx->window);
+  gog_show_login_dialog (ctx->window, on_logged_in, ref);
+}
+
+static void
+on_login_status (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+  gchar *out = NULL;
+  GError *error = NULL;
+  g_subprocess_communicate_utf8_finish (G_SUBPROCESS (source), res, &out, NULL, &error);
+  /* Cancelled: the window is gone, and user_data with it. */
+  if (!g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+    {
+      SyncCtx *ctx = user_data;
+      if (out && strstr (out, "Login status: Logged in"))
+        set_login_state (ctx, TRUE);
+      else if (out && strstr (out, "Not logged in"))
+        set_login_state (ctx, FALSE);
+    }
+  g_clear_error (&error);
+  g_free (out);
+  g_object_unref (source);
+}
+
+/* Whether lgogdownloader is logged in, for the header bar's button. */
+static void
+check_login_state (SyncCtx *ctx)
+{
+  const char *args[] = { "--check-login-status", NULL };
+  gchar **argv = gog_sync_lgog_argv (args);
+  GSubprocess *proc = g_subprocess_newv ((const gchar *const *) argv,
+                                         G_SUBPROCESS_FLAGS_STDOUT_PIPE |
+                                             G_SUBPROCESS_FLAGS_STDERR_MERGE,
+                                         NULL);
+  g_free (argv);
+  if (!proc)
+    return;
+  ctx->login_check = g_cancellable_new ();
+  g_subprocess_communicate_utf8_async (proc, NULL, ctx->login_check, on_login_status, ctx);
 }
 
 static void
@@ -1136,8 +1221,8 @@ on_close_request (GtkWindow *window, gpointer user_data)
 static void
 on_window_destroy (GtkWidget *window, gpointer user_data)
 {
-  (void) window;
   SyncCtx *ctx = user_data;
+  g_object_set_data (G_OBJECT (window), "sync-ctx", NULL);
   if (ctx->on_done)
     ctx->on_done (ctx->downloaded, ctx->user_data);
   ctx_free (ctx);
@@ -1167,6 +1252,7 @@ show_dialog (GtkWindow *parent, const char *library_dir, GogLibrary *library,
 {
   SyncCtx *ctx = g_new0 (SyncCtx, 1);
   ctx->focus_gamename = g_strdup (focus_gamename);
+  ctx->logged_in = -1;
   ctx->library_dir = g_strdup (library_dir);
   ctx->library = library;
   ctx->on_done = on_done;
@@ -1176,6 +1262,8 @@ show_dialog (GtkWindow *parent, const char *library_dir, GogLibrary *library,
 
   GtkWindow *window = GTK_WINDOW (adw_window_new ());
   ctx->window = window;
+  /* For the login window's callback, which only has the window. */
+  g_object_set_data (G_OBJECT (window), "sync-ctx", ctx);
   gtk_window_set_title (window, "New Games and Updates on GOG");
   gtk_window_set_transient_for (window, parent);
   gtk_window_set_modal (window, TRUE);
@@ -1350,6 +1438,7 @@ show_dialog (GtkWindow *parent, const char *library_dir, GogLibrary *library,
       GPtrArray *saved = gog_sync_load_results (&checked); /* sets checked first */
       show_items (ctx, saved, checked);
       set_busy (ctx, FALSE);
+      check_login_state (ctx);
       fetch_missing_file_lists (ctx);
     }
   else

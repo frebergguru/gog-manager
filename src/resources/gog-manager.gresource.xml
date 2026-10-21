@@ -4,6 +4,7 @@
     <file>style.css</file>
     <file>icons/scalable/actions/applications-games-symbolic.svg</file>
     <file>icons/scalable/actions/computer-symbolic.svg</file>
+    <file>icons/scalable/actions/dialog-warning-symbolic.svg</file>
     <file>icons/scalable/actions/document-edit-symbolic.svg</file>
     <file>icons/scalable/actions/document-open-symbolic.svg</file>
     <file>icons/scalable/actions/edit-copy-symbolic.svg</file>
@@ -15,6 +16,7 @@
     <file>icons/scalable/actions/help-about-symbolic.svg</file>
     <file>icons/scalable/actions/image-x-generic-symbolic.svg</file>
     <file>icons/scalable/actions/media-playback-start-symbolic.svg</file>
+    <file>icons/scalable/actions/object-select-symbolic.svg</file>
     <file>icons/scalable/actions/preferences-system-symbolic.svg</file>
     <file>icons/scalable/actions/sidebar-show-symbolic.svg</file>
     <file>icons/scalable/actions/software-update-available-symbolic.svg</file>

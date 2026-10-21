@@ -33,7 +33,10 @@ typedef struct
   GtkWidget *entry;
   GtkWidget *login_button;
   GtkWidget *close_button;
-  GtkStack *ways;          /* "web" (GOG's page in here) | "browser" (copy and paste) */
+  GtkStack *ways;          /* "web" (GOG's page in here) | "browser" (copy and paste)
+                            * | "done" (logging in, then the result) */
+  AdwStatusPage *done_page;
+  GtkWidget *intro;
   GtkWidget *web_view;     /* NULL without WebKit */
   GtkWidget *browser_button; /* "Use my web browser instead" */
   gboolean submitted;      /* the address went to lgogdownloader */
@@ -71,13 +74,57 @@ set_status (LoginCtx *ctx, const char *text, gboolean announce)
     gog_announce (GTK_WIDGET (ctx->window), text);
 }
 
-static void
-finish (LoginCtx *ctx, const char *text)
+/* GOG's page goes once it has done its part: it is no use any more, and
+ * its web processes end with it. Not from inside the view's own signal
+ * handlers, so from an idle. */
+static gboolean
+drop_web_view (gpointer data)
 {
-  set_status (ctx, text, TRUE);
-  gtk_widget_set_sensitive (ctx->open_button, FALSE);
-  gtk_widget_set_sensitive (ctx->entry, FALSE);
-  gtk_widget_set_sensitive (ctx->login_button, FALSE);
+  LoginCtx *ctx = data;
+  if (!returned (ctx))
+    return G_SOURCE_REMOVE;
+  GtkWidget *web = gtk_stack_get_child_by_name (ctx->ways, "web");
+  if (web)
+    gtk_stack_remove (ctx->ways, web);
+  ctx->web_view = NULL;
+  return G_SOURCE_REMOVE;
+}
+
+/* The window shows only how it went (or that it's going): the login page,
+ * the steps and their buttons are done with. */
+static void
+show_done (LoginCtx *ctx, const char *icon, const char *title, const char *text, gboolean busy)
+{
+  adw_status_page_set_icon_name (ctx->done_page, icon);
+  adw_status_page_set_title (ctx->done_page, title);
+  adw_status_page_set_description (ctx->done_page, text);
+  /* A spinner while logging in, unless motion is turned down: then the
+   * title says it. */
+  gboolean animate = TRUE;
+  g_object_get (gtk_settings_get_default (), "gtk-enable-animations", &animate, NULL);
+  adw_status_page_set_child (ctx->done_page, busy && animate ? adw_spinner_new () : NULL);
+  gtk_stack_set_visible_child_name (ctx->ways, "done");
+  gtk_widget_set_visible (ctx->intro, FALSE);
+  gtk_widget_set_visible (GTK_WIDGET (ctx->status), FALSE);
+  gtk_widget_set_visible (ctx->browser_button, FALSE);
+  gtk_widget_set_visible (ctx->login_button, FALSE);
+  /* Close stays at the right, without the button that pushed it there. */
+  gtk_widget_set_halign (gtk_widget_get_parent (ctx->close_button), GTK_ALIGN_END);
+  if (ctx->web_view)
+    {
+      ctx->pending++;
+      g_idle_add (drop_web_view, ctx);
+    }
+  gchar *spoken = text ? g_strdup_printf ("%s. %s", title, text) : g_strdup (title);
+  gog_announce (GTK_WIDGET (ctx->window), spoken);
+  g_free (spoken);
+}
+
+/* The end, whichever way: ok says whether lgogdownloader is logged in. */
+static void
+finish (LoginCtx *ctx, gboolean ok, const char *title, const char *text)
+{
+  show_done (ctx, ok ? "object-select-symbolic" : "dialog-warning-symbolic", title, text, FALSE);
   gtk_button_set_label (GTK_BUTTON (ctx->close_button), "Close");
   gtk_widget_add_css_class (ctx->close_button, "suggested-action");
   gtk_widget_grab_focus (ctx->close_button);
@@ -95,11 +142,13 @@ on_status_checked (GObject *source, GAsyncResult *res, gpointer user_data)
   if (returned (ctx))
     {
       ctx->logged_in = ran && out && strstr (out, "Login status: Logged in");
-      finish (ctx, ctx->logged_in
-                       ? "You are logged in to GOG. GOG Manager can now check for new games "
-                         "and updates, and download them."
-                       : "The login did not work. Close this and try again; GOG's page "
-                         "address must be copied after the login is complete.");
+      if (ctx->logged_in)
+        finish (ctx, TRUE, "You’re Logged In to GOG",
+                "GOG Manager can now check for new games and updates, and download them.");
+      else
+        finish (ctx, FALSE, "The Login Didn’t Work",
+                "lgogdownloader is not logged in. Close this window and try Log In to GOG "
+                "again.");
     }
   g_free (out);
   g_object_unref (source);
@@ -117,7 +166,8 @@ check_status (LoginCtx *ctx)
   g_free (argv);
   if (!proc)
     {
-      finish (ctx, "Could not run lgogdownloader to check the login.");
+      finish (ctx, FALSE, "Could Not Check the Login",
+              "lgogdownloader could not be run to check it.");
       return;
     }
   ctx->pending++;
@@ -187,8 +237,8 @@ start_login (LoginCtx *ctx)
   g_free (argv);
   if (!ctx->proc)
     {
-      gchar *text = g_strdup_printf ("Could not run lgogdownloader: %s", error->message);
-      finish (ctx, text);
+      gchar *text = g_strdup_printf ("lgogdownloader could not be run: %s", error->message);
+      finish (ctx, FALSE, "Could Not Start the Login", text);
       g_free (text);
       g_clear_error (&error);
       return;
@@ -277,9 +327,11 @@ submit_address (LoginCtx *ctx, const char *text)
   gtk_widget_set_sensitive (ctx->entry, FALSE);
   gtk_widget_set_sensitive (ctx->browser_button, FALSE);
   if (!ok)
-    finish (ctx, "Could not pass the address on to lgogdownloader.");
+    finish (ctx, FALSE, "Could Not Finish the Login",
+            "The address could not be passed on to lgogdownloader.");
   else
-    set_status (ctx, "Logging in…", TRUE);
+    show_done (ctx, NULL, "Logging In…", "lgogdownloader is finishing the login with GOG.",
+               TRUE);
   return ok;
 }
 
@@ -383,9 +435,24 @@ on_web_process_terminated (WebKitWebView *view, WebKitWebProcessTerminationReaso
                       "instead:");
 }
 
+/* In the AppImage, WebKit looks for its helper programs relative to the
+ * current folder (see packaging/build-appimage.sh), and aborts the whole
+ * app when they aren't there. Should they not be, the login goes the
+ * copy-and-paste way instead. */
+static gboolean
+webkit_helpers_found (void)
+{
+  if (!g_getenv ("APPDIR"))
+    return TRUE;
+  return g_file_test ("lib/webkitgtk-6.0/WebKitWebProcess", G_FILE_TEST_IS_EXECUTABLE) &&
+         g_file_test ("lib/webkitgtk-6.0/WebKitNetworkProcess", G_FILE_TEST_IS_EXECUTABLE);
+}
+
 static GtkWidget *
 make_web_view (LoginCtx *ctx)
 {
+  if (!webkit_helpers_found ())
+    return NULL;
   WebKitNetworkSession *session = webkit_network_session_new_ephemeral ();
   GtkWidget *view = g_object_new (WEBKIT_TYPE_WEB_VIEW, "network-session", session, NULL);
   g_object_unref (session);
@@ -463,7 +530,7 @@ gog_show_login_dialog (GtkWindow *parent, GogLoginDoneFunc on_done, gpointer use
   gtk_widget_set_margin_top (box, 12);
   gtk_widget_set_margin_bottom (box, 18);
 
-  GtkWidget *intro = gtk_label_new (
+  GtkWidget *intro = ctx->intro = gtk_label_new (
       "GOG Manager downloads your games with lgogdownloader, which needs to be logged in to "
       "your GOG account once. You log in on GOG's own login page; GOG Manager never sees your "
       "password.");
@@ -511,11 +578,17 @@ gog_show_login_dialog (GtkWindow *parent, GogLoginDoneFunc on_done, gpointer use
 #ifdef HAVE_WEBKIT
   /* GOG's page right here, when WebKit is there: nothing to copy. */
   ctx->web_view = make_web_view (ctx);
-  GtkWidget *frame = gtk_frame_new (NULL);
-  gtk_frame_set_child (GTK_FRAME (frame), ctx->web_view);
-  gtk_stack_add_named (ctx->ways, frame, "web");
-  gtk_stack_set_visible_child_name (ctx->ways, "web");
+  if (ctx->web_view)
+    {
+      GtkWidget *frame = gtk_frame_new (NULL);
+      gtk_frame_set_child (GTK_FRAME (frame), ctx->web_view);
+      gtk_stack_add_named (ctx->ways, frame, "web");
+      gtk_stack_set_visible_child_name (ctx->ways, "web");
+    }
 #endif
+
+  ctx->done_page = ADW_STATUS_PAGE (adw_status_page_new ());
+  gtk_stack_add_named (ctx->ways, GTK_WIDGET (ctx->done_page), "done");
 
   ctx->status = GTK_LABEL (gtk_label_new ("Starting lgogdownloader…"));
   gtk_label_set_wrap (ctx->status, TRUE);
@@ -552,7 +625,8 @@ gog_show_login_dialog (GtkWindow *parent, GogLoginDoneFunc on_done, gpointer use
   if (gog_sync_is_available ())
     start_login (ctx);
   else
-    finish (ctx, "lgogdownloader was not found. The GOG Manager AppImage comes with it; "
+    finish (ctx, FALSE, "lgogdownloader Is Missing",
+            "lgogdownloader was not found. The GOG Manager AppImage comes with it; "
                  "otherwise install it from your distribution's packages.");
   gtk_window_present (ctx->window);
 }
