@@ -6,6 +6,8 @@ All notable changes to GOG Manager are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-21
+
 ### Added
 - Everything else useful in GOG's games database (gamesdb.gog.com): the
   game page also lists genres, the critics' rating ("85 out of 100") and
@@ -369,7 +371,8 @@ All notable changes to GOG Manager are listed here. The format follows
   keeps them.
 - Single-file AppImage, built and published by CI.
 
-[Unreleased]: https://github.com/frebergguru/gog-manager/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/frebergguru/gog-manager/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/frebergguru/gog-manager/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/frebergguru/gog-manager/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/frebergguru/gog-manager/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/frebergguru/gog-manager/compare/v0.2.0...v0.3.0
