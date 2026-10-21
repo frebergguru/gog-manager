@@ -59,6 +59,7 @@ ui_sources = [
   'src/ui/preferences_dialog.c',
   'src/ui/dialog_window.c',
   'src/ui/repair_dialog.c',
+  'src/ui/cloud_saves_dialog.c',
   'src/ui/login_dialog.c',
 ]
 

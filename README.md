@@ -63,6 +63,14 @@ login. GOG Manager can show GOG's login page for it.
   paste the address. The button shows when lgogdownloader is logged in.
 - **Check Files** — a downloaded game's page can compare its files with GOG's
   checksums (lgogdownloader `--repair`) and download damaged parts again.
+- **Cloud Saves** — a Windows game installed with Wine or Proton can share
+  its saves with GOG Galaxy's cloud (lgogdownloader
+  `--galaxy-show/download/upload-cloud-saves`), for other computers and
+  GOG Galaxy on Windows. The window lists the saves on GOG and which are
+  only there or newer here; Download and Upload never replace a newer save,
+  and **Replace with GOG's** asks first. lgogdownloader runs with a private
+  copy of its login, because a cloud-save run otherwise leaves it with a
+  login that only works for that one game.
 - **Download languages** — by default each game's original language (looked
   up on Wikidata) plus the languages ticked under **Also Download** in
   Preferences; each game can have its own choice.
@@ -414,6 +422,7 @@ src/
     ├── gog_sync_dialog.{c,h}      New Games and Updates on GOG (download window)
     ├── login_dialog.{c,h}         Log In to GOG (WebKit page or web browser)
     ├── repair_dialog.{c,h}        Check Files (lgogdownloader --repair)
+    ├── cloud_saves_dialog.{c,h}   Cloud Saves (GOG Galaxy cloud, through lgogdownloader)
     ├── preferences_dialog.{c,h}   Preferences (Library, Runners, Downloads)
     ├── proton_fetch_dialog.{c,h}  GE-Proton download
     ├── proton_manage_dialog.{c,h} Manage and remove GE-Proton builds

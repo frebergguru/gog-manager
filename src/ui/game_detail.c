@@ -12,6 +12,7 @@
 #include "../text_util.h"
 #include "../gamesdb.h"
 #include "repair_dialog.h"
+#include "cloud_saves_dialog.h"
 
 struct _GogGameDetail
 {
@@ -571,15 +572,33 @@ on_check_files_clicked (GtkButton *button, gpointer user_data)
   g_free (library_dir);
 }
 
-/* Every downloaded game's files can be checked against GOG's. */
+static void
+on_cloud_saves_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  GogGameDetail *self = user_data;
+  gog_show_cloud_saves_dialog (self->parent_window, self->game);
+}
+
+/* Every downloaded game's files can be checked against GOG's, and a Windows
+ * game's saves go to and from GOG Galaxy's cloud. */
 static void
 build_tools_row (GogGameDetail *self)
 {
   clear_box (self->tools_box);
-  gboolean show = gog_game_get_downloaded (self->game) && gog_game_get_folder_path (self->game) &&
-                  !gog_game_get_base_game (self->game);
-  gtk_widget_set_visible (GTK_WIDGET (self->tools_box), show);
-  if (!show)
+  gboolean check_files = gog_game_get_downloaded (self->game) &&
+                         gog_game_get_folder_path (self->game) && !gog_game_get_base_game (self->game);
+  gboolean cloud = gog_cloud_saves_available (self->game);
+  gtk_widget_set_visible (GTK_WIDGET (self->tools_box), check_files || cloud);
+  if (cloud)
+    {
+      GtkWidget *saves = gtk_button_new_with_label ("Cloud Saves…");
+      gtk_widget_set_tooltip_text (saves, "Download this game's saves from GOG Galaxy's cloud, "
+                                          "or upload them there");
+      g_signal_connect (saves, "clicked", G_CALLBACK (on_cloud_saves_clicked), self);
+      gtk_box_append (self->tools_box, saves);
+    }
+  if (!check_files)
     return;
   GtkWidget *check = gtk_button_new_with_label ("Check Files…");
   gtk_widget_set_tooltip_text (check, "Compare the downloaded files with GOG's checksums and "

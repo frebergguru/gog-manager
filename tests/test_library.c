@@ -902,6 +902,49 @@ test_install_space (void)
   g_free (tmp);
 }
 
+/* lgogdownloader's --galaxy-show-builds and --galaxy-show-cloud-saves
+ * output, as 3.19 prints it. */
+static void
+test_cloud_saves_parse (void)
+{
+  const char *builds = "Getting product data 1 / 4\r"
+                       "0: Version 1.2 - 2024-01-01T00:00:00+0000 (Gen 1) (Build id: 111)\n"
+                       "1: Version 1.6.15 - 2024-12-20T18:14:42+0000 (Gen 2) (Build id: 58207464205576490)\n"
+                       "2: Version 1.6.14 - 2024-11-12T08:13:45+0000 (Gen 2) (Build id: 58096107765130716)\n";
+  gchar *build = gog_sync_cloud_parse_builds (builds);
+  g_assert_cmpstr (build, ==, "58207464205576490");
+  g_free (build);
+  g_assert_null (gog_sync_cloud_parse_builds ("0: Version 1 (Gen 1) (Build id: 5)\n"));
+  g_assert_null (gog_sync_cloud_parse_builds (NULL));
+
+  const char *list = "saves/slot 2.sav :: Isn't downloaded yet\n"
+                     "Getting game info\n"
+                     "saves/a.sav :: Already up to date\n"
+                     "saves/b.sav :: Out of date\n"
+                     "__default/c :: not yet completed download\n"
+                     "saves/odd :: something new\n";
+  GPtrArray *files = gog_sync_cloud_parse_list (list);
+  g_assert_cmpuint (files->len, ==, 4);
+  const struct
+  {
+    const char *path;
+    GogCloudFileState state;
+  } want[] = {
+    { "__default/c", GOG_CLOUD_FILE_LARGER_HERE },
+    { "saves/a.sav", GOG_CLOUD_FILE_NOT_NEWER },
+    { "saves/b.sav", GOG_CLOUD_FILE_NEWER_HERE },
+    { "saves/slot 2.sav", GOG_CLOUD_FILE_ONLY_ON_GOG },
+  };
+  for (guint i = 0; i < G_N_ELEMENTS (want); i++)
+    {
+      GogCloudFile *file = g_ptr_array_index (files, i);
+      g_assert_cmpstr (file->path, ==, want[i].path);
+      g_assert_cmpint (file->state, ==, want[i].state);
+    }
+  g_ptr_array_unref (files);
+  g_assert_cmpstr (gog_sync_cloud_wine_user (TRUE), ==, "steamuser");
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -914,6 +957,7 @@ main (int argc, char *argv[])
   g_test_add_func ("/gog_sync/parse_status", test_gog_sync_parse_status);
   g_test_add_func ("/gog_sync/default_download_languages", test_default_download_languages);
   g_test_add_func ("/gog_sync/version_blind_names", test_version_blind_names);
+  g_test_add_func ("/gog_sync/cloud_saves_parse", test_cloud_saves_parse);
   g_test_add_func ("/install/uninstall_protects_folders", test_uninstall_protects_folders);
   g_test_add_func ("/config/files_move_to_config_folder", test_config_files_move_to_config_folder);
   g_test_add_func ("/install/space", test_install_space);

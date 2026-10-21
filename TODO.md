@@ -79,10 +79,16 @@ API ourselves: it holds the login and handles GOG's quirks.
 - [x] **Download speed limit**: `--limit-rate` as a download setting.
 - [x] **Patches and language packs**: language packs were always downloaded
       with their game; patches are a download setting now.
-- [ ] **Galaxy cloud saves**: `--galaxy-show-cloud-saves`,
-      `--galaxy-download-cloud-saves`, `--galaxy-upload-cloud-saves`
-      (with `--cloud-whitelist` and `--wine-prefix` for our Wine/Proton
-      prefixes), so saves are shared with other machines and Windows.
+- [x] **Galaxy cloud saves**: Cloud Saves on an installed Windows game's
+      page (`--galaxy-show-cloud-saves`, `--galaxy-download-cloud-saves`
+      with `--cloud-force --cloud-whitelist`, `--galaxy-upload-cloud-saves`,
+      `--wine-prefix` for our Wine/Proton prefixes). Works around three
+      lgogdownloader 3.19 bugs (see gog_sync.h): it saves the game's login
+      over its Galaxy one, its download skips what is newer on GOG, and it
+      looks for "Save Games" instead of Wine's "Saved Games".
+  - [ ] Report those bugs upstream (Sude-/lgogdownloader).
+  - [ ] Linux and macOS builds: lgogdownloader only does Windows ones.
+  - [ ] Maybe: download before Play and upload after the game quits.
 - [ ] **Galaxy builds**: `--galaxy-show-builds` and `--galaxy-install`
       for a build history, per-file updates and rolling back to an older
       version.
