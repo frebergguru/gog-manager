@@ -120,7 +120,10 @@ class Pacman:
         own = f"/usr/share/licenses/{pkg}"
         if os.path.isdir(own):
             for dirpath, _, names in os.walk(own):
-                files += [os.path.join(dirpath, n) for n in sorted(names)]
+                # isfile follows links: a link to a text the system doesn't
+                # have (a slim container) is left out.
+                files += [os.path.join(dirpath, n) for n in sorted(names)
+                          if os.path.isfile(os.path.join(dirpath, n))]
         # Arch's common licenses aren't copied into each package: the
         # SPDX texts come from the licenses package.
         for spdx_id in spdx_ids(licenses):

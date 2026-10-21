@@ -87,9 +87,34 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Only CHANGELOG.md, for the release notes.
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
+
       - uses: actions/download-artifact@v7
         with:
           name: gog-manager-x86_64-AppImage
+
+      # The release page shows this version's section of CHANGELOG.md (from
+      # its "## [X.Y.Z]" heading to the next one); a tag without one stops
+      # here rather than publishing a release with no notes.
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            index($0, "## [" v "]") == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            echo "error: CHANGELOG.md has no section for $version" >&2
+            exit 1
+          fi
+          prev="$(grep -o "^\[$version\]: .*" CHANGELOG.md | cut -d' ' -f2- || true)"
+          [ -n "$prev" ] && printf '\n**Full changes:** %s\n' "$prev" >> release-notes.md
+          cat release-notes.md
 
       - name: Publish release
         env:
@@ -98,9 +123,11 @@ jobs:
           assets="gog-manager-x86_64.AppImage gog-manager-x86_64.AppImage.sha256"
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" $assets --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$GITHUB_REF_NAME" --notes-file release-notes.md \
+              --repo "$GITHUB_REPOSITORY"
           else
             gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
               --title "GOG Manager $GITHUB_REF_NAME" \
-              --generate-notes \
+              --notes-file release-notes.md \
               $assets
           fi
