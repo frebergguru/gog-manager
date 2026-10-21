@@ -2,6 +2,7 @@
  * Copyright (C) 2026 Hypnotize
  */
 
+#include "config.h"
 #include "installer_engine.h"
 #include <glib/gstdio.h>
 #include <string.h>
@@ -281,6 +282,9 @@ run_and_stream_full (GogInstallJob *job, gchar **argv, gchar **envp, gint max_ok
   if (envp)
     g_subprocess_launcher_set_environ (launcher, envp);
   g_subprocess_launcher_set_child_setup (launcher, child_new_process_group, NULL, NULL);
+  /* Not the AppImage's own folder; see gog_config_launch_dir(). */
+  if (gog_config_launch_dir ())
+    g_subprocess_launcher_set_cwd (launcher, gog_config_launch_dir ());
 
   GSubprocess *proc = g_subprocess_launcher_spawnv (launcher, (const gchar *const *) argv, error);
   g_object_unref (launcher);

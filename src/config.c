@@ -27,7 +27,15 @@ app_dir (void)
       return dir;
     }
 
-  return g_get_current_dir ();
+  const char *launch = gog_config_launch_dir ();
+  return launch ? g_strdup (launch) : g_get_current_dir ();
+}
+
+const char *
+gog_config_launch_dir (void)
+{
+  const char *dir = g_getenv ("GOG_MANAGER_LAUNCH_DIR");
+  return dir && *dir && g_path_is_absolute (dir) ? dir : NULL;
 }
 
 /* The app's files live in a hidden folder next to the executable (portable),
@@ -201,7 +209,8 @@ gog_config_effective_library_path (GogConfig *config)
 {
   if (config && config->library_path)
     return g_strdup (config->library_path);
-  return g_get_current_dir ();
+  const char *launch = gog_config_launch_dir ();
+  return launch ? g_strdup (launch) : g_get_current_dir ();
 }
 
 gboolean

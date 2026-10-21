@@ -39,7 +39,8 @@ jobs:
             gtk4 libadwaita json-c \
             patchelf desktop-file-utils librsvg webp-pixbuf-loader \
             squashfs-tools wget git github-cli file python \
-            cmake boost jsoncpp rhash tinyxml2 tidy curl zlib
+            cmake boost jsoncpp rhash tinyxml2 tidy curl zlib \
+            webkitgtk-6.0
           # A clean container has no populated GdkPixbuf loader dir (recent
           # librsvg ships no pixbuf loader); the linuxdeploy gtk plugin requires
           # it. Installing a real loader above + regenerating the cache creates

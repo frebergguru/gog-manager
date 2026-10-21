@@ -5,7 +5,11 @@
 #include "login_dialog.h"
 #include "dialog_window.h"
 #include "../gog_sync.h"
+#include "../config.h"
 #include <string.h>
+#ifdef HAVE_WEBKIT
+#include <webkit/webkit.h>
+#endif
 
 /* Where GOG sends the browser once the login is done; lgogdownloader reads
  * the code from it. */
@@ -29,6 +33,10 @@ typedef struct
   GtkWidget *entry;
   GtkWidget *login_button;
   GtkWidget *close_button;
+  GtkStack *ways;          /* "web" (GOG's page in here) | "browser" (copy and paste) */
+  GtkWidget *web_view;     /* NULL without WebKit */
+  GtkWidget *browser_button; /* "Use my web browser instead" */
+  gboolean submitted;      /* the address went to lgogdownloader */
 } LoginCtx;
 
 static void
@@ -130,6 +138,7 @@ on_login_exited (GObject *source, GAsyncResult *res, gpointer user_data)
 /* ---- lgogdownloader --browser-login ---- */
 
 static void read_next_line (LoginCtx *ctx);
+static void show_login_page (LoginCtx *ctx);
 
 static void
 on_line (GObject *source, GAsyncResult *res, gpointer user_data)
@@ -147,9 +156,7 @@ on_line (GObject *source, GAsyncResult *res, gpointer user_data)
   if (!ctx->login_url && g_str_has_prefix (line, "https://auth.gog.com/"))
     {
       ctx->login_url = g_strdup (line);
-      gtk_widget_set_sensitive (ctx->open_button, TRUE);
-      set_status (ctx, "Ready. Open GOG's login page to begin.", FALSE);
-      gtk_widget_grab_focus (ctx->open_button);
+      show_login_page (ctx);
     }
   g_free (line);
   read_next_line (ctx);
@@ -172,6 +179,8 @@ start_login (LoginCtx *ctx)
       G_SUBPROCESS_FLAGS_STDIN_PIPE | G_SUBPROCESS_FLAGS_STDOUT_PIPE |
       G_SUBPROCESS_FLAGS_STDERR_MERGE);
   g_subprocess_launcher_setenv (launcher, "TERM", "dumb", TRUE);
+  if (gog_config_launch_dir ())
+    g_subprocess_launcher_set_cwd (launcher, gog_config_launch_dir ());
   GError *error = NULL;
   ctx->proc = g_subprocess_launcher_spawnv (launcher, (const gchar *const *) argv, &error);
   g_object_unref (launcher);
@@ -240,12 +249,14 @@ on_entry_changed (GtkEditable *entry, gpointer user_data)
   gtk_widget_set_sensitive (ctx->login_button, ctx->proc && *text);
 }
 
-static void
-on_login_clicked (GtkWidget *widget, gpointer user_data)
+/* Hands GOG's final address to lgogdownloader, which turns its code into a
+ * login. FALSE (and says why) when it isn't that address. */
+static gboolean
+submit_address (LoginCtx *ctx, const char *text)
 {
-  (void) widget;
-  LoginCtx *ctx = user_data;
-  gchar *address = g_strstrip (g_strdup (gtk_editable_get_text (GTK_EDITABLE (ctx->entry))));
+  if (ctx->submitted || !ctx->proc)
+    return FALSE;
+  gchar *address = g_strstrip (g_strdup (text));
   if (!g_str_has_prefix (address, SUCCESS_PREFIX) || !strstr (address, "code="))
     {
       set_status (ctx, "That isn't the address GOG ends the login on. It starts with "
@@ -253,22 +264,158 @@ on_login_clicked (GtkWidget *widget, gpointer user_data)
                        "address bar once the login is done.",
                   TRUE);
       g_free (address);
-      gtk_widget_grab_focus (ctx->entry);
-      return;
+      return FALSE;
     }
-  /* The address goes to lgogdownloader, which turns its code into a login. */
   gchar *line = g_strconcat (address, "\n", NULL);
   GOutputStream *in = g_subprocess_get_stdin_pipe (ctx->proc);
   gboolean ok = g_output_stream_write_all (in, line, strlen (line), NULL, NULL, NULL) &&
                 g_output_stream_close (in, NULL, NULL);
   g_free (line);
   g_free (address);
+  ctx->submitted = TRUE;
   gtk_widget_set_sensitive (ctx->login_button, FALSE);
   gtk_widget_set_sensitive (ctx->entry, FALSE);
+  gtk_widget_set_sensitive (ctx->browser_button, FALSE);
   if (!ok)
     finish (ctx, "Could not pass the address on to lgogdownloader.");
   else
     set_status (ctx, "Logging in…", TRUE);
+  return ok;
+}
+
+static void
+on_login_clicked (GtkWidget *widget, gpointer user_data)
+{
+  (void) widget;
+  LoginCtx *ctx = user_data;
+  if (!submit_address (ctx, gtk_editable_get_text (GTK_EDITABLE (ctx->entry))))
+    gtk_widget_grab_focus (ctx->entry);
+}
+
+/* The copy-and-paste way: GOG's page in the web browser. */
+static void
+use_browser (LoginCtx *ctx, const char *why)
+{
+  gtk_stack_set_visible_child_name (ctx->ways, "browser");
+  gtk_widget_set_visible (ctx->browser_button, FALSE);
+  gtk_widget_set_visible (ctx->login_button, TRUE);
+  gtk_window_set_default_size (ctx->window, 560, 440);
+  if (ctx->login_url)
+    {
+      gtk_widget_set_sensitive (ctx->open_button, TRUE);
+      gtk_widget_grab_focus (ctx->open_button);
+    }
+  if (why)
+    set_status (ctx, why, TRUE);
+}
+
+static void
+on_browser_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  use_browser (user_data, NULL);
+}
+
+#ifdef HAVE_WEBKIT
+/* GOG's page in here: once GOG sends it to the final address, that address
+ * goes to lgogdownloader by itself. Only https pages load, and nothing is
+ * kept afterwards (an ephemeral session): lgogdownloader keeps the login. */
+static gboolean
+on_decide_policy (WebKitWebView *view, WebKitPolicyDecision *decision,
+                  WebKitPolicyDecisionType type, gpointer user_data)
+{
+  LoginCtx *ctx = user_data;
+  if (type != WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION &&
+      type != WEBKIT_POLICY_DECISION_TYPE_NEW_WINDOW_ACTION)
+    return FALSE;
+  WebKitNavigationAction *action =
+      webkit_navigation_policy_decision_get_navigation_action (WEBKIT_NAVIGATION_POLICY_DECISION (decision));
+  const char *uri = webkit_uri_request_get_uri (webkit_navigation_action_get_request (action));
+  if (uri && g_str_has_prefix (uri, SUCCESS_PREFIX))
+    {
+      webkit_policy_decision_ignore (decision);
+      gtk_widget_set_sensitive (ctx->web_view, FALSE);
+      submit_address (ctx, uri);
+      return TRUE;
+    }
+  if (!uri || !g_str_has_prefix (uri, "https://"))
+    {
+      webkit_policy_decision_ignore (decision);
+      return TRUE;
+    }
+  if (type == WEBKIT_POLICY_DECISION_TYPE_NEW_WINDOW_ACTION)
+    {
+      /* A page that wants a window of its own opens in this one. */
+      webkit_policy_decision_ignore (decision);
+      webkit_web_view_load_uri (view, uri);
+      return TRUE;
+    }
+  return FALSE;
+}
+
+static gboolean
+on_load_failed (WebKitWebView *view, WebKitLoadEvent event, const char *uri, GError *error,
+                gpointer user_data)
+{
+  (void) view;
+  (void) event;
+  LoginCtx *ctx = user_data;
+  /* An ignored navigation (the final address) ends the load like this too. */
+  if (ctx->submitted || (uri && g_str_has_prefix (uri, SUCCESS_PREFIX)) ||
+      g_error_matches (error, WEBKIT_POLICY_ERROR, WEBKIT_POLICY_ERROR_FRAME_LOAD_INTERRUPTED_BY_POLICY_CHANGE))
+    return FALSE;
+  gchar *why = g_strdup_printf ("GOG's login page did not load here (%s). Log in in your web "
+                                "browser instead:", error->message);
+  use_browser (ctx, why);
+  g_free (why);
+  return FALSE;
+}
+
+static void
+on_web_process_terminated (WebKitWebView *view, WebKitWebProcessTerminationReason reason,
+                           gpointer user_data)
+{
+  (void) view;
+  (void) reason;
+  LoginCtx *ctx = user_data;
+  if (!ctx->submitted && !ctx->gone)
+    use_browser (ctx, "The login page stopped working here. Log in in your web browser "
+                      "instead:");
+}
+
+static GtkWidget *
+make_web_view (LoginCtx *ctx)
+{
+  WebKitNetworkSession *session = webkit_network_session_new_ephemeral ();
+  GtkWidget *view = g_object_new (WEBKIT_TYPE_WEB_VIEW, "network-session", session, NULL);
+  g_object_unref (session);
+  gtk_widget_set_vexpand (view, TRUE);
+  gtk_widget_set_hexpand (view, TRUE);
+  gtk_accessible_update_property (GTK_ACCESSIBLE (view), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                  "GOG login page", -1);
+  g_signal_connect (view, "decide-policy", G_CALLBACK (on_decide_policy), ctx);
+  g_signal_connect (view, "load-failed", G_CALLBACK (on_load_failed), ctx);
+  g_signal_connect (view, "web-process-terminated", G_CALLBACK (on_web_process_terminated), ctx);
+  return view;
+}
+#endif
+
+/* lgogdownloader gave GOG's login page: show it. */
+static void
+show_login_page (LoginCtx *ctx)
+{
+#ifdef HAVE_WEBKIT
+  if (ctx->web_view && g_strcmp0 (gtk_stack_get_visible_child_name (ctx->ways), "web") == 0)
+    {
+      webkit_web_view_load_uri (WEBKIT_WEB_VIEW (ctx->web_view), ctx->login_url);
+      set_status (ctx, "Log in to GOG on the page above.", FALSE);
+      gtk_widget_grab_focus (ctx->web_view);
+      return;
+    }
+#endif
+  gtk_widget_set_sensitive (ctx->open_button, TRUE);
+  set_status (ctx, "Ready. Open GOG's login page to begin.", FALSE);
+  gtk_widget_grab_focus (ctx->open_button);
 }
 
 static void
@@ -300,7 +447,12 @@ gog_show_login_dialog (GtkWindow *parent, GogLoginDoneFunc on_done, gpointer use
   ctx->on_done = on_done;
   ctx->user_data = user_data;
   ctx->cancellable = g_cancellable_new ();
+  /* Room for GOG's page when it's shown in here. */
+#ifdef HAVE_WEBKIT
+  ctx->window = gog_dialog_window_new (parent, "Log In to GOG", 760, 820, 360, 420);
+#else
   ctx->window = gog_dialog_window_new (parent, "Log In to GOG", 560, 440, 360, 320);
+#endif
   g_signal_connect (ctx->window, "destroy", G_CALLBACK (on_destroy), ctx);
 
   GtkWidget *view = adw_toolbar_view_new ();
@@ -313,24 +465,31 @@ gog_show_login_dialog (GtkWindow *parent, GogLoginDoneFunc on_done, gpointer use
 
   GtkWidget *intro = gtk_label_new (
       "GOG Manager downloads your games with lgogdownloader, which needs to be logged in to "
-      "your GOG account once. You log in on GOG's own page in your web browser; GOG Manager "
-      "never sees your password.");
+      "your GOG account once. You log in on GOG's own login page; GOG Manager never sees your "
+      "password.");
   gtk_label_set_wrap (GTK_LABEL (intro), TRUE);
   gtk_label_set_xalign (GTK_LABEL (intro), 0.0);
   gtk_box_append (GTK_BOX (box), intro);
 
-  GtkWidget *step1 = gtk_label_new ("1. Open GOG's login page and log in there.");
+  ctx->ways = GTK_STACK (gtk_stack_new ());
+  gtk_widget_set_vexpand (GTK_WIDGET (ctx->ways), TRUE);
+  gtk_box_append (GTK_BOX (box), GTK_WIDGET (ctx->ways));
+
+  /* The copy-and-paste way. */
+  GtkWidget *browser = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
+  GtkWidget *step1 = gtk_label_new ("1. Open GOG's login page in your web browser and log in "
+                                    "there.");
   gtk_label_set_wrap (GTK_LABEL (step1), TRUE);
   gtk_label_set_xalign (GTK_LABEL (step1), 0.0);
   gtk_widget_add_css_class (step1, "heading");
-  gtk_box_append (GTK_BOX (box), step1);
+  gtk_box_append (GTK_BOX (browser), step1);
   ctx->open_button = gtk_button_new_with_label ("Open GOG Login Page");
   gtk_widget_add_css_class (ctx->open_button, "pill");
   gtk_widget_add_css_class (ctx->open_button, "suggested-action");
   gtk_widget_set_halign (ctx->open_button, GTK_ALIGN_START);
   gtk_widget_set_sensitive (ctx->open_button, FALSE);
   g_signal_connect (ctx->open_button, "clicked", G_CALLBACK (on_open_clicked), ctx);
-  gtk_box_append (GTK_BOX (box), ctx->open_button);
+  gtk_box_append (GTK_BOX (browser), ctx->open_button);
 
   GtkWidget *step2 = gtk_label_new (
       "2. When GOG is done, the browser shows a page whose address starts with "
@@ -339,31 +498,50 @@ gog_show_login_dialog (GtkWindow *parent, GogLoginDoneFunc on_done, gpointer use
   gtk_label_set_wrap (GTK_LABEL (step2), TRUE);
   gtk_label_set_xalign (GTK_LABEL (step2), 0.0);
   gtk_widget_add_css_class (step2, "heading");
-  gtk_box_append (GTK_BOX (box), step2);
+  gtk_box_append (GTK_BOX (browser), step2);
   ctx->entry = gtk_entry_new ();
   gtk_entry_set_placeholder_text (GTK_ENTRY (ctx->entry), SUCCESS_PREFIX "?…&code=…");
   gtk_accessible_update_property (GTK_ACCESSIBLE (ctx->entry), GTK_ACCESSIBLE_PROPERTY_LABEL,
                                   "Address of the page GOG ends the login on", -1);
   g_signal_connect (ctx->entry, "changed", G_CALLBACK (on_entry_changed), ctx);
   g_signal_connect (ctx->entry, "activate", G_CALLBACK (on_login_clicked), ctx);
-  gtk_box_append (GTK_BOX (box), ctx->entry);
+  gtk_box_append (GTK_BOX (browser), ctx->entry);
+  gtk_stack_add_named (ctx->ways, browser, "browser");
+
+#ifdef HAVE_WEBKIT
+  /* GOG's page right here, when WebKit is there: nothing to copy. */
+  ctx->web_view = make_web_view (ctx);
+  GtkWidget *frame = gtk_frame_new (NULL);
+  gtk_frame_set_child (GTK_FRAME (frame), ctx->web_view);
+  gtk_stack_add_named (ctx->ways, frame, "web");
+  gtk_stack_set_visible_child_name (ctx->ways, "web");
+#endif
 
   ctx->status = GTK_LABEL (gtk_label_new ("Starting lgogdownloader…"));
   gtk_label_set_wrap (ctx->status, TRUE);
   gtk_label_set_xalign (ctx->status, 0.0);
   gtk_widget_add_css_class (GTK_WIDGET (ctx->status), "dim-label");
-  gtk_widget_set_vexpand (GTK_WIDGET (ctx->status), TRUE);
-  gtk_widget_set_valign (GTK_WIDGET (ctx->status), GTK_ALIGN_START);
   gtk_box_append (GTK_BOX (box), GTK_WIDGET (ctx->status));
 
   GtkWidget *buttons = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
-  gtk_widget_set_halign (buttons, GTK_ALIGN_END);
+  ctx->browser_button = gtk_button_new_with_label ("Use My Web Browser Instead");
+  gtk_widget_add_css_class (ctx->browser_button, "flat");
+  gtk_widget_set_tooltip_text (ctx->browser_button,
+                               "Log in on GOG's page in your own web browser, and paste the "
+                               "address it ends on");
+  gtk_widget_set_hexpand (ctx->browser_button, TRUE);
+  gtk_widget_set_halign (ctx->browser_button, GTK_ALIGN_START);
+  gtk_widget_set_visible (ctx->browser_button, ctx->web_view != NULL);
+  g_signal_connect (ctx->browser_button, "clicked", G_CALLBACK (on_browser_clicked), ctx);
   ctx->close_button = gtk_button_new_with_label ("Cancel");
   g_signal_connect (ctx->close_button, "clicked", G_CALLBACK (on_close_clicked), ctx);
   ctx->login_button = gtk_button_new_with_label ("Log In");
   gtk_widget_add_css_class (ctx->login_button, "suggested-action");
   gtk_widget_set_sensitive (ctx->login_button, FALSE);
+  /* Only the copy-and-paste way has an address to send. */
+  gtk_widget_set_visible (ctx->login_button, ctx->web_view == NULL);
   g_signal_connect (ctx->login_button, "clicked", G_CALLBACK (on_login_clicked), ctx);
+  gtk_box_append (GTK_BOX (buttons), ctx->browser_button);
   gtk_box_append (GTK_BOX (buttons), ctx->close_button);
   gtk_box_append (GTK_BOX (buttons), ctx->login_button);
   gtk_box_append (GTK_BOX (box), buttons);

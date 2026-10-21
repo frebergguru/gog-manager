@@ -12,6 +12,12 @@ gtk_dep = dependency('gtk4', version : '>= 4.10')
 adw_dep = dependency('libadwaita-1', version : '>= 1.6')
 gio_dep = dependency('gio-2.0')
 json_dep = dependency('json-c')
+# Optional: GOG's login page inside GOG Manager (see src/ui/login_dialog.c).
+# Without it, the login opens in the web browser and the address is pasted.
+webkit_dep = dependency('webkitgtk-6.0', required : get_option('webkit'))
+if webkit_dep.found()
+  add_project_arguments('-DHAVE_WEBKIT', language : 'c')
+endif
 
 add_project_arguments('-DGOG_MANAGER_VERSION="@0@"'.format(meson.project_version()),
   language : 'c')
@@ -58,7 +64,7 @@ ui_sources = [
 
 executable('gog-manager',
   ['src/main.c'] + common_sources + ui_sources + resources,
-  dependencies : [gtk_dep, adw_dep, gio_dep, json_dep],
+  dependencies : [gtk_dep, adw_dep, gio_dep, json_dep, webkit_dep],
   install : true,
 )
 

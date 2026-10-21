@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Hypnotize
+
+option('webkit', type : 'feature', value : 'auto',
+  description : 'Show GOG\'s login page inside GOG Manager (WebKitGTK 6.0)')

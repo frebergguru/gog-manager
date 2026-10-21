@@ -1385,6 +1385,8 @@ run_streaming (GogSyncJob *job, gchar **plain_argv, LineFunc on_line, gpointer d
                                                              G_SUBPROCESS_FLAGS_STDERR_MERGE);
   /* Plain output: no colours or progress escapes beyond what we strip. */
   g_subprocess_launcher_setenv (launcher, "TERM", "dumb", TRUE);
+  if (gog_config_launch_dir ())
+    g_subprocess_launcher_set_cwd (launcher, gog_config_launch_dir ());
   GSubprocess *proc = g_subprocess_launcher_spawnv (launcher, (const gchar *const *) argv, error);
   g_object_unref (launcher);
   if (!proc)

@@ -105,6 +105,8 @@ your GOG login.
 - [Meson](https://mesonbuild.com/) and [Ninja](https://ninja-build.org/)
 - GTK 4 ≥ 4.10 (`gtk4`), libadwaita ≥ 1.6 (`libadwaita-1`), GLib/GIO (`gio-2.0`),
   and [json-c](https://github.com/json-c/json-c) — with their development headers
+- Optional: WebKitGTK 6.0 (`webkitgtk-6.0`), to show GOG's login page inside
+  GOG Manager (`-Dwebkit=enabled` to require it; the AppImage always has it)
 
 **At runtime**
 
@@ -197,10 +199,16 @@ Check that it runs: `lgogdownloader --version`.
 ### 2. Log in
 
 **In GOG Manager:** open **New Games and Updates on GOG** (the update button in
-the header bar) and press **Log In to GOG…**. It opens GOG's login page in your
-web browser; log in there, then copy the address of the page the browser ends
-on (it starts with `https://embed.gog.com/on_login_success`) and paste it into
-GOG Manager. That's all, and GOG Manager never sees your password.
+the header bar) and press **Log In to GOG…**. GOG's login page opens right
+there; log in as on GOG's website (e-mail and password, or Google, Steam,
+Discord or Xbox), and GOG Manager finishes the login by itself. GOG Manager
+never sees your password, and the page keeps nothing once it is closed
+(lgogdownloader keeps the login).
+
+Built from source without WebKitGTK 6.0, or with **Use My Web Browser
+Instead**, the page opens in your web browser instead; then copy the address
+of the page it ends on (it starts with `https://embed.gog.com/on_login_success`)
+and paste it into GOG Manager.
 
 **Or in a terminal**, once:
 

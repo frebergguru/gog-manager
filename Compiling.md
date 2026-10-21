@@ -20,6 +20,7 @@ dependencies, compiling, running, and installing.
 | **GLib / GIO** (`gio-2.0`) | Core object system, async I/O |
 | **json-c** | Parsing GOG `.info` manifests and config files |
 | `glib-compile-resources` | Bundles CSS/icons (ships with GLib) |
+| *Optional:* **WebKitGTK 6.0** (`webkitgtk-6.0`) | GOG's login page inside GOG Manager; without it the login opens in the web browser. `-Dwebkit=enabled` requires it, `-Dwebkit=disabled` leaves it out |
 
 ### Runtime (optional, feature-dependent)
 
@@ -39,7 +40,7 @@ dependencies, compiling, running, and installing.
 
 ```sh
 sudo pacman -S --needed base-devel meson ninja pkgconf \
-    gtk4 libadwaita json-c
+    gtk4 libadwaita json-c webkitgtk-6.0
 ```
 
 ### Debian / Ubuntu
@@ -49,14 +50,14 @@ are too old; Ubuntu 25.04 or Debian 13 work.
 
 ```sh
 sudo apt install build-essential meson ninja-build pkg-config \
-    libgtk-4-dev libadwaita-1-dev libjson-c-dev
+    libgtk-4-dev libadwaita-1-dev libjson-c-dev libwebkitgtk-6.0-dev
 ```
 
 ### Fedora
 
 ```sh
 sudo dnf install gcc meson ninja-build pkgconf-pkg-config \
-    gtk4-devel libadwaita-devel json-c-devel
+    gtk4-devel libadwaita-devel json-c-devel webkitgtk6.0-devel
 ```
 
 Runtime helpers, if you want the Windows-game and GE-Proton features:
@@ -200,14 +201,28 @@ driver and optional external helpers (wine, curl, tar) are taken from the host.
    That variable loads GTK's own Adwaita theme over libadwaita's stylesheet
    and drops its padding and spacing; libadwaita follows the desktop's dark or
    light setting by itself. (So `APPIMAGE_GTK_THEME` has no effect either.)
-4. Runs `linuxdeploy --plugin gtk --output appimage` to bundle everything.
-5. Runs `packaging/check-stripped.sh` on the AppDir and the finished AppImage,
+4. Builds lgogdownloader from its newest release (the tag is looked up with
+   `git ls-remote` at most once a day and kept in
+   `.appimage-tools/lgogdownloader-latest`; set `LGOG_TAG` to pick one) and
+   installs it, stripped, into the AppDir.
+5. Copies WebKitGTK's helper programs (web, network and GPU processes, the
+   injected bundle) into the AppDir, and adds an AppRun hook that starts GOG
+   Manager in `$APPDIR/usr` (keeping the folder it was started from in
+   `GOG_MANAGER_LAUNCH_DIR`) with WebKit's sandbox off.
+6. Runs `linuxdeploy --plugin gtk` to bundle the libraries of GOG Manager,
+   lgogdownloader and WebKit's helpers, then rewrites the helpers' path in the
+   bundled `libwebkitgtk-6.0.so` to a relative one of the same length
+   (`/usr/lib/webkitgtk-6.0` → `././/lib/webkitgtk-6.0`), and packs the
+   AppDir with `appimagetool`.
+7. Runs `packaging/check-stripped.sh` on the AppDir and the finished AppImage,
    and deletes the AppImage and fails if any binary or bundled library still
    has symbols or debug info.
 
-Build-machine requirements: the normal build dependencies (section 2), plus
-`python3` (for the strip check), `patchelf` (downloaded if missing), and
-`wget` or `curl` for the one-time tool download. FUSE is **not** required — the
+Build-machine requirements: the normal build dependencies (section 2) with
+WebKitGTK 6.0, lgogdownloader's build dependencies (CMake, Boost, jsoncpp,
+RHash, tinyxml2, tidy, libcurl, zlib; see its README), plus `git`, `python3`
+(for the strip check and the WebKit patch), `patchelf` (downloaded if
+missing), and `wget` or `curl` for the tool downloads. FUSE is **not** required — the
 script runs the tools in extract-and-run mode.
 
 Set `ARCH` to target a different architecture (default `x86_64`). Delete

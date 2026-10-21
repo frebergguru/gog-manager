@@ -79,10 +79,18 @@ All notable changes to GOG Manager are listed here. The format follows
   system's CA certificates are; built from source, it uses the one on
   `PATH` as before.
 - **Log In to GOG…** in the download window logs lgogdownloader in without
-  a terminal: it opens GOG's login page in the web browser (lgogdownloader's
-  `--browser-login`), and you paste back the address the browser ends on.
-  GOG Manager never sees the password. A check that fails because of the
-  login points to the button.
+  a terminal: GOG's login page opens inside GOG Manager (WebKitGTK), and
+  once GOG is done the login finishes by itself, with nothing to copy
+  (lgogdownloader's `--browser-login`). The page loads only https, keeps
+  nothing afterwards, and GOG Manager never sees the password. Without
+  WebKit, or with "Use My Web Browser Instead", the page opens in the web
+  browser and the address it ends on is pasted. A check that fails because
+  of the login points to the button.
+- The AppImage bundles WebKitGTK for that (it grows from about 46 to 105
+  MB). Its helper programs' path is made relative and the AppImage starts
+  GOG Manager in its own folder; the folder it was started from still sets
+  the library and where the programs GOG Manager runs start. WebKit's
+  sandbox is off in the AppImage, as it can't reach the AppImage's files.
 - "Include patches" in the download settings (off by default): checks,
   downloads and file checks then leave out `--exclude patches`, and a game
   lists its patches as a part of their own next to Game, DLC and Extras.

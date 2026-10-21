@@ -2,6 +2,7 @@
  * Copyright (C) 2026 Hypnotize
  */
 
+#include "config.h"
 #include "fetch.h"
 #include <glib/gstdio.h>
 #include <string.h>
@@ -38,7 +39,8 @@ gog_fetch_files (const char *const *urls, const char *const *dests, guint n, int
 
   gchar *out = NULL;
   gchar *err = NULL;
-  gboolean ok = g_spawn_sync (NULL, (gchar **) argv->pdata, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL,
+  gboolean ok = g_spawn_sync (gog_config_launch_dir (), (gchar **) argv->pdata, NULL,
+                              G_SPAWN_SEARCH_PATH, NULL, NULL,
                               &out, &err, NULL, error);
   g_ptr_array_unref (argv);
 

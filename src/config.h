@@ -30,6 +30,13 @@ GogConfig *gog_config_load (void);
  * AppImage's folder (or the executable's), which is created if needed.
  * Transfer full. */
 gchar *gog_config_app_file (const char *name);
+
+/* The folder GOG Manager was started from. The AppImage starts it in its
+ * own usr folder (WebKit finds its helpers from there) and passes the
+ * original in GOG_MANAGER_LAUNCH_DIR; programs GOG Manager runs get that
+ * one, as they would without the AppImage. NULL when not set: then the
+ * current folder is it. */
+const char *gog_config_launch_dir (void);
 gboolean   gog_config_save (GogConfig *config, GError **error);
 void       gog_config_free (GogConfig *config);
 

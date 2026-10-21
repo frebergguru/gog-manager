@@ -11,7 +11,8 @@
 # it into your GOG/Games folder, `chmod +x` it, and run.
 #
 # It also bundles lgogdownloader, built from the newest release on GitHub each
-# time this runs, so GOG checks and downloads work without installing it.
+# time this runs, so GOG checks and downloads work without installing it, and
+# WebKitGTK, which shows GOG's login page inside GOG Manager.
 #
 # It does NOT bundle the GPU driver (Vulkan/OpenGL is always taken from the host
 # system) or optional external helpers (wine, curl, tar) — those must exist on
@@ -29,6 +30,7 @@
 #     RHash, tinyxml2, tidy, libcurl, zlib); see
 #     https://github.com/Sude-/lgogdownloader#build-dependencies
 #     Set LGOG_TAG=v3.19 (say) to build a given release instead of the newest.
+#   - WebKitGTK 6.0 (webkitgtk-6.0), for the login page inside GOG Manager
 #   - FUSE is NOT required; the script runs the tools in extract-and-run mode.
 #
 set -euo pipefail
@@ -69,10 +71,13 @@ fetch() {
 # --- 1. Compile and stage into AppDir ------------------------------------------
 
 log "Configuring release build"
+# A release always has the login page inside GOG Manager: no WebKit, no build.
+# Wiped, not reconfigured: an option added since the folder was made (like
+# webkit) would be refused. The app builds in seconds.
 if [ -d "$BUILD_DIR" ]; then
-  meson setup "$BUILD_DIR" --reconfigure --buildtype=release --prefix=/usr
+  meson setup "$BUILD_DIR" --wipe --buildtype=release --prefix=/usr -Dwebkit=enabled
 else
-  meson setup "$BUILD_DIR" --buildtype=release --prefix=/usr
+  meson setup "$BUILD_DIR" --buildtype=release --prefix=/usr -Dwebkit=enabled
 fi
 
 log "Compiling"
@@ -122,6 +127,47 @@ cmake --build "$LGOG_SRC/build"
 DESTDIR="$APPDIR" cmake --install "$LGOG_SRC/build" --strip
 # Its licence (WTFPL) travels with it.
 install -Dm644 "$LGOG_SRC/COPYING" "$APPDIR/usr/share/doc/lgogdownloader/COPYING"
+
+# --- 1c. WebKitGTK's helper programs ------------------------------------------
+#
+# libwebkitgtk starts its web, network and GPU processes from a folder whose
+# path is written into the library (/usr/lib/webkitgtk-6.0). Inside an AppImage
+# that folder is somewhere under a /tmp mount, so the path is made relative
+# ("/usr" -> "././", the same length, as Tauri's AppImages do) and the AppRun
+# hook below starts GOG Manager in $APPDIR/usr, where it then points.
+
+WEBKIT_LIBDIR="$(pkg-config --variable=libdir webkitgtk-6.0)"
+WEBKIT_HELPERS="$WEBKIT_LIBDIR/webkitgtk-6.0"
+case "$WEBKIT_HELPERS" in
+  /usr/*) ;;
+  *) echo "error: WebKitGTK's helpers are not under /usr ($WEBKIT_HELPERS)" >&2; exit 1 ;;
+esac
+APPDIR_HELPERS="$APPDIR$WEBKIT_HELPERS"
+log "Copying WebKitGTK's helper programs"
+mkdir -p "$APPDIR_HELPERS/injected-bundle"
+for helper in WebKitWebProcess WebKitNetworkProcess WebKitGPUProcess; do
+  [ -x "$WEBKIT_HELPERS/$helper" ] && install -m755 "$WEBKIT_HELPERS/$helper" "$APPDIR_HELPERS/"
+done
+install -m644 "$WEBKIT_HELPERS"/injected-bundle/*.so "$APPDIR_HELPERS/injected-bundle/"
+for licence in /usr/share/licenses/webkitgtk-6.0/LICENSE /usr/share/doc/libwebkitgtk-6.0-4/copyright; do
+  if [ -f "$licence" ]; then
+    install -Dm644 "$licence" "$APPDIR/usr/share/doc/webkitgtk-6.0/$(basename "$licence")"
+    break
+  fi
+done
+
+# Started in $APPDIR/usr (see above); the folder it was started from goes on
+# in GOG_MANAGER_LAUNCH_DIR, for the library and the programs GOG Manager runs.
+# WebKit's sandbox (bubblewrap) can't reach the helpers inside the AppImage's
+# mount; the login view only loads https pages, for GOG's login, and keeps
+# nothing afterwards.
+mkdir -p "$APPDIR/apprun-hooks"
+cat > "$APPDIR/apprun-hooks/gog-manager-webkit.sh" <<'HOOK'
+export GOG_MANAGER_LAUNCH_DIR="${GOG_MANAGER_LAUNCH_DIR:-$PWD}"
+# APPDIR is the AppImage runtime's; an extracted AppDir has AppRun's folder.
+cd "${APPDIR:-$this_dir}/usr" || exit 1
+export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
+HOOK
 
 # --- 2. Fetch packaging tools --------------------------------------------------
 
@@ -174,14 +220,41 @@ export OUTPUT="gog-manager-$ARCH.AppImage"
 
 # --- 3. Bundle -----------------------------------------------------------------
 
-log "Bundling dependencies and building AppImage"
+log "Bundling dependencies"
 "$LD" \
   --appdir "$APPDIR" \
   --plugin gtk \
   --executable "$APPDIR/usr/bin/lgogdownloader" \
+  --deploy-deps-only "$APPDIR_HELPERS" \
+  --deploy-deps-only "$APPDIR_HELPERS/injected-bundle" \
   --desktop-file "$APPDIR/usr/share/applications/$DESKTOP_ID.desktop" \
-  --icon-file "$APPDIR/usr/share/icons/hicolor/scalable/apps/$DESKTOP_ID.svg" \
-  --output appimage
+  --icon-file "$APPDIR/usr/share/icons/hicolor/scalable/apps/$DESKTOP_ID.svg"
+
+# The helpers' path in the bundled library, made relative (see 1c). Same
+# length, so nothing else in the file moves.
+log "Pointing the bundled WebKitGTK at its helpers"
+python3 - "$APPDIR$WEBKIT_LIBDIR"/libwebkitgtk-6.0.so.* "$WEBKIT_HELPERS" <<'PATCH'
+import os, sys
+*libs, helpers = sys.argv[1:]
+old = helpers.encode()
+new = ("././" + helpers[len("/usr"):]).encode()
+assert len(old) == len(new)
+patched = 0
+for lib in libs:
+    if os.path.islink(lib):
+        continue
+    data = open(lib, "rb").read()
+    count = data.count(old)
+    if count:
+        open(lib, "wb").write(data.replace(old, new))
+        patched += count
+        print(f"{lib}: {count} path(s) made relative")
+if not patched:
+    sys.exit(f"error: {helpers} not found in {libs}")
+PATCH
+
+log "Building the AppImage"
+"$AT" "$APPDIR" "$OUTPUT"
 
 # --- 4. Refuse to release anything unstripped ---------------------------------
 #
