@@ -159,7 +159,8 @@ test_compare (void)
   /* GOG's time, given to a file fetched or sent: the same, within a
    * second or two. */
   g_assert_cmpint (gog_cloud_compare (1001, 5, NULL, 1000, 5, NULL), ==, GOG_CLOUD_IN_SYNC);
-  g_assert_cmpint (gog_cloud_compare (1000, 7, "aa", 1000, 5, "bb"), ==, GOG_CLOUD_NEWER_HERE);
+  /* GOG's copy is gzipped: another size and checksum, the same save. */
+  g_assert_cmpint (gog_cloud_compare (1000, 2319, "aa", 1000, 1828, "bb"), ==, GOG_CLOUD_IN_SYNC);
 }
 
 int

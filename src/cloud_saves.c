@@ -520,15 +520,16 @@ gog_cloud_compare (gint64 local_mtime, guint64 local_size, const char *local_md5
 {
   if (local_md5 && cloud_hash && g_ascii_strcasecmp (local_md5, cloud_hash) == 0)
     return GOG_CLOUD_IN_SYNC;
+  /* GOG keeps Galaxy's saves gzipped, so its size and checksum are of the
+   * packed file: only the time tells. A file fetched or sent gets GOG's. */
+  (void) local_size;
+  (void) cloud_size;
   gint64 diff = local_mtime - cloud_mtime;
   if (diff > SAME_TIME)
     return GOG_CLOUD_NEWER_HERE;
   if (diff < -SAME_TIME)
     return GOG_CLOUD_NEWER_ON_GOG;
-  /* At the same time (a file fetched or sent before, which then gets GOG's
-   * time): the same unless its size says otherwise, when it is the one
-   * here that changed. */
-  return local_size == cloud_size || !cloud_hash ? GOG_CLOUD_IN_SYNC : GOG_CLOUD_NEWER_HERE;
+  return GOG_CLOUD_IN_SYNC;
 }
 
 /* ---- connecting ---- */
@@ -966,6 +967,22 @@ gog_cloud_download (GogCloudSession *session, GPtrArray *files, const char *back
   return TRUE;
 }
 
+static GBytes *
+gzip_bytes (const gchar *data, gsize len)
+{
+  GZlibCompressor *z = g_zlib_compressor_new (G_ZLIB_COMPRESSOR_FORMAT_GZIP, -1);
+  GInputStream *raw = g_memory_input_stream_new_from_data (data, len, NULL);
+  GInputStream *in = g_converter_input_stream_new (raw, G_CONVERTER (z));
+  GOutputStream *mem = g_memory_output_stream_new_resizable ();
+  g_output_stream_splice (mem, in, G_OUTPUT_STREAM_SPLICE_CLOSE_TARGET, NULL, NULL);
+  GBytes *packed = g_memory_output_stream_steal_as_bytes (G_MEMORY_OUTPUT_STREAM (mem));
+  g_object_unref (mem);
+  g_object_unref (in);
+  g_object_unref (raw);
+  g_object_unref (z);
+  return packed;
+}
+
 gboolean
 gog_cloud_upload (GogCloudSession *session, GPtrArray *files, GogCloudProgress progress,
                   gpointer user_data, GCancellable *cancellable, GError **error)
@@ -991,17 +1008,23 @@ gog_cloud_upload (GogCloudSession *session, GPtrArray *files, GogCloudProgress p
           ok = FALSE;
           break;
         }
-      gchar *md5 = g_compute_checksum_for_data (G_CHECKSUM_MD5, (const guchar *) data, len);
+      /* Gzipped, as GOG Galaxy sends them, which unpacks them by the
+       * Content-Encoding when it fetches them. */
+      GBytes *packed = gzip_bytes (data, len);
+      gsize packed_len = 0;
+      const guint8 *packed_data = g_bytes_get_data (packed, &packed_len);
+      gchar *md5 = g_compute_checksum_for_data (G_CHECKSUM_MD5, packed_data, packed_len);
       GDateTime *mtime = g_date_time_new_from_unix_utc (st.st_mtime);
       gchar *when = g_date_time_format (mtime, "%Y-%m-%dT%H:%M:%S+00:00");
       g_date_time_unref (mtime);
       gchar *etag = g_strdup_printf ("Etag: %s", md5);
       gchar *modified = g_strdup_printf ("X-Object-Meta-LocalLastModified: %s", when);
-      const char *headers[] = { "Content-Type: application/octet-stream", etag, modified, NULL };
+      const char *headers[] = { "Content-Type: application/octet-stream", "Content-Encoding: gzip",
+                                etag, modified, NULL };
       gchar *url = file_url (session, file->name);
       long code = 0;
-      ok = http ("PUT", url, session->token, headers, (const guint8 *) data, len, NULL, NULL,
-                 &code, cancellable, error);
+      ok = http ("PUT", url, session->token, headers, packed_data, packed_len, NULL, NULL, &code,
+                 cancellable, error);
       if (ok && (code < 200 || code >= 300))
         {
           ok = FALSE;
@@ -1021,6 +1044,7 @@ gog_cloud_upload (GogCloudSession *session, GPtrArray *files, GogCloudProgress p
       g_free (etag);
       g_free (when);
       g_free (md5);
+      g_bytes_unref (packed);
       g_free (data);
     }
 

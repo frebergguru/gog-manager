@@ -86,7 +86,7 @@ gboolean gog_cloud_download (GogCloudSession *session, GPtrArray *files, const c
                              GogCloudProgress progress, gpointer user_data,
                              GCancellable *cancellable, GError **error);
 
-/* Sends files to GOG. Afterwards each sent file here gets the time GOG gave
+/* Sends files to GOG, gzipped like GOG Galaxy's. Afterwards each sent file here gets the time GOG gave
  * it, so that the two compare as the same. */
 gboolean gog_cloud_upload (GogCloudSession *session, GPtrArray *files, GogCloudProgress progress,
                            gpointer user_data, GCancellable *cancellable, GError **error);
@@ -125,7 +125,8 @@ GPtrArray *gog_cloud_parse_listing (const char *json);
  * parts, not absolute. */
 gboolean gog_cloud_name_is_safe (const char *name);
 
-/* The state of a save known on both sides. local_md5 may be NULL. */
+/* The state of a save known on both sides: the same when the checksums
+ * match (a file sent unpacked), else by time. local_md5 may be NULL. */
 GogCloudState gog_cloud_compare (gint64 local_mtime, guint64 local_size, const char *local_md5,
                                  gint64 cloud_mtime, guint64 cloud_size, const char *cloud_hash);
 
