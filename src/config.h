@@ -63,6 +63,11 @@ void      gog_state_free (GogState *state);
  * scanned) game object. */
 void gog_state_apply_to_game (GogState *state, GogGame *game);
 
+/* Adds a play session to game's history and sets it on game: started
+ * (unix time) becomes its last played time if later, and seconds are
+ * added to its play time (0 while it is still running). Save afterwards. */
+void gog_state_record_play (GogState *state, GogGame *game, gint64 started, gint64 seconds);
+
 /* Records game's current install state (as set via the gog_game_set_*
  * mutators) into state, ready for gog_state_save(). */
 void gog_state_update_from_game (GogState *state, GogGame *game);

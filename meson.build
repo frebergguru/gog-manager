@@ -12,6 +12,7 @@ gtk_dep = dependency('gtk4', version : '>= 4.10')
 adw_dep = dependency('libadwaita-1', version : '>= 1.6')
 gio_dep = dependency('gio-2.0')
 json_dep = dependency('json-c')
+m_dep = meson.get_compiler('c').find_library('m', required : false)
 # Optional: GOG's login page inside GOG Manager (see src/ui/login_dialog.c).
 # Without it, the login opens in the web browser and the address is pasted.
 webkit_dep = dependency('webkitgtk-6.0', required : get_option('webkit'))
@@ -47,6 +48,7 @@ common_sources = [
   'src/installer_engine.c',
   'src/launch.c',
   'src/shortcut.c',
+  'src/recommend.c',
 ]
 
 ui_sources = [
@@ -60,12 +62,13 @@ ui_sources = [
   'src/ui/dialog_window.c',
   'src/ui/repair_dialog.c',
   'src/ui/cloud_saves_dialog.c',
+  'src/ui/for_you.c',
   'src/ui/login_dialog.c',
 ]
 
 executable('gog-manager',
   ['src/main.c'] + common_sources + ui_sources + resources,
-  dependencies : [gtk_dep, adw_dep, gio_dep, json_dep, webkit_dep],
+  dependencies : [gtk_dep, adw_dep, gio_dep, json_dep, webkit_dep, m_dep],
   install : true,
 )
 
@@ -80,10 +83,11 @@ install_data('LICENSE', 'LICENSES/LGPL-3.0-only.txt',
 install_data('packaging/org.gogmanager.app.svg',
   install_dir : get_option('datadir') / 'icons' / 'hicolor' / 'scalable' / 'apps')
 
-test_deps = [gtk_dep, adw_dep, gio_dep, json_dep]
+test_deps = [gtk_dep, adw_dep, gio_dep, json_dep, m_dep]
 test_support_sources = ['src/json_util.c', 'src/text_util.c', 'src/runner.c', 'src/proton_fetch.c',
                          'src/gog_sync.c', 'src/original_language.c', 'src/categories.c',
-                         'src/gamesdb.c', 'src/fetch.c', 'src/config.c', 'src/game.c']
+                         'src/gamesdb.c', 'src/fetch.c', 'src/config.c', 'src/game.c',
+                         'src/recommend.c']
 
 test_json_exe = executable('test-json-util',
   ['tests/test_json_util.c'] + test_support_sources,
@@ -126,3 +130,9 @@ test_shortcut_exe = executable('test-shortcut',
   dependencies : test_deps,
 )
 test('shortcut', test_shortcut_exe)
+
+test_recommend_exe = executable('test-recommend',
+  ['tests/test_recommend.c'] + test_support_sources,
+  dependencies : test_deps,
+)
+test('recommend', test_recommend_exe)

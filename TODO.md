@@ -2,10 +2,12 @@
 
 ## Recommendations (owned games only)
 
-- [ ] **Play history**: record last played and total play time on each
-      launch (in `gog-manager-state.json`). Show it on the game page, add
-      "sort by last played" and a "continue playing" row.
-- [ ] **"Recommended for you"**: suggest owned games that are not installed,
+- [x] **Play history**: last played and total play time of games started
+      with Play (in `gog-manager-state.json`, apart from the install record
+      so it survives an uninstall). On the game page, "Last played" sort,
+      and Continue Playing on the For You page.
+  - [ ] Count games started from `play.sh` and menu entries too.
+- [x] **"Recommended for you"**: suggest owned games that are not installed,
       ranked by how much they overlap with the installed games (and, once
       play history exists, weighted towards what is played most and most
       recently). Never games the user doesn't own: no store catalog or GOG
@@ -18,8 +20,10 @@
       - Give each suggestion its reason as text, e.g. "Shares RPG, Fantasy
         with 3 of your installed games" — not only colour or ranking.
       - Keyboard and screen reader reachable like the rest of the library.
-- [ ] Maybe later: "what to play next" among installed games that haven't
-      been played (or not for a long time), using the same scoring.
+      - Done as the For You page (the star button); features are left out
+        of the scoring (achievements, cloud saves say nothing about a game).
+- [x] "What to play next" among installed games that haven't been played
+      (or not for two months), using the same scoring.
 
 ## GOG API
 

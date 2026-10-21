@@ -4,6 +4,8 @@
 
 #include "main_window.h"
 #include "game_detail.h"
+#include "for_you.h"
+#include "../launch.h"
 #include "preferences_dialog.h"
 #include "../library.h"
 #include "../config.h"
@@ -33,6 +35,8 @@ struct _GogMainWindow
   AdwOverlaySplitView *split_view;
   AdwNavigationView *nav_view;
   GogGameDetail *detail;
+  GogForYou *for_you;
+  gboolean for_you_stale; /* games changed since it was filled */
   GtkButton *back_button; /* header-bar "back to library" button; hidden on the library page */
 
   GtkFilterListModel *filter_model;
@@ -483,6 +487,14 @@ sort_func (gconstpointer a, gconstpointer b, gpointer user_data)
           return ra < rb ? -1 : 1;
         return g_utf8_collate (gog_game_get_title (ga), gog_game_get_title (gb));
       }
+    case 11: /* Last played first; never played after, by title */
+      {
+        gint64 la = gog_game_get_last_played (ga);
+        gint64 lb = gog_game_get_last_played (gb);
+        if (la != lb)
+          return la > lb ? -1 : 1;
+        return g_utf8_collate (gog_game_get_title (ga), gog_game_get_title (gb));
+      }
     case 10: /* Developer */
       {
         gint by_developer = compare_gamesdb_text (first_developer (ga), first_developer (gb));
@@ -548,6 +560,7 @@ on_detail_changed (GogGameDetail *detail, gpointer user_data)
 {
   (void) detail;
   GogMainWindow *self = user_data;
+  self->for_you_stale = TRUE;
   on_filters_changed (NULL, self);
   on_sort_changed (NULL, self);
 }
@@ -1932,6 +1945,7 @@ on_scan_done (GObject *source, GAsyncResult *res, gpointer user_data)
   add_not_downloaded (self);
   n = g_list_model_get_n_items (gog_library_get_model (self->library));
   rebuild_dlc_counts (self);
+  self->for_you_stale = TRUE;
   on_filters_changed (NULL, self); /* the DLC filter needs the new counts */
 
   if (n == 0)
@@ -2162,6 +2176,27 @@ on_back_clicked (GtkButton *button, gpointer user_data)
   adw_navigation_view_pop (self->nav_view);
 }
 
+/* The whole library, games and DLC. Transfer container. */
+static GPtrArray *
+all_games (GogMainWindow *self)
+{
+  GListModel *model = gog_library_get_model (self->library);
+  guint n = g_list_model_get_n_items (model);
+  GPtrArray *games = g_ptr_array_new_full (n, g_object_unref);
+  for (guint i = 0; i < n; i++)
+    g_ptr_array_add (games, g_list_model_get_item (model, i));
+  return games;
+}
+
+static void
+update_for_you (GogMainWindow *self)
+{
+  GPtrArray *games = all_games (self);
+  gog_for_you_update (self->for_you, games);
+  g_ptr_array_unref (games);
+  self->for_you_stale = FALSE;
+}
+
 static void
 on_nav_visible_page_changed (GObject *nav_view, GParamSpec *pspec, gpointer user_data)
 {
@@ -2170,6 +2205,62 @@ on_nav_visible_page_changed (GObject *nav_view, GParamSpec *pspec, gpointer user
   AdwNavigationPage *page = adw_navigation_view_get_visible_page (ADW_NAVIGATION_VIEW (nav_view));
   const char *tag = page ? adw_navigation_page_get_tag (page) : NULL;
   gtk_widget_set_visible (GTK_WIDGET (self->back_button), g_strcmp0 (tag, "library") != 0);
+  /* Back from a game page that installed or played something. */
+  if (g_strcmp0 (tag, "for-you") == 0 && self->for_you_stale)
+    update_for_you (self);
+}
+
+static void
+on_for_you_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  GogMainWindow *self = user_data;
+  AdwNavigationPage *page = adw_navigation_view_get_visible_page (self->nav_view);
+  if (page && g_strcmp0 (adw_navigation_page_get_tag (page), "for-you") == 0)
+    return;
+  adw_navigation_view_pop_to_tag (self->nav_view, "library");
+  update_for_you (self);
+  adw_navigation_view_push_by_tag (self->nav_view, "for-you");
+}
+
+static void
+on_for_you_open_game (GogForYou *for_you, GogGame *game, gpointer user_data)
+{
+  (void) for_you;
+  GogMainWindow *self = user_data;
+  gog_game_detail_set_game (self->detail, game);
+  adw_navigation_view_push_by_tag (self->nav_view, "detail");
+}
+
+/* A game started from GOG Manager, or one that ended (seconds > 0). */
+static void
+on_game_played (gint64 game_id, gint64 started, gint64 seconds, gpointer user_data)
+{
+  GogMainWindow *self = user_data;
+  GListModel *model = gog_library_get_model (self->library);
+  GogGame *found = NULL;
+  for (guint i = 0, n = g_list_model_get_n_items (model); i < n && !found; i++)
+    {
+      GogGame *game = g_list_model_get_item (model, i);
+      if (gog_game_get_id (game) == game_id)
+        found = g_object_ref (game);
+      g_object_unref (game);
+    }
+  if (!found)
+    return; /* rescanned away since */
+  gog_state_record_play (self->state, found, started, seconds);
+  g_object_unref (found);
+  GError *error = NULL;
+  if (!gog_state_save (self->state, &error))
+    {
+      g_warning ("Could not save the play history: %s", error->message);
+      g_clear_error (&error);
+    }
+  if (self->disposed)
+    return;
+  self->for_you_stale = TRUE;
+  if (gtk_drop_down_get_selected (self->sort_dropdown) == 11)
+    on_sort_changed (NULL, self);
 }
 
 /* ---------------- construction ---------------- */
@@ -2286,7 +2377,7 @@ build_sidebar (GogMainWindow *self)
   GtkStringList *sort_list = gtk_string_list_new (
       (const char *[]) { "Title A–Z", "Title Z–A", "Installed first", "Size (largest)",
                          "Language", "Category", "Newest first", "Oldest first",
-                         "Critics' rating", "Series", "Developer", NULL });
+                         "Critics' rating", "Series", "Developer", "Last played", NULL });
   self->sort_dropdown = GTK_DROP_DOWN (gtk_drop_down_new (G_LIST_MODEL (sort_list), NULL));
   set_accessible_label (GTK_WIDGET (self->sort_dropdown), "Sort By");
   gtk_box_append (GTK_BOX (box), GTK_WIDGET (self->sort_dropdown));
@@ -2321,6 +2412,14 @@ build_header_bar (GogMainWindow *self)
   g_signal_connect (self->search_entry, "search-changed", G_CALLBACK (on_filters_changed), self);
   adw_header_bar_set_title_widget (ADW_HEADER_BAR (header), GTK_WIDGET (self->search_entry));
 
+  GtkWidget *for_you_btn = gtk_button_new_from_icon_name ("starred-symbolic");
+  gtk_widget_set_tooltip_text (for_you_btn, "For You: Continue Playing and Suggestions");
+  set_accessible_label (for_you_btn, "For You");
+  gtk_accessible_update_property (GTK_ACCESSIBLE (for_you_btn), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION,
+                                  "Continue playing, and suggestions from your library", -1);
+  g_signal_connect (for_you_btn, "clicked", G_CALLBACK (on_for_you_clicked), self);
+  adw_header_bar_pack_start (ADW_HEADER_BAR (header), for_you_btn);
+
   GtkWidget *rescan_btn = gtk_button_new_from_icon_name ("view-refresh-symbolic");
   gtk_widget_set_tooltip_text (rescan_btn, "Rescan Library");
   set_accessible_label (rescan_btn, "Rescan Library");
@@ -2353,6 +2452,9 @@ gog_main_window_dispose (GObject *object)
 {
   GogMainWindow *self = GOG_MAIN_WINDOW (object);
   self->disposed = TRUE;
+  /* Games still running count until now. */
+  gog_launch_finish_sessions ();
+  gog_launch_set_played_func (NULL, NULL);
   if (self->scan_cancellable)
     g_cancellable_cancel (self->scan_cancellable);
   if (self->categories_cancellable)
@@ -2492,6 +2594,14 @@ gog_main_window_new (GtkApplication *app)
   AdwNavigationPage *detail_page =
       adw_navigation_page_new_with_tag (GTK_WIDGET (self->detail), "Details", "detail");
   adw_navigation_view_add (self->nav_view, detail_page);
+
+  self->for_you = GOG_FOR_YOU (gog_for_you_new ());
+  g_signal_connect (self->for_you, GOG_FOR_YOU_SIGNAL_OPEN_GAME, G_CALLBACK (on_for_you_open_game),
+                    self);
+  AdwNavigationPage *for_you_page =
+      adw_navigation_page_new_with_tag (GTK_WIDGET (self->for_you), "For You", "for-you");
+  adw_navigation_view_add (self->nav_view, for_you_page);
+  gog_launch_set_played_func (on_game_played, self);
 
   adw_overlay_split_view_set_content (self->split_view, GTK_WIDGET (self->nav_view));
   gtk_stack_add_named (self->root_stack, GTK_WIDGET (self->split_view), "browse");

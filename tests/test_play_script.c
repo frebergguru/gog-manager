@@ -150,6 +150,69 @@ test_rewrites_own_script_but_not_others (void)
   g_free (dir);
 }
 
+typedef struct
+{
+  guint reports;
+  gint64 game_id;
+  gint64 seconds;
+} Played;
+
+static void
+on_played (gint64 game_id, gint64 started, gint64 seconds, gpointer user_data)
+{
+  Played *p = user_data;
+  g_assert_cmpint (started, >, 0);
+  p->reports++;
+  p->game_id = game_id;
+  p->seconds = seconds;
+}
+
+/* A launch reports the start, and how long the game ran when it ends. */
+static void
+test_play_session (void)
+{
+  gchar *dir = g_dir_make_tmp ("gog-play-session-XXXXXX", NULL);
+  gchar *game_bin = g_build_filename (dir, "bin", NULL);
+  g_assert_cmpint (g_mkdir (game_bin, 0755), ==, 0);
+  gchar *exe = g_build_filename (game_bin, "game", NULL);
+  g_assert_true (g_file_set_contents (exe, "#!/bin/sh\nsleep 1\n", -1, NULL));
+  gchar *info = g_build_filename (dir, "goggame-42.info", NULL);
+  g_assert_true (g_file_set_contents (info,
+                                      "{ \"gameId\": \"42\", \"playTasks\": [ { \"type\": \"FileTask\","
+                                      " \"isPrimary\": true, \"category\": \"game\", \"path\": \"bin/game\","
+                                      " \"workingDir\": \"bin\" } ] }",
+                                      -1, NULL));
+  GogGame *game = make_game (dir, GOG_RUNNER_NATIVE, NULL);
+
+  Played played = { 0 };
+  gog_launch_set_played_func (on_played, &played);
+  g_assert_true (gog_launch_game (game, NULL));
+  while (played.reports < 2)
+    g_main_context_iteration (NULL, TRUE);
+  g_assert_cmpint (played.game_id, ==, 42);
+  g_assert_cmpint (played.seconds, >=, 1);
+
+  /* One still running when GOG Manager quits counts until then, once. */
+  played.reports = 0;
+  g_assert_true (gog_launch_game (game, NULL));
+  while (played.reports < 1)
+    g_main_context_iteration (NULL, TRUE);
+  gog_launch_finish_sessions ();
+  g_assert_cmpuint (played.reports, ==, 2);
+  g_usleep (1500 * 1000);
+  while (g_main_context_iteration (NULL, FALSE))
+    ;
+  g_assert_cmpuint (played.reports, ==, 2);
+  gog_launch_set_played_func (NULL, NULL);
+
+  g_object_unref (game);
+  remove_dir (dir);
+  g_free (info);
+  g_free (exe);
+  g_free (game_bin);
+  g_free (dir);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -158,5 +221,6 @@ main (int argc, char *argv[])
   g_test_add_func ("/play-script/wine", test_wine_script);
   g_test_add_func ("/play-script/native", test_native_script);
   g_test_add_func ("/play-script/keeps-foreign-script", test_rewrites_own_script_but_not_others);
+  g_test_add_func ("/launch/play-session", test_play_session);
   return g_test_run ();
 }

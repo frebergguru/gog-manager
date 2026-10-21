@@ -39,6 +39,18 @@ void gog_launch_set_failed_func (GogLaunchFailedFunc func, gpointer user_data);
 /* Removes the handler only if it was set with this user_data. */
 void gog_launch_clear_failed_func (gpointer user_data);
 
+/* Play sessions of the games gog_launch_game() starts: func gets
+ * seconds 0 as a game starts, and the time it ran once its process ends
+ * (for Wine and Proton, the `start /wait` that waits for the game). Both on
+ * the main thread. Games started some other way (play.sh, the menu entry)
+ * aren't seen. One handler at a time; NULL removes it. */
+typedef void (*GogPlayedFunc) (gint64 game_id, gint64 started, gint64 seconds, gpointer user_data);
+void gog_launch_set_played_func (GogPlayedFunc func, gpointer user_data);
+
+/* Reports the games still running as if they ended now, e.g. as GOG
+ * Manager quits, and stops following them. */
+void gog_launch_finish_sessions (void);
+
 /* Opens winecfg / regedit against a game's existing Wine or Proton prefix.
  * Returns FALSE with error set for natively-installed or not-yet-installed
  * games, or (winecfg only) when the runner is Proton. */

@@ -313,9 +313,70 @@ gog_state_free (GogState *state)
   g_free (state);
 }
 
+/* The "play" object, {"<id>": {"last_played": unix, "seconds": n}};
+ * made when create is TRUE, else NULL when there is none. Kept apart from
+ * the install records, so that it survives an uninstall. */
+static json_object *
+play_records (GogState *state, gboolean create)
+{
+  json_object *play = ju_get_obj (state->root, "play");
+  if (!play && create)
+    {
+      play = json_object_new_object ();
+      json_object_object_add (state->root, "play", play);
+    }
+  return play;
+}
+
+static void
+apply_play_history (GogState *state, GogGame *game)
+{
+  json_object *play = play_records (state, FALSE);
+  gint64 id = gog_game_get_id (game);
+  gchar *key = g_strdup_printf ("%" G_GINT64_FORMAT, id);
+  json_object *rec = ju_get_obj (play, key);
+  if (!rec && play && id > 0 && gog_game_get_gamename (game))
+    {
+      /* Played while GOG's id wasn't known: the record moves to the id. */
+      gchar *local = g_strdup_printf ("%" G_GINT64_FORMAT,
+                                      gog_game_local_id (gog_game_get_gamename (game)));
+      rec = ju_get_obj (play, local);
+      if (rec)
+        {
+          json_object_get (rec);
+          json_object_object_del (play, local);
+          json_object_object_add (play, key, rec);
+        }
+      g_free (local);
+    }
+  g_free (key);
+  gog_game_set_play_history (game, ju_get_int64 (rec, "last_played", 0),
+                             ju_get_int64 (rec, "seconds", 0));
+}
+
+void
+gog_state_record_play (GogState *state, GogGame *game, gint64 started, gint64 seconds)
+{
+  json_object *play = play_records (state, TRUE);
+  gchar *key = g_strdup_printf ("%" G_GINT64_FORMAT, gog_game_get_id (game));
+  json_object *rec = ju_get_obj (play, key);
+  if (!rec)
+    {
+      rec = json_object_new_object ();
+      json_object_object_add (play, key, rec);
+    }
+  g_free (key);
+  gint64 last = MAX (ju_get_int64 (rec, "last_played", 0), started);
+  gint64 total = ju_get_int64 (rec, "seconds", 0) + MAX (seconds, 0);
+  json_object_object_add (rec, "last_played", json_object_new_int64 (last));
+  json_object_object_add (rec, "seconds", json_object_new_int64 (total));
+  gog_game_set_play_history (game, last, total);
+}
+
 void
 gog_state_apply_to_game (GogState *state, GogGame *game)
 {
+  apply_play_history (state, game);
   gint64 id = gog_game_get_id (game);
   gint64 *id_ptr = g_new (gint64, 1);
   *id_ptr = id;

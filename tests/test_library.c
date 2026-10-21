@@ -826,6 +826,49 @@ test_install_record_follows_gog_id (void)
   g_free (tmp);
 }
 
+/* Play history is kept apart from the install record: it survives an
+ * uninstall, adds up, and moves to GOG's id like the record does. */
+static void
+test_play_history_kept (void)
+{
+  gchar *tmp = g_dir_make_tmp ("gog-state-XXXXXX", NULL);
+  gchar *fake = g_build_filename (tmp, "gog-manager.AppImage", NULL);
+  g_setenv ("APPIMAGE", fake, TRUE);
+
+  GogGame *game = gog_game_new ();
+  gog_game_set_gamename (game, "some_game");
+  gog_game_set_id (game, gog_game_local_id ("some_game"));
+  GogState *state = gog_state_load ();
+  gog_state_record_play (state, game, 1000, 0);
+  gog_state_record_play (state, game, 1000, 600);
+  gog_state_record_play (state, game, 5000, 60);
+  /* An older session ending late doesn't make it older. */
+  gog_state_record_play (state, game, 2000, 30);
+  g_assert_cmpint (gog_game_get_last_played (game), ==, 5000);
+  g_assert_cmpint (gog_game_get_play_seconds (game), ==, 690);
+  gog_state_update_from_game (state, game);
+  gog_state_remove (state, gog_game_get_id (game));
+  g_assert_true (gog_state_save (state, NULL));
+  gog_state_free (state);
+
+  GogGame *later = gog_game_new ();
+  gog_game_set_gamename (later, "some_game");
+  gog_game_set_id (later, 42);
+  state = gog_state_load ();
+  gog_state_apply_to_game (state, later);
+  g_assert_cmpint (gog_game_get_last_played (later), ==, 5000);
+  g_assert_cmpint (gog_game_get_play_seconds (later), ==, 690);
+  g_assert_false (gog_game_get_installed (later));
+  gog_state_free (state);
+
+  g_object_unref (game);
+  g_object_unref (later);
+  g_unsetenv ("APPIMAGE");
+  remove_tree (tmp);
+  g_free (fake);
+  g_free (tmp);
+}
+
 /* A renamed game folder is noticed, and renaming it back moves the game's
  * paths (and its DLC's) along. A folder of that name already there stops it. */
 static void
@@ -965,6 +1008,7 @@ main (int argc, char *argv[])
   g_test_add_func ("/library/scan_folder_without_product_file",
                    test_scan_folder_without_product_file);
   g_test_add_func ("/config/install_record_follows_gog_id", test_install_record_follows_gog_id);
+  g_test_add_func ("/config/play_history_kept", test_play_history_kept);
   g_test_add_func ("/library/rename_misnamed_folder", test_rename_misnamed_folder);
   return g_test_run ();
 }

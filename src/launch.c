@@ -175,11 +175,102 @@ spawn_detached (gchar **argv, gchar **envp, const char *cwd, GError **error)
                          NULL, NULL, NULL, error);
 }
 
+/* ---- play sessions: from the start of a game's process to its end ---- */
+
+typedef struct
+{
+  gint64 game_id;
+  gint64 started;
+} PlaySession;
+
+static GogPlayedFunc played_func;
+static gpointer played_data;
+static GMutex sessions_lock;
+static GList *sessions; /* PlaySession*, running; protected by sessions_lock */
+
+void
+gog_launch_set_played_func (GogPlayedFunc func, gpointer user_data)
+{
+  played_func = func;
+  played_data = user_data;
+}
+
+static gint64
+now_unix (void)
+{
+  return g_get_real_time () / G_USEC_PER_SEC;
+}
+
+static gboolean
+report_started_idle (gpointer data)
+{
+  PlaySession *started = data;
+  if (played_func)
+    played_func (started->game_id, started->started, 0, played_data);
+  g_free (started);
+  return G_SOURCE_REMOVE;
+}
+
+static void
+on_game_exited (GPid pid, gint status, gpointer data)
+{
+  (void) status;
+  PlaySession *s = data;
+  g_spawn_close_pid (pid);
+  g_mutex_lock (&sessions_lock);
+  /* gog_launch_finish_sessions() may have counted it already. */
+  gboolean running = g_list_find (sessions, s) != NULL;
+  sessions = g_list_remove (sessions, s);
+  g_mutex_unlock (&sessions_lock);
+  if (running && played_func)
+    played_func (s->game_id, s->started, now_unix () - s->started, played_data);
+  g_free (s);
+}
+
+void
+gog_launch_finish_sessions (void)
+{
+  g_mutex_lock (&sessions_lock);
+  GList *running = sessions;
+  sessions = NULL;
+  g_mutex_unlock (&sessions_lock);
+  for (GList *l = running; l; l = l->next)
+    {
+      PlaySession *s = l->data;
+      if (played_func)
+        played_func (s->game_id, s->started, now_unix () - s->started, played_data);
+    }
+  g_list_free (running); /* the sessions go with their child watches */
+}
+
+/* Like spawn_detached(), and the game's play session lasts until the process
+ * ends. Any thread. */
+static gboolean
+spawn_game (gchar **argv, gchar **envp, const char *cwd, gint64 game_id, GError **error)
+{
+  GPid pid;
+  if (!g_spawn_async (cwd, argv, envp,
+                      G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL |
+                          G_SPAWN_DO_NOT_REAP_CHILD,
+                      NULL, NULL, &pid, error))
+    return FALSE;
+  PlaySession *s = g_new0 (PlaySession, 1);
+  s->game_id = game_id;
+  s->started = now_unix ();
+  g_mutex_lock (&sessions_lock);
+  sessions = g_list_prepend (sessions, s);
+  g_mutex_unlock (&sessions_lock);
+  g_idle_add (report_started_idle, g_memdup2 (s, sizeof *s));
+  g_child_watch_add (pid, on_game_exited, s);
+  return TRUE;
+}
+
 typedef struct
 {
   GogRunnerInfo *runner;
   gchar *install_dir;
   GogCommand *cmd;
+  gint64 game_id;
 } PrefixLaunch;
 
 static GogLaunchFailedFunc failed_func;
@@ -215,7 +306,7 @@ prefix_launch_thread (gpointer data)
   PrefixLaunch *pl = data;
   GError *error = NULL;
   if (!runner_prepare_prefix (pl->runner, pl->install_dir, &error)
-      || !spawn_detached (pl->cmd->argv, pl->cmd->envp, pl->install_dir, &error))
+      || !spawn_game (pl->cmd->argv, pl->cmd->envp, pl->install_dir, pl->game_id, &error))
     {
       gchar *msg = g_strdup_printf ("Could not start the game: %s",
                                     error ? error->message : "unknown error");
@@ -235,13 +326,14 @@ prefix_launch_thread (gpointer data)
  * install that failed half way) is rebuilt first, on a thread, because a
  * fresh Proton bootstrap takes many seconds. Takes ownership of cmd. */
 static gboolean
-spawn_in_prefix (GogRunnerInfo *runner, const char *install_dir, GogCommand *cmd, GError **error)
+spawn_in_prefix (GogRunnerInfo *runner, const char *install_dir, GogCommand *cmd, gint64 game_id,
+                 GError **error)
 {
   if (runner_prefix_is_bootstrapped (runner->kind, install_dir))
     {
       gchar *wine_root = runner_wine_root_dir (runner->kind, install_dir);
       gboolean ok = runner_link_c_game (wine_root, install_dir, error)
-                    && spawn_detached (cmd->argv, cmd->envp, install_dir, error);
+                    && spawn_game (cmd->argv, cmd->envp, install_dir, game_id, error);
       g_free (wine_root);
       gog_command_free (cmd);
       return ok;
@@ -251,6 +343,7 @@ spawn_in_prefix (GogRunnerInfo *runner, const char *install_dir, GogCommand *cmd
   pl->runner = gog_runner_info_new (runner->kind, runner->name, runner->bin_path);
   pl->install_dir = g_strdup (install_dir);
   pl->cmd = cmd;
+  pl->game_id = game_id;
   g_thread_unref (g_thread_new ("gog-prefix-launch", prefix_launch_thread, pl));
   return TRUE;
 }
@@ -378,6 +471,9 @@ gog_launch_game (GogGame *game, GError **error)
       set_nothing_to_launch_error (game, error);
       return FALSE;
     }
+  /* DLC is played as its game. */
+  GogGame *base = gog_game_get_base_game (game);
+  gint64 game_id = gog_game_get_id (base ? base : game);
 
   gboolean ok;
   if (kind == GOG_RUNNER_NATIVE)
@@ -411,7 +507,7 @@ gog_launch_game (GogGame *game, GError **error)
             }
         }
       g_ptr_array_add (argv, NULL);
-      ok = spawn_detached ((gchar **) argv->pdata, NULL, cwd, error);
+      ok = spawn_game ((gchar **) argv->pdata, NULL, cwd, game_id, error);
       g_ptr_array_unref (argv);
       g_free (cwd);
       g_free (full);
@@ -421,7 +517,7 @@ gog_launch_game (GogGame *game, GError **error)
       GogRunnerInfo runner = runner_from_game (game);
       GogCommand *cmd = runner_build_launch_command (&runner, install_dir, task->path,
                                                        task->working_dir, task->arguments);
-      ok = spawn_in_prefix (&runner, install_dir, cmd, error);
+      ok = spawn_in_prefix (&runner, install_dir, cmd, game_id, error);
     }
   play_task_free (task);
 

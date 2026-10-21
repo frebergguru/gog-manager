@@ -22,6 +22,7 @@
     <file>icons/scalable/actions/preferences-system-symbolic.svg</file>
     <file>icons/scalable/actions/sidebar-show-symbolic.svg</file>
     <file>icons/scalable/actions/software-update-available-symbolic.svg</file>
+    <file>icons/scalable/actions/starred-symbolic.svg</file>
     <file>icons/scalable/actions/video-x-generic-symbolic.svg</file>
     <file>icons/scalable/actions/view-refresh-symbolic.svg</file>
   </gresource>

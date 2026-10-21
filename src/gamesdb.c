@@ -3,6 +3,7 @@
  */
 
 #include "gamesdb.h"
+#include "text_util.h"
 #include "config.h"
 #include "fetch.h"
 #include "json_util.h"
@@ -206,6 +207,17 @@ parse_date (const char *text)
   return out > 0 ? out : 0;
 }
 
+/* Some summaries are HTML (The Witcher 3's): plain text for the game page.
+ * Transfer full; NULL for NULL. */
+static gchar *
+plain_summary (const char *summary)
+{
+  if (!summary)
+    return NULL;
+  gchar *text = strchr (summary, '<') ? text_strip_html (summary) : g_strdup (summary);
+  return g_strstrip (text);
+}
+
 GogGamesdbInfo *
 gog_gamesdb_parse (const char *json)
 {
@@ -222,9 +234,7 @@ gog_gamesdb_parse (const char *json)
   /* The release's own summary is about GOG's version; the game's is the
    * general one. */
   const char *summary = localized (root, "summary");
-  info->summary = g_strdup (summary ? summary : localized (game, "summary"));
-  if (info->summary)
-    g_strstrip (info->summary);
+  info->summary = plain_summary (summary ? summary : localized (game, "summary"));
   const char *series = localized (ju_get_obj (root, "series"), "name");
   info->series = g_strdup (series ? series : localized (ju_get_obj (game, "series"), "name"));
   info->developers = names (game, "developers");
@@ -406,7 +416,8 @@ gog_gamesdb_load (void)
       if (ju_get_bool (entry, "missing", FALSE))
         continue;
       GogGamesdbInfo *info = g_new0 (GogGamesdbInfo, 1);
-      info->summary = g_strdup (ju_get_string (entry, "summary", NULL));
+      /* Older caches kept it as gamesdb gave it. */
+      info->summary = plain_summary (ju_get_string (entry, "summary", NULL));
       info->series = g_strdup (ju_get_string (entry, "series", NULL));
       info->developers = json_to_strv (entry, "developers");
       info->publishers = json_to_strv (entry, "publishers");

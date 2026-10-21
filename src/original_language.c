@@ -143,6 +143,27 @@ gog_original_languages (const char *gamename, gchar **source)
   return mask;
 }
 
+GHashTable *
+gog_original_languages_load (void)
+{
+  GHashTable *all = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+  G_LOCK (cache);
+  json_object *root = load_cache ();
+  if (root && json_object_is_type (root, json_type_object))
+    {
+      json_object_object_foreach (root, gamename, entry)
+        {
+          guint mask = codes_to_bits (ju_get_string (entry, "languages", ""));
+          if (mask)
+            g_hash_table_insert (all, g_strdup (gamename), GUINT_TO_POINTER (mask));
+        }
+    }
+  if (root)
+    json_object_put (root);
+  G_UNLOCK (cache);
+  return all;
+}
+
 /* What Wikidata says about one game while its rows are gathered. */
 typedef struct
 {

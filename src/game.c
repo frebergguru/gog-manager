@@ -39,6 +39,8 @@ struct _GogGame
   GogRunnerKind runner_kind;
   gchar *runner_path;
   gchar *prefix_path;
+  gint64 last_played;  /* unix time, 0 if never */
+  gint64 play_seconds;
 
   GogGame *base_game; /* owned; the base never refs its DLCs, so no cycle */
 };
@@ -50,6 +52,7 @@ enum
   PROP_CATEGORIES,
   PROP_GAMESDB,
   PROP_STORE,
+  PROP_PLAYED,
   N_PROPS,
 };
 
@@ -142,6 +145,9 @@ gog_game_get_property (GObject *object, guint prop_id, GValue *value, GParamSpec
     case PROP_STORE:
       g_value_set_boolean (value, self->store != NULL);
       break;
+    case PROP_PLAYED:
+      g_value_set_int64 (value, self->last_played);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
     }
@@ -168,6 +174,9 @@ gog_game_class_init (GogGameClass *klass)
   properties[PROP_STORE] =
       g_param_spec_boolean ("store", "Store details", "Whether GOG's store API knows the game",
                             FALSE, G_PARAM_READABLE);
+  properties[PROP_PLAYED] =
+      g_param_spec_int64 ("played", "Last played", "When the game was last started (unix time)",
+                          0, G_MAXINT64, 0, G_PARAM_READABLE);
   g_object_class_install_properties (object_class, N_PROPS, properties);
 }
 
@@ -588,6 +597,28 @@ gog_game_set_installed (GogGame *self, gboolean installed)
     return;
   self->installed = installed;
   g_object_notify_by_pspec (G_OBJECT (self), properties[PROP_INSTALLED]);
+}
+
+gint64
+gog_game_get_last_played (GogGame *self)
+{
+  return self->last_played;
+}
+
+gint64
+gog_game_get_play_seconds (GogGame *self)
+{
+  return self->play_seconds;
+}
+
+void
+gog_game_set_play_history (GogGame *self, gint64 last_played, gint64 play_seconds)
+{
+  if (self->last_played == last_played && self->play_seconds == play_seconds)
+    return;
+  self->last_played = last_played;
+  self->play_seconds = play_seconds;
+  g_object_notify_by_pspec (G_OBJECT (self), properties[PROP_PLAYED]);
 }
 
 const char *

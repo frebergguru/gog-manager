@@ -37,7 +37,19 @@ login. GOG Manager can show GOG's login page for it.
 - **Search, filter, and sort** — live search by title, series, developer or
   publisher; filter by OS (Windows / Linux / macOS), by language, by games
   with DLC or extras, and by status (installed, not installed, new version on
-  GOG); sort by title (A–Z / Z–A), installed-first, or size.
+  GOG); sort by title (A–Z / Z–A), installed-first, size or last played.
+- **Play history** — GOG Manager notes when you last played each game and
+  for how long (from Play until the game quits; games started from
+  `play.sh` or a menu entry aren't seen) and shows it on the game page.
+- **For You** — the star button opens a page with **Continue Playing** (the
+  installed games played last), **Recommended for You** (games you own but
+  haven't installed, most like the installed ones you play) and **What to
+  Play Next** (installed games not played for two months, or never). Each
+  suggestion says why in words ("Shares Role-playing, Fantasy with 3 of
+  your installed games", "Part of the Witcher series, like The Witcher 3").
+  Only your own library is used: categories, tags, genres, themes, series,
+  developers, original language and decade, all cached offline, and nothing
+  is sent anywhere.
 - **New games and updates from GOG** — through
   [lgogdownloader](https://github.com/Sude-/lgogdownloader), lists the games
   you own that are not downloaded yet and the ones with a new version. Each
@@ -370,7 +382,7 @@ Files an older version kept directly next to the executable are moved into
 | Path | Purpose |
 |------|---------|
 | `<config dir>/gog-manager.cfg` | Library path (if set), install root, and configured runners |
-| `<config dir>/gog-manager-state.json` | Per-game install state (keyed by product id) |
+| `<config dir>/gog-manager-state.json` | Per-game install state and play history (keyed by product id) |
 | `<config dir>/gog-manager-updates.json` | The last GOG check: what each game has to download |
 | `<config dir>/gog-manager-download.json` | Download choices: files at the same time, speed limit, hidden games, patches, each game's languages; GOG's notifications from the last check |
 | `<config dir>/gog-manager-categories.json` | GOG's store details per game: categories, features, tags, languages, requirements, age ratings, editions |
@@ -404,7 +416,8 @@ src/
 ├── config.{c,h}           Config folder, gog-manager.cfg + gog-manager-state.json
 ├── runner.{c,h}           Wine/Proton discovery and command building
 ├── installer_engine.{c,h} Install/uninstall jobs (async, with progress)
-├── launch.{c,h}           Launching installed games, play.sh
+├── launch.{c,h}           Launching installed games, play sessions, play.sh
+├── recommend.{c,h}        For You: continue playing, recommendations, what to play next
 ├── shortcut.{c,h}         Applications menu entries
 ├── proton_fetch.{c,h}     GE-Proton downloader and build management
 ├── gog_sync.{c,h}         GOG checks, downloads, login and file checks through lgogdownloader
@@ -423,6 +436,7 @@ src/
     ├── login_dialog.{c,h}         Log In to GOG (WebKit page or web browser)
     ├── repair_dialog.{c,h}        Check Files (lgogdownloader --repair)
     ├── cloud_saves_dialog.{c,h}   Cloud Saves (GOG Galaxy cloud, through lgogdownloader)
+    ├── for_you.{c,h}              For You page
     ├── preferences_dialog.{c,h}   Preferences (Library, Runners, Downloads)
     ├── proton_fetch_dialog.{c,h}  GE-Proton download
     ├── proton_manage_dialog.{c,h} Manage and remove GE-Proton builds
@@ -432,7 +446,8 @@ tests/                     Unit tests (json-util and GOG's HTML text, runner
                            command building and GE-Proton, library scanning,
                            lgogdownloader output parsing, uninstall protection,
                            config folder, play.sh, categories and store
-                           details, games database, menu entries)
+                           details, games database, menu entries, play
+                           sessions and history, recommendations)
 
 packaging/
 ├── build-appimage.sh      Builds the AppImage (bundles lgogdownloader and WebKitGTK)

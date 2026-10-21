@@ -28,6 +28,10 @@ gboolean gog_original_lookup (const char *const *gamenames, const volatile gbool
  * Norway"), or NULL if not known. */
 guint gog_original_languages (const char *gamename, gchar **source);
 
+/* The same for every game whose original language is known: gamename ->
+ * language bits (GUINT_TO_POINTER). Transfer full. */
+GHashTable *gog_original_languages_load (void);
+
 /* For tests: the language bits for an ISO 3166 country code ("NO"), or 0. */
 guint gog_original_country_languages (const char *iso_country);
 

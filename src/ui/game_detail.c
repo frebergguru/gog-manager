@@ -13,6 +13,7 @@
 #include "../gamesdb.h"
 #include "repair_dialog.h"
 #include "cloud_saves_dialog.h"
+#include "../recommend.h"
 
 struct _GogGameDetail
 {
@@ -57,6 +58,7 @@ struct _GogGameDetail
   GCancellable *shots_cancellable;
   GtkListBox *videos_list;
   gulong gamesdb_handler; /* notify::gamesdb on game */
+  gulong played_handler;  /* notify::played on game */
   AdwToastOverlay *toast_overlay;
   gboolean disposed; /* late async callbacks must not touch widgets */
 };
@@ -87,6 +89,7 @@ gog_game_detail_dispose (GObject *object)
     {
       g_clear_signal_handler (&self->gamesdb_handler, self->game);
       g_clear_signal_handler (&self->store_handler, self->game);
+      g_clear_signal_handler (&self->played_handler, self->game);
     }
   g_clear_object (&self->game);
   g_clear_pointer (&self->runner_choices, g_ptr_array_unref);
@@ -1425,6 +1428,17 @@ refresh_details (GogGameDetail *self)
     gtk_grid_remove (self->info_grid, child);
   int row = 0;
 
+  /* Counted for the games started here; DLC is played as its game. */
+  if (!gog_game_get_base_game (self->game) &&
+      (gog_game_get_installed (self->game) || gog_game_get_last_played (self->game) > 0))
+    {
+      gchar *played = gog_describe_play_history (gog_game_get_last_played (self->game),
+                                                 gog_game_get_play_seconds (self->game),
+                                                 g_get_real_time () / G_USEC_PER_SEC);
+      add_info (self->info_grid, &row, "Played", played);
+      g_free (played);
+    }
+
   GStrv installer_langs = gog_game_dup_installer_languages (self->game);
   for (gchar **l = installer_langs; *l; l++)
     {
@@ -1741,6 +1755,7 @@ gog_game_detail_set_game (GogGameDetail *self, GogGame *game)
     {
       g_clear_signal_handler (&self->gamesdb_handler, self->game);
       g_clear_signal_handler (&self->store_handler, self->game);
+      g_clear_signal_handler (&self->played_handler, self->game);
     }
   g_set_object (&self->game, game);
   if (game)
@@ -1749,6 +1764,8 @@ gog_game_detail_set_game (GogGameDetail *self, GogGame *game)
                                                 G_CALLBACK (on_game_gamesdb_changed), self);
       self->store_handler = g_signal_connect (game, "notify::store",
                                               G_CALLBACK (on_game_gamesdb_changed), self);
+      self->played_handler = g_signal_connect (game, "notify::played",
+                                               G_CALLBACK (on_game_gamesdb_changed), self);
     }
   refresh (self);
 }

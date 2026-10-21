@@ -92,6 +92,16 @@ test_info_equal (void)
   g_assert_false (gog_gamesdb_info_equal (a, b));
 }
 
+/* The Witcher 3's summary is HTML. */
+static void
+test_parse_html_summary (void)
+{
+  g_autoptr (GogGamesdbInfo) info = gog_gamesdb_parse (
+      "{ \"game\": { \"summary\": { \"*\": \"<p>Become a <b>monster slayer</b>.</p>\" } } }");
+  g_assert_nonnull (info);
+  g_assert_cmpstr (info->summary, ==, "Become a monster slayer.");
+}
+
 static void
 test_parse_minimal (void)
 {
@@ -125,6 +135,7 @@ main (int argc, char *argv[])
   g_test_add_func ("/gamesdb/parse-media", test_parse_reads_media);
   g_test_add_func ("/gamesdb/info-equal", test_info_equal);
   g_test_add_func ("/gamesdb/parse-minimal", test_parse_minimal);
+  g_test_add_func ("/gamesdb/parse-html-summary", test_parse_html_summary);
   g_test_add_func ("/gamesdb/parse-garbage", test_parse_rejects_garbage);
   return g_test_run ();
 }

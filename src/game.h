@@ -183,6 +183,12 @@ void     gog_game_set_downloaded (GogGame *self, gboolean downloaded);
  * "installed" emits notify::installed so the UI can refresh live. */
 gboolean gog_game_get_installed (GogGame *self);
 void     gog_game_set_installed (GogGame *self, gboolean installed);
+/* When the game was last started from GOG Manager (unix time, 0 if never)
+ * and for how long it has been played in all (seconds). Kept with the
+ * install state; set emits notify::played when either changed. */
+gint64 gog_game_get_last_played (GogGame *self);
+gint64 gog_game_get_play_seconds (GogGame *self);
+void   gog_game_set_play_history (GogGame *self, gint64 last_played, gint64 play_seconds);
 const char *gog_game_get_install_path (GogGame *self);
 void        gog_game_set_install_path (GogGame *self, const char *path);
 GogRunnerKind gog_game_get_runner_kind (GogGame *self);
