@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later
+     Copyright (C) 2026 Hypnotize -->
 <gresources>
   <gresource prefix="/org/gogmanager/app">
     <file>style.css</file>

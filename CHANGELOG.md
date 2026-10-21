@@ -99,9 +99,26 @@ All notable changes to GOG Manager are listed here. The format follows
 - "Include patches" in the download settings (off by default): checks,
   downloads and file checks then leave out `--exclude patches`, and a game
   lists its patches as a part of their own next to Game, DLC and Extras.
+- The AppImage ships the license text, version and source address of every
+  library it bundles, in `usr/share/licenses/<package>/` and
+  `usr/share/doc/gog-manager/THIRD-PARTY-NOTICES.txt`. They come from the
+  build machine's packages (`packaging/collect-licenses.py`), and the release
+  stops if a bundled file has no package or no license.
+- GOG Manager's own `LICENSE`, and the LGPL-3.0 text the Adwaita icons are
+  used under, are installed to `share/licenses/gog-manager/`.
+- The About window shows the copyright and the licenses of the Adwaita
+  icons, lgogdownloader and the libraries in the AppImage.
 
 ### Changed
 - Details cached by 0.5.0 are fetched again once, to get the new fields.
+- When the app's folder can't be written to (a system install in
+  `/usr/bin`), the config files are kept in `~/.config/gog-manager/`
+  (`$XDG_CONFIG_HOME/gog-manager`) instead of failing to save.
+- The AppImage no longer bundles the GObject introspection typelibs of
+  other programs on the build machine; GOG Manager never loads them.
+- The AppImage build stops if WebKit's web or network process is missing,
+  instead of making an AppImage whose login page can't work, and reports a
+  failed lookup of the newest lgogdownloader release properly.
 - The game page's tabs show their icon above the name, so up to seven fit
   without cutting their names short.
 - Headings and rules in GOG's text start a new paragraph.
@@ -111,6 +128,30 @@ All notable changes to GOG Manager are listed here. The format follows
   bullets. Line breaks in GOG's HTML source no longer show as empty lines.
 
 ### Fixed
+- Uninstalling never deletes the default install folder or a folder that
+  holds another installed game's folder (a game once installed straight
+  into `~/Games`, with others later put in `~/Games/<game>`).
+- A Cancel just after a Linux game's files were moved into place no longer
+  leaves them without an install record.
+- Closing the main window while an Install window was open could crash it.
+- The Changelog tab could show the previous game's changelog when a tag
+  followed a space; a "<" that starts no tag ("<3", "< 30") is shown as
+  text, and a changelog that can't be shown formatted is shown as plain
+  text.
+- Broken UTF-8 in cached files and in answers from GOG or Wikidata no
+  longer breaks reading them.
+- The download window could freeze for up to 45 seconds while original
+  languages were looked up on Wikidata.
+- Patches switched off after a check are no longer reported as failed
+  downloads or counted in the free-space estimate, and a failed file whose
+  name two games share stays listed.
+- GE-Proton: an extraction that worked no longer fails when tar's warnings
+  name a file in another encoding than UTF-8, an unexpected release name
+  from GitHub no longer crashes, and games are moved off a build before it
+  is removed.
+- An Applications menu entry stays valid when a path has a line break in
+  it, curl only fetches http and https addresses, and text from GOG in the
+  login and Languages windows is shown as text, not markup.
 - When lgogdownloader isn't logged in, the GOG windows say so (and how to
   log in) instead of "lgogdownloader exited with status 1".
 - An age rating's reasons could end in a stray line break from GOG

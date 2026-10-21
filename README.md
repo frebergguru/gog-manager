@@ -9,9 +9,10 @@ Wine or Proton.
 
 You point it at a directory of installers you already own (the `.exe`/`.bin`
 files and their `extras/`), and it does the rest locally. GOG Manager never
-logs in to GOG itself: to check for new games and updates and download them, it
-runs [lgogdownloader](https://github.com/Sude-/lgogdownloader), which holds
-your GOG login.
+holds your GOG login or password itself: to check for new games and updates,
+download them and check their files, it runs
+[lgogdownloader](https://github.com/Sude-/lgogdownloader), which keeps the
+login. GOG Manager can show GOG's login page for it.
 
 ---
 
@@ -36,7 +37,22 @@ your GOG login.
   everything has downloaded, old versions are deleted. If a file fails (for
   example HTTP 404 or 500, or a network error), it says which file and why,
   keeps the game's old version, and asks whether to try again later or ignore
-  the file (until GOG puts out a new version of it).
+  the file (until GOG puts out a new version of it). **Quick Check** looks
+  only at the games GOG flags as new or updated, which takes seconds. The
+  download settings also have a speed limit, "Include games hidden on GOG"
+  and "Include patches" (all off by default), and a full check lists your GOG
+  notifications. Before downloading, it checks there is enough free space for
+  the files it will actually fetch.
+- **Log in from GOG Manager** — **Log In to GOG…** in the download window
+  shows GOG's login page inside GOG Manager (WebKitGTK; https only, nothing
+  kept afterwards) and hands the result to lgogdownloader, so there is nothing
+  to type in a terminal; without WebKit it opens in the web browser and you
+  paste the address. The button shows when lgogdownloader is logged in.
+- **Check Files** — a downloaded game's page can compare its files with GOG's
+  checksums (lgogdownloader `--repair`) and download damaged parts again.
+- **Download languages** — by default each game's original language (looked
+  up on Wikidata) plus the languages ticked under **Also Download** in
+  Preferences; each game can have its own choice.
 - **Games not downloaded yet** — the games you own on GOG but haven't
   downloaded are in the library as well (after a check in the download
   window), with their box art and details and a **Download…** button.
@@ -48,14 +64,20 @@ your GOG login.
   custom runner paths you add in Preferences.
 - **Built-in GE-Proton fetcher** — downloads and extracts the latest
   [GE-Proton](https://github.com/GloriousEggroll/proton-ge-custom) release into
-  a local tools directory, with live progress.
+  a local tools directory, with live progress; **Manage…** in Preferences
+  lists the downloaded builds with their sizes and removes the ones you pick,
+  or all but the newest.
 - **DLC & extras** — links DLC products to their base game and installs them
   into the base game's directory; surfaces bonus `extras/` content
   (manuals, soundtracks, wallpapers) per game.
-- **Serial keys** — shows the keys from a product folder's `serials.txt`
-  (for games that need a CD key) on the game's page, with a copy button.
+- **Serial keys and GOG's messages** — shows the keys from `serials.txt` (or,
+  without one, the CD keys in lgogdownloader's `game-details.json`) on the
+  game's page, with a copy button, and GOG's messages about the game at the
+  top of its About tab.
 - **Launch & maintenance** — launches installed games via their GOG manifest
-  (with native `start.sh` / `*.exe` fallbacks), and offers `winecfg` / `regedit`
+  (with native `start.sh` / `*.exe` fallbacks), uninstalls them (never
+  deleting the library, the install root or another game's folder), checks
+  for free space before installing, and offers `winecfg` / `regedit`
   on a game's existing prefix for Wine installs. Every installed game also
   gets a `play.sh` in its folder that starts it the same way without
   gog-manager (or the library disk) — kept up to date when the runner changes.
@@ -267,7 +289,7 @@ yourself:
 ```
 
 Releases are published automatically when a `v*` tag is pushed — e.g.
-`git tag v0.1.0 && git push origin v0.1.0`.
+`git tag vX.Y.Z && git push origin vX.Y.Z`.
 
 Full details, per-distro dependencies, the AppImage packaging, and
 troubleshooting are in [Compiling.md](Compiling.md).
@@ -318,27 +340,35 @@ Set a fixed library folder in **Preferences** to override that; once set, it is
 always used regardless of where you launch from.
 
 The config files live in a hidden `.gog-manager-configs` folder **next to the
-executable**, so they travel with a portable copy. Files an older version kept
-directly next to the executable are moved there on start:
+executable**, so they travel with a portable copy. When that folder can't be
+written to (for example a system install in `/usr/bin`), they go to
+`$XDG_CONFIG_HOME/gog-manager/` (default `~/.config/gog-manager/`) instead.
+Files an older version kept directly next to the executable are moved into
+`.gog-manager-configs` on start:
 
 | Path | Purpose |
 |------|---------|
-| `<app dir>/.gog-manager-configs/gog-manager.cfg` | Library path (if set), install root, and configured runners |
-| `<app dir>/.gog-manager-configs/gog-manager-state.json` | Per-game install state (keyed by product id) |
-| `<app dir>/.gog-manager-configs/gog-manager-updates.json` | The last GOG check: what each game has to download |
-| `<app dir>/.gog-manager-configs/gog-manager-download.json` | Download choices: files at the same time, speed limit, hidden games, each game's languages; GOG's notifications from the last check |
-| `<app dir>/.gog-manager-configs/gog-manager-gamesdb.json` | Details from GOG's games database (summary, genres, developers, themes, rating, screenshot and video links...) |
-| `<app dir>/.gog-manager-configs/gamesdb-images/` | Box art, backgrounds and the screenshots you have looked at, from GOG's games database |
+| `<config dir>/gog-manager.cfg` | Library path (if set), install root, and configured runners |
+| `<config dir>/gog-manager-state.json` | Per-game install state (keyed by product id) |
+| `<config dir>/gog-manager-updates.json` | The last GOG check: what each game has to download |
+| `<config dir>/gog-manager-download.json` | Download choices: files at the same time, speed limit, hidden games, patches, each game's languages; GOG's notifications from the last check |
+| `<config dir>/gog-manager-categories.json` | GOG's store details per game: categories, features, tags, languages, requirements, age ratings, editions |
+| `<config dir>/gog-manager-original-languages.json` | Each game's original language (from Wikidata), for the default download languages |
+| `<config dir>/gog-manager-gamesdb.json` | Details from GOG's games database (summary, genres, developers, themes, rating, screenshot and video links...) |
+| `<config dir>/gamesdb-images/` | Box art, backgrounds and the screenshots you have looked at, from GOG's games database |
 | `$XDG_DATA_HOME/gog-manager/proton/<tag>/` | Downloaded GE-Proton builds |
+| `$XDG_DATA_HOME/applications/gog-manager-<id>.desktop` | Applications menu entries you added |
+| `$XDG_DATA_HOME/gog-manager/icons/` | Their icons |
+| `$XDG_DATA_HOME/gog-manager/steam-compat-client/` | Empty folder Proton needs as its Steam client path |
 
 The GOG check and downloads use lgogdownloader's own settings in
 `~/.config/lgogdownloader/config.cfg` (platforms and so on); the library folder
 should be lgogdownloader's download directory, with one `<gamename>` folder per
 game.
 
-`<app dir>` is the directory containing the binary — for an AppImage, the folder
-the `.AppImage` file sits in — so both the config and your install state travel
-with a portable copy. Downloaded GE-Proton builds stay under `$XDG_DATA_HOME`
+`<config dir>` is `.gog-manager-configs` in the folder containing the binary —
+for an AppImage, the folder the `.AppImage` file sits in — or
+`~/.config/gog-manager` when that folder is read-only. Downloaded GE-Proton builds stay under `$XDG_DATA_HOME`
 (default `~/.local/share`), since they are large and shared across setups.
 
 ---
@@ -350,20 +380,49 @@ src/
 ├── main.c                 App entry point (AdwApplication)
 ├── game.{c,h}             GogGame model — one product and its installers/extras
 ├── library.{c,h}          Async scanner → GListModel<GogGame>
-├── config.{c,h}           gog-manager.cfg + gog-manager-state.json load/save
+├── config.{c,h}           Config folder, gog-manager.cfg + gog-manager-state.json
 ├── runner.{c,h}           Wine/Proton discovery and command building
 ├── installer_engine.{c,h} Install/uninstall jobs (async, with progress)
-├── launch.{c,h}           Launching installed games
-├── proton_fetch.{c,h}     GE-Proton downloader
-├── gog_sync.{c,h}         GOG checks and downloads through lgogdownloader
+├── launch.{c,h}           Launching installed games, play.sh
+├── shortcut.{c,h}         Applications menu entries
+├── proton_fetch.{c,h}     GE-Proton downloader and build management
+├── gog_sync.{c,h}         GOG checks, downloads, login and file checks through lgogdownloader
+├── categories.{c,h}       GOG's store API (api.gog.com/v2/games): categories and store details
+├── gamesdb.{c,h}          GOG's games database: box art, details, screenshots, videos
+├── original_language.{c,h} Each game's original language, from Wikidata
+├── fetch.{c,h}            Parallel downloads through curl
 ├── json_util.{c,h}        json-c helpers
-├── text_util.{c,h}        String helpers
+├── text_util.{c,h}        String and GOG HTML helpers
 ├── resources/             GResource: CSS and icons
-└── ui/                    GTK widgets (main window, dialogs, detail view)
+└── ui/
+    ├── main_window.{c,h}          Library window: grid/list/table, filters, sorting
+    ├── game_detail.{c,h}          Game page and its tabs
+    ├── install_dialog.{c,h}       Install window
+    ├── gog_sync_dialog.{c,h}      New Games and Updates on GOG (download window)
+    ├── login_dialog.{c,h}         Log In to GOG (WebKit page or web browser)
+    ├── repair_dialog.{c,h}        Check Files (lgogdownloader --repair)
+    ├── preferences_dialog.{c,h}   Preferences (Library, Runners, Downloads)
+    ├── proton_fetch_dialog.{c,h}  GE-Proton download
+    ├── proton_manage_dialog.{c,h} Manage and remove GE-Proton builds
+    └── dialog_window.{c,h}        Shared resizable dialog window and alerts
 
-tests/                     Unit tests (json-util, runner command building,
-                           library scanning, lgogdownloader output parsing,
-                           play.sh, categories, menu entries)
+tests/                     Unit tests (json-util and GOG's HTML text, runner
+                           command building and GE-Proton, library scanning,
+                           lgogdownloader output parsing, uninstall protection,
+                           config folder, play.sh, categories and store
+                           details, games database, menu entries)
+
+packaging/
+├── build-appimage.sh      Builds the AppImage (bundles lgogdownloader and WebKitGTK)
+├── check-stripped.sh      Fails the release if any shipped binary is unstripped
+├── collect-licenses.py    Ships every bundled library's license; fails the release if one has none
+├── org.gogmanager.app.desktop
+└── org.gogmanager.app.svg
+
+LICENSES/
+└── LGPL-3.0-only.txt      The license the Adwaita icons are used under
+
+meson.build, meson_options.txt (option `webkit`), .github/workflows/appimage.yml (CI)
 ```
 
 ---
@@ -390,8 +449,17 @@ meson test -C build
 - The symbolic icons in `src/resources/icons` come from the
   [Adwaita icon theme](https://gitlab.gnome.org/GNOME/adwaita-icon-theme) by the
   GNOME Project, released under CC-BY-SA-3.0 or LGPL-3.0-only (used here under
-  LGPL-3.0). They are built into the app so every button has its icon whatever
-  icon theme the desktop uses.
+  LGPL-3.0, see [LICENSES/LGPL-3.0-only.txt](LICENSES/LGPL-3.0-only.txt)).
+  They are built into the app so every button has its icon whatever icon theme
+  the desktop uses.
+
+The AppImage also bundles GTK, libadwaita, GLib, WebKitGTK, json-c,
+lgogdownloader's libraries (Boost under BSL-1.0, curl, jsoncpp, tinyxml2,
+RHash, tidy) and their dependencies, each under its own license (mostly
+LGPL-2.1-or-later, MIT and BSD). Their license texts, versions and source
+addresses are inside the AppImage, in `usr/share/licenses/<package>/` and
+`usr/share/doc/gog-manager/THIRD-PARTY-NOTICES.txt`; the About window says so
+too.
 
 ---
 
@@ -399,4 +467,5 @@ meson test -C build
 
 GOG Manager is free software, licensed under the **GNU General Public License
 v3.0 or later** (GPL-3.0-or-later). See the [LICENSE](LICENSE) file for the full
-text.
+text. An install puts it, and the LGPL-3.0 text for the Adwaita icons, in
+`share/licenses/gog-manager/`.

@@ -29,7 +29,7 @@ dependencies, compiling, running, and installing.
 | `curl` | Fetching GE-Proton, game categories and original languages |
 | `tar` | Extracting GE-Proton |
 | `unzip` | Extracting certain installers |
-| `lgogdownloader` | Checking GOG for new games and updates, and downloading them |
+| `lgogdownloader` | Logging in to GOG, checking for new games and updates, downloading them and checking their files (bundled in the AppImage; built from source, the one on `PATH` is used) |
 | Wine and/or Proton | Installing and running Windows games |
 
 ---
@@ -130,11 +130,13 @@ meson test -C build
 
 This runs the unit tests declared in `meson.build`:
 
-- `json-util` — JSON parsing/helpers
-- `runner-cmdline` — Wine/Proton command-line construction
-- `library` — library scanning
+- `json-util` — JSON helpers and GOG's HTML text (descriptions, changelogs)
+- `runner-cmdline` — Wine/Proton command lines and GE-Proton build handling
+- `library` — library scanning, lgogdownloader output parsing, uninstall
+  protection, free space, the config folder
 - `play-script` — the `play.sh` written into each game's folder
-- `categories` — parsing GOG's category tags
+- `categories` — GOG's category tags and store details
+- `gamesdb` — GOG's games database details
 - `shortcut` — Applications menu entries
 
 Add `-v` for full output, or run a single suite with
@@ -156,6 +158,12 @@ Choose a different prefix at setup time if you prefer:
 meson setup build --prefix=/usr
 sudo meson install -C build
 ```
+
+A system-wide install can't write next to its executable, so GOG Manager then
+keeps its config files in `~/.config/gog-manager/` (`$XDG_CONFIG_HOME/gog-manager`)
+instead of a `.gog-manager-configs` folder beside the binary. The install also
+puts GOG Manager's license and the LGPL-3.0 text for its Adwaita icons in
+`share/licenses/gog-manager/`.
 
 ---
 
@@ -183,9 +191,10 @@ A plain statically-linked executable is not viable for a GTK 4 / libadwaita
 app. GTK loads image loaders and I/O modules dynamically at runtime, needs its
 compiled GSettings schemas present on disk, and the GPU driver (Vulkan/OpenGL)
 must always come from the host system. The AppImage is the working equivalent:
-it bundles GTK 4, libadwaita, json-c and their ~130 dependent libraries, the
-compiled GSettings schemas, the GdkPixbuf loaders and the Adwaita theme into one
-file, with the binary's runpath pointed at the bundled libraries. Only the GPU
+it bundles GTK 4, libadwaita, json-c, WebKitGTK 6.0 (with its helper programs)
+and lgogdownloader with all their dependent libraries, the compiled GSettings
+schemas, the GdkPixbuf loaders and the Adwaita theme into one file, with the
+binary's runpath pointed at the bundled libraries. Only the GPU
 driver and optional external helpers (wine, curl, tar) are taken from the host.
 
 ### How the script works
@@ -205,24 +214,36 @@ driver and optional external helpers (wine, curl, tar) are taken from the host.
    `git ls-remote` at most once a day and kept in
    `.appimage-tools/lgogdownloader-latest`; set `LGOG_TAG` to pick one) and
    installs it, stripped, into the AppDir.
-5. Copies WebKitGTK's helper programs (web, network and GPU processes, the
-   injected bundle) into the AppDir, and adds an AppRun hook that starts GOG
+5. Copies WebKitGTK's web and network processes (the build stops if either is
+   missing), the GPU process when the WebKit build has one, and the injected
+   bundle into the AppDir, and adds an AppRun hook that starts GOG
    Manager in `$APPDIR/usr` (keeping the folder it was started from in
    `GOG_MANAGER_LAUNCH_DIR`) with WebKit's sandbox off.
 6. Runs `linuxdeploy --plugin gtk` to bundle the libraries of GOG Manager,
    lgogdownloader and WebKit's helpers, then rewrites the helpers' path in the
    bundled `libwebkitgtk-6.0.so` to a relative one of the same length
-   (`/usr/lib/webkitgtk-6.0` → `././/lib/webkitgtk-6.0`), and packs the
-   AppDir with `appimagetool`.
-7. Runs `packaging/check-stripped.sh` on the AppDir and the finished AppImage,
+   (`/usr/lib/webkitgtk-6.0` → `././/lib/webkitgtk-6.0`), and drops the
+   GObject introspection typelibs the GTK plugin copies (GOG Manager is C and
+   never loads them).
+7. Runs `packaging/collect-licenses.py`, which traces every bundled file to
+   the build machine's package (pacman, dpkg or rpm), copies each package's
+   license texts to `usr/share/licenses/<package>/` and lists its version,
+   license and source address in
+   `usr/share/doc/gog-manager/THIRD-PARTY-NOTICES.txt`. It fails the build if
+   a bundled file has no package or a package has no license text. Then the
+   AppDir is packed with `appimagetool`.
+8. Runs `packaging/check-stripped.sh` on the AppDir and the finished AppImage,
    and deletes the AppImage and fails if any binary or bundled library still
    has symbols or debug info.
 
 Build-machine requirements: the normal build dependencies (section 2) with
 WebKitGTK 6.0, lgogdownloader's build dependencies (CMake, Boost, jsoncpp,
 RHash, tinyxml2, tidy, libcurl, zlib; see its README), plus `git`, `python3`
-(for the strip check and the WebKit patch), `patchelf` (downloaded if
-missing), and `wget` or `curl` for the tool downloads. FUSE is **not** required — the
+(for the strip check, the license collection and the WebKit patch), `pacman`,
+`dpkg` or `rpm` (to find each bundled library's package and license),
+`patchelf` (downloaded if missing), and `wget` or `curl` for the tool
+downloads. On Arch, the `licenses` package provides the common license texts
+some packages refer to. FUSE is **not** required — the
 script runs the tools in extract-and-run mode.
 
 Set `ARCH` to target a different architecture (default `x86_64`). Delete
@@ -250,6 +271,10 @@ rm -rf build
 meson setup build
 meson compile -C build
 ```
+
+**The login opens in the web browser instead of inside GOG Manager**
+GOG Manager was built without WebKitGTK 6.0. Install its development package
+(section 2) and reconfigure with `meson setup build --reconfigure -Dwebkit=enabled`.
 
 **Runtime: icons show as missing / broken boxes**
 The app's own button icons are built into it, but the view-switcher icons and

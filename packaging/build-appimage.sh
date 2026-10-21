@@ -25,7 +25,10 @@
 #   - meson, ninja, a C compiler, and the gtk4/libadwaita/json-c -dev packages
 #     (same as a normal build — see Compiling.md section 2)
 #   - patchelf, and one of wget/curl (to fetch the packaging tools)
-#   - python3 (for the strip check, packaging/check-stripped.sh)
+#   - python3 (for the strip check, packaging/check-stripped.sh, and
+#     packaging/collect-licenses.py)
+#   - pacman, dpkg or rpm: collect-licenses.py looks up which package each
+#     bundled library came from, to ship its license
 #   - git, CMake and lgogdownloader's build dependencies (Boost, jsoncpp,
 #     RHash, tinyxml2, tidy, libcurl, zlib); see
 #     https://github.com/Sude-/lgogdownloader#build-dependencies
@@ -157,12 +160,8 @@ if [ -x "$WEBKIT_HELPERS/WebKitGPUProcess" ]; then
   install -m755 "$WEBKIT_HELPERS/WebKitGPUProcess" "$APPDIR_HELPERS/"
 fi
 install -m644 "$WEBKIT_HELPERS"/injected-bundle/*.so "$APPDIR_HELPERS/injected-bundle/"
-for licence in /usr/share/licenses/webkitgtk-6.0/LICENSE /usr/share/doc/libwebkitgtk-6.0-4/copyright; do
-  if [ -f "$licence" ]; then
-    install -Dm644 "$licence" "$APPDIR/usr/share/doc/webkitgtk-6.0/$(basename "$licence")"
-    break
-  fi
-done
+# WebKitGTK's license, like every other bundled library's, is shipped by
+# collect-licenses.py (step 3).
 
 # Started in $APPDIR/usr (see above); the folder it was started from goes on
 # in GOG_MANAGER_LAUNCH_DIR, for the library and the programs GOG Manager runs.
@@ -260,6 +259,15 @@ for lib in libs:
 if not patched:
     sys.exit(f"error: {helpers} not found in {libs}")
 PATCH
+
+# The gtk plugin copies every GObject introspection typelib on the build
+# machine (Pamac's, GIMP's...). GOG Manager is C and never loads them.
+rm -rf "$APPDIR/usr/lib/girepository-1.0"
+
+# Every bundled library's license, version and source, from the build
+# machine's packages; stops the release if any has none.
+log "Shipping the licenses of the bundled libraries"
+python3 -I "$ROOT/packaging/collect-licenses.py" "$APPDIR"
 
 log "Building the AppImage"
 "$AT" "$APPDIR" "$OUTPUT"

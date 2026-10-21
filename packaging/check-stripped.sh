@@ -1,5 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT
+# Copyright (C) 2026 Hypnotize
 #
 # check-stripped.sh — refuse a release that carries symbols or debug info.
 #

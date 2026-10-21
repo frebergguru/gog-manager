@@ -72,6 +72,10 @@ executable('gog-manager',
 # system install to show up in application menus. See packaging/build-appimage.sh.
 install_data('packaging/org.gogmanager.app.desktop',
   install_dir : get_option('datadir') / 'applications')
+# GOG Manager's license, and the LGPL the Adwaita icons in its resources
+# are used under.
+install_data('LICENSE', 'LICENSES/LGPL-3.0-only.txt',
+  install_dir : get_option('datadir') / 'licenses' / 'gog-manager')
 install_data('packaging/org.gogmanager.app.svg',
   install_dir : get_option('datadir') / 'icons' / 'hicolor' / 'scalable' / 'apps')
 

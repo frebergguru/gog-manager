@@ -2124,7 +2124,22 @@ on_about_clicked (GtkButton *button, gpointer user_data)
                                    "comments",
                                    "Browse, sort, and install your local GOG offline installers "
                                    "— Windows titles via Wine or Proton, Linux titles natively.",
+                                   "copyright", "© 2026 Hypnotize",
                                    "license-type", GTK_LICENSE_GPL_3_0, NULL);
+  AdwAboutWindow *aw = ADW_ABOUT_WINDOW (about);
+  adw_about_window_add_legal_section (
+      aw, "Adwaita icons", "© GNOME Project", GTK_LICENSE_LGPL_3_0_ONLY, NULL);
+  adw_about_window_add_legal_section (
+      aw, "lgogdownloader", "© Sude- and contributors", GTK_LICENSE_CUSTOM,
+      "Released under the <a href=\"https://github.com/Sude-/lgogdownloader/blob/master/"
+      "COPYING\">WTFPL</a>. GOG Manager runs it, and the AppImage comes with it.");
+  adw_about_window_add_legal_section (
+      aw, "Libraries in the AppImage", NULL, GTK_LICENSE_CUSTOM,
+      "The AppImage also contains GTK, libadwaita, GLib, WebKitGTK, json-c and the "
+      "libraries they use, each under its own license (mostly LGPL-2.1-or-later, MIT, "
+      "BSD and similar). Their license texts, versions and where to get their source "
+      "are inside the AppImage, in usr/share/licenses and "
+      "usr/share/doc/gog-manager/THIRD-PARTY-NOTICES.txt.");
   G_GNUC_END_IGNORE_DEPRECATIONS
   gtk_window_present (about);
 }

@@ -31,15 +31,22 @@ official docs (<https://docs.gog.com/sdk/>, the Galaxy SDK for game
 developers, and the Galaxy Integrations API for Galaxy 2.0 plugins) don't
 cover it.
 
-GOG Manager already gets its data in three ways:
+GOG Manager already gets its data in these ways:
 
-- **lgogdownloader** (3.19) for the login, `--status`, `--list j`,
-  `--download` and `--check-orphans`, saving the product JSON, icon, logo and
-  serials. Patches are excluded.
+- **lgogdownloader** (3.19) for the login (`--browser-login`,
+  `--check-login-status`), `--status`, `--list j`, `--list games
+  --updated`/`--new`, `--notifications`, `--download`, `--repair` and
+  `--check-orphans`, saving the product JSON, game details JSON, icon, logo
+  and serials. Patches are a download setting (excluded by default).
 - **The product JSON** that lgogdownloader saves: id, slug, title,
-  release_date, game_type, `description.full`, `content_system_compatibility`,
-  related_products, and the installer and bonus file lists.
-- **`api.gog.com/v2/games/<id>`**, only `_embedded.tags` (categories).
+  release_date, game_type, descriptions, `content_system_compatibility`,
+  related_products, changelog, screenshots, videos, links, and the installer
+  and bonus file lists.
+- **`api.gog.com/v2/games/<id>`**: categories, features, tags, languages,
+  requirements, age ratings, editions, technologies, copyright.
+- **`gamesdb.gog.com`**: covers, background, summary, genres, developer,
+  publisher, series, themes, modes, rating, screenshots, videos.
+- **Wikidata**: each game's original language.
 
 Where lgogdownloader already does something, use it rather than calling the
 API ourselves: it holds the login and handles GOG's quirks.
