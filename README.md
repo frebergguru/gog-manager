@@ -14,6 +14,12 @@ download them and check their files, it runs
 [lgogdownloader](https://github.com/Sude-/lgogdownloader), which keeps the
 login. GOG Manager can show GOG's login page for it.
 
+![The library as a grid of box art, with filters in the sidebar](docs/screenshots/library-grid.png)
+
+| Detailed list | Game page |
+|---|---|
+| ![The library as a sortable table with categories, platforms, size, release date and languages](docs/screenshots/library-list.png) | ![A game's page with its artwork and details from GOG](docs/screenshots/game-page.png) |
+
 ---
 
 ## Features
