@@ -548,7 +548,9 @@ read_galaxy_login (gchar **refresh_token, gchar **user_id, GError **error)
   g_free (path);
   const char *client = ju_get_string (root, "client_id", NULL);
   const char *refresh = ju_get_string (root, "refresh_token", NULL);
-  gboolean ok = refresh && *refresh && g_strcmp0 (client, GALAXY_CLIENT_ID) == 0;
+  /* A fresh login has no client_id; lgogdownloader adds it when it renews
+   * the login. Another one is a game's (see read_galaxy_login's error). */
+  gboolean ok = refresh && *refresh && (!client || g_strcmp0 (client, GALAXY_CLIENT_ID) == 0);
   if (ok)
     {
       *refresh_token = g_strdup (refresh);
