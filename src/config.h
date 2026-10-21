@@ -70,6 +70,10 @@ void gog_state_update_from_game (GogState *state, GogGame *game);
 /* Removes any recorded state for a product id (used on uninstall). */
 void gog_state_remove (GogState *state, gint64 id);
 
+/* The install paths of every recorded game (NULL-terminated, free with
+ * g_strfreev). */
+GStrv gog_state_dup_install_paths (GogState *state);
+
 G_END_DECLS
 
 #endif

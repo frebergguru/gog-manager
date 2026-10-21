@@ -67,6 +67,7 @@ struct _GogAlert
   GtkWindow *window;
   GogAlertFunc callback;
   gpointer user_data;
+  GDestroyNotify user_data_free;
   gboolean answered;
 };
 
@@ -81,6 +82,8 @@ alert_response_free (AlertResponse *r)
 static void
 gog_alert_free (GogAlert *alert)
 {
+  if (alert->user_data_free)
+    alert->user_data_free (alert->user_data);
   g_free (alert->heading);
   g_free (alert->body);
   g_ptr_array_unref (alert->responses);
@@ -122,6 +125,12 @@ gog_alert_set_close_response (GogAlert *alert, const char *id)
 {
   g_free (alert->close_id);
   alert->close_id = g_strdup (id);
+}
+
+void
+gog_alert_set_user_data_free (GogAlert *alert, GDestroyNotify user_data_free)
+{
+  alert->user_data_free = user_data_free;
 }
 
 void

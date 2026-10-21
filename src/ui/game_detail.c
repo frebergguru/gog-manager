@@ -1269,6 +1269,23 @@ add_link (GogGameDetail *self, const char *label, const char *what, const char *
   gtk_box_append (self->links_box, button);
 }
 
+/* Markup made from GOG's HTML; should it ever come out invalid, its text
+ * instead of a label left showing the previous game's. */
+static void
+set_markup_or_text (GtkLabel *label, const char *markup)
+{
+  gchar *text = NULL;
+  if (pango_parse_markup (markup, -1, 0, NULL, &text, NULL, NULL))
+    gtk_label_set_markup (label, markup);
+  else
+    {
+      gchar *plain = text_strip_html (markup);
+      gtk_label_set_text (label, plain);
+      g_free (plain);
+    }
+  g_free (text);
+}
+
 /* The links, the changelog and the copyright line. */
 static void
 build_about_extras (GogGameDetail *self, const GogStoreInfo *store)
@@ -1295,7 +1312,7 @@ build_about_extras (GogGameDetail *self, const GogStoreInfo *store)
           gtk_box_append (self->messages_box, heading);
         }
       GtkWidget *label = gtk_label_new (NULL);
-      gtk_label_set_markup (GTK_LABEL (label), *m);
+      set_markup_or_text (GTK_LABEL (label), *m);
       gtk_label_set_wrap (GTK_LABEL (label), TRUE);
       gtk_label_set_xalign (GTK_LABEL (label), 0.0);
       gtk_label_set_selectable (GTK_LABEL (label), TRUE);
@@ -1309,7 +1326,7 @@ build_about_extras (GogGameDetail *self, const GogStoreInfo *store)
   gtk_label_set_label (self->copyright_label, copyright ? copyright : "");
   gtk_widget_set_visible (GTK_WIDGET (self->copyright_label), copyright != NULL);
 
-  gtk_label_set_markup (self->changelog_label, product->changelog ? product->changelog : "");
+  set_markup_or_text (self->changelog_label, product->changelog ? product->changelog : "");
   adw_view_stack_page_set_visible (self->changelog_page, product->changelog != NULL);
 }
 

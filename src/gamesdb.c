@@ -209,7 +209,7 @@ parse_date (const char *text)
 GogGamesdbInfo *
 gog_gamesdb_parse (const char *json)
 {
-  json_object *root = json ? json_tokener_parse (json) : NULL;
+  json_object *root = json ? ju_parse_string (json) : NULL;
   json_object *game = ju_get_obj (root, "game");
   if (!root || !json_object_is_type (root, json_type_object) || !game)
     {

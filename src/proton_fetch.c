@@ -437,8 +437,18 @@ run_capture (GogProtonFetchJob *job, gchar **argv, gchar **out_output, GError **
       g_mutex_unlock (&job->proc_mutex);
     }
 
+  /* Bytes, not _utf8: tar's warnings may name files in any encoding, and
+   * that must not fail an extraction that worked. */
+  GBytes *bytes = NULL;
   gchar *output = NULL;
-  gboolean ok = g_subprocess_communicate_utf8 (proc, NULL, NULL, &output, NULL, error);
+  gboolean ok = g_subprocess_communicate (proc, NULL, NULL, &bytes, NULL, error);
+  if (bytes)
+    {
+      gsize len = 0;
+      const char *data = g_bytes_get_data (bytes, &len);
+      output = g_utf8_make_valid (data ? data : "", (gssize) len);
+      g_bytes_unref (bytes);
+    }
 
   if (job)
     {
@@ -764,7 +774,8 @@ query_newest_release (GogProtonFetchJob *job, GError **error)
   if (!is_safe_dir_name (info->tag) || !is_safe_dir_name (info->dir_name))
     {
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                   "GitHub returned an unexpected release name: %s", asset_name);
+                   "GitHub returned an unexpected release name: %s",
+                   info->dir_name ? info->dir_name : "");
       release_info_free (info);
       return NULL;
     }

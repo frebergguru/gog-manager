@@ -295,7 +295,7 @@ lookup_batch (const char *const *names, guint n, json_object *cache,
                    err && *err ? g_strstrip (err) : "curl failed");
       ok = FALSE;
     }
-  json_object *root = ok ? json_tokener_parse (out) : NULL;
+  json_object *root = ok ? ju_parse_string (out) : NULL;
   g_free (out);
   g_free (err);
   if (ok && !root)
@@ -397,15 +397,27 @@ gog_original_lookup (const char *const *gamenames, const volatile gboolean *canc
         continue;
       g_ptr_array_add (todo, (gpointer) *g);
     }
+  json_object_put (cache);
+  /* Not locked while Wikidata answers: the UI thread reads the cache. */
+  G_UNLOCK (cache);
+
+  json_object *answers = json_object_new_object ();
   gboolean ok = TRUE;
   for (guint i = 0; ok && i < todo->len && !(cancelled && *cancelled); i += BATCH)
-    ok = lookup_batch ((const char *const *) todo->pdata + i, MIN (BATCH, todo->len - i), cache,
-                       cancelled, error);
+    ok = lookup_batch ((const char *const *) todo->pdata + i, MIN (BATCH, todo->len - i),
+                       answers, cancelled, error);
   /* Whatever was looked up before a failure is kept. */
-  if (todo->len)
-    save_cache (cache);
+  if (json_object_object_length (answers) > 0)
+    {
+      G_LOCK (cache);
+      cache = load_cache ();
+      json_object_object_foreach (answers, name, entry)
+        json_object_object_add (cache, name, json_object_get (entry));
+      save_cache (cache);
+      json_object_put (cache);
+      G_UNLOCK (cache);
+    }
+  json_object_put (answers);
   g_ptr_array_unref (todo);
-  json_object_put (cache);
-  G_UNLOCK (cache);
   return ok;
 }

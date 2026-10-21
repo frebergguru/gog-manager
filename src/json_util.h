@@ -13,6 +13,9 @@ G_BEGIN_DECLS
 /* Load and parse a JSON file. Returns NULL (and sets error) on failure. */
 json_object *ju_load_file (const char *path, GError **error);
 
+/* json_tokener_parse, with invalid UTF-8 replaced first. NULL on failure. */
+json_object *ju_parse_string (const char *text);
+
 /* Safe field getters. All tolerate a missing key, a NULL object, or a
  * mismatched JSON type by returning the supplied default. */
 const char *ju_get_string (json_object *obj, const char *key, const char *def);

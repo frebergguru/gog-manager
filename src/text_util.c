@@ -116,6 +116,18 @@ closer (char tag)
   return tag == 'b' ? "</b>" : tag == 'i' ? "</i>" : tag == 'a' ? "</a>" : "</tt>";
 }
 
+/* Drops the space (or, with newlines, the line break) that add_text or a
+ * <br> left at the end. last_space also stays set after a tag opened at the
+ * start of a word, so the last byte is checked, not only the flag. */
+static void
+drop_trailing_space (Block *b, gboolean newlines)
+{
+  gsize len = b->markup->len;
+  if (b->last_space && len > 0 &&
+      (b->markup->str[len - 1] == ' ' || (newlines && b->markup->str[len - 1] == '\n')))
+    g_string_truncate (b->markup, len - 1);
+}
+
 static void
 end_block (Changelog *c)
 {
@@ -128,8 +140,7 @@ end_block (Changelog *c)
       block_free (b);
       return;
     }
-  if (b->last_space)
-    g_string_truncate (b->markup, b->markup->len - 1);
+  drop_trailing_space (b, TRUE);
   while (b->n_open > 0)
     {
       char t = b->open[--b->n_open];
@@ -227,13 +238,11 @@ close_inline (Changelog *c, char tag)
   if (!b || b->n_open == 0 || b->open[b->n_open - 1] != tag)
     return;
   b->n_open--;
-  if (b->last_space)
+  if (b->last_space && b->markup->len > 0 && b->markup->str[b->markup->len - 1] == ' ')
     {
       g_string_truncate (b->markup, b->markup->len - 1);
-      b->last_space = FALSE;
       g_string_append (b->markup, closer (tag));
       g_string_append_c (b->markup, ' ');
-      b->last_space = TRUE;
     }
   else
     g_string_append (b->markup, closer (tag));
@@ -281,8 +290,7 @@ handle_tag (Changelog *c, const char *name, gsize len, gboolean closing, const c
     {
       if (c->cur && c->cur->has_text)
         {
-          if (c->cur->last_space)
-            g_string_truncate (c->cur->markup, c->cur->markup->len - 1);
+          drop_trailing_space (c->cur, TRUE);
           g_string_append_c (c->cur->markup, '\n');
           /* What follows starts the line, like after a block's start. */
           c->cur->last_space = TRUE;
@@ -314,6 +322,13 @@ handle_tag (Changelog *c, const char *name, gsize len, gboolean closing, const c
     }
 }
 
+/* "<b>", "</p>", "<!-- -->": a tag. "< 30" or "<3" is text. */
+static gboolean
+is_tag_start (const char *p)
+{
+  return g_ascii_isalpha (p[1]) || p[1] == '/' || p[1] == '!';
+}
+
 gchar *
 text_changelog_markup (const char *html)
 {
@@ -323,7 +338,12 @@ text_changelog_markup (const char *html)
   Changelog c = { g_ptr_array_new_with_free_func ((GDestroyNotify) block_free), NULL, 0 };
   for (const char *p = valid; *p;)
     {
-      if (*p == '<')
+      if (*p == '<' && !is_tag_start (p))
+        {
+          add_text (&c, p, 1);
+          p++;
+        }
+      else if (*p == '<')
         {
           const char *end = strchr (p, '>');
           if (!end)
@@ -426,7 +446,7 @@ text_strip_html (const char *html)
 
   while (*p)
     {
-      if (*p == '<')
+      if (*p == '<' && is_tag_start (p))
         {
           const char *end = strchr (p, '>');
           gsize taglen = end ? (gsize) (end - p + 1) : strlen (p);

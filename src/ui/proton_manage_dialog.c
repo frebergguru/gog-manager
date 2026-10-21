@@ -312,6 +312,11 @@ start_remove (ManageCtx *ctx)
   gchar *msg = g_strdup_printf (n == 1 ? "Removing %u version…" : "Removing %u versions…", n);
   set_status (ctx, msg);
   g_free (msg);
+  /* Move the games over first: if the main window closes mid-removal,
+   * on_remove_finished can no longer reach the config and state. */
+  move_users_to (ctx, (const char *const *) ctx->pending,
+                 newest_kept (ctx, (const char *const *) ctx->pending));
+  ctx->changed = TRUE;
   proton_fetch_remove_async ((const char *const *) ctx->pending, NULL, on_remove_finished, ctx);
 }
 

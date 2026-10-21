@@ -550,14 +550,12 @@ extract_linux_sync (GogInstallJob *job, GError **error)
   /* When the whole temp dir was moved in, it brought its 0700 mode. */
   if (ok)
     g_chmod (job->install_dir, 0755);
-  if (ok && job->cancelled)
-    {
-      g_set_error (error, G_IO_ERROR, G_IO_ERROR_CANCELLED, "Cancelled");
-      ok = FALSE;
-    }
+  /* A cancel that lands now comes too late: the files are in place, and
+   * failing would leave them without an install record to uninstall them
+   * by. Only the post-install script is skipped. */
 
   gchar *postinst = g_build_filename (job->install_dir, "support", "postinst.sh", NULL);
-  if (ok && g_file_test (postinst, G_FILE_TEST_IS_REGULAR))
+  if (ok && !job->cancelled && g_file_test (postinst, G_FILE_TEST_IS_REGULAR))
     {
       if (g_chmod (postinst, 0755) != 0)
         {
@@ -994,8 +992,11 @@ add_protected (GPtrArray *keep, const char *dir)
 
 /* TRUE for folders an uninstall must never delete, whatever the install
  * record says: /, the home folder and anything holding it, the standard
- * user folders (Downloads, Documents...), a mount point, and the folder
- * with the game's own installers (or one holding it). real is resolved. */
+ * user folders (Downloads, Documents...), a mount point, the folder with
+ * the game's own installers (or one holding it), the install root (or one
+ * holding it), and a folder holding another recorded game's install (a game
+ * once installed straight into an empty ~/Games, with others later put in
+ * ~/Games/<slug>). real is resolved. */
 static gboolean
 is_protected_dir (const char *real, GogGame *game)
 {
@@ -1013,6 +1014,10 @@ is_protected_dir (const char *real, GogGame *game)
   const char *installers = gog_game_get_folder_path (game);
   if (installers && *installers)
     add_protected (keep, installers);
+  GogConfig *config = gog_config_load ();
+  if (config->install_root && *config->install_root)
+    add_protected (keep, config->install_root);
+  gog_config_free (config);
   for (guint i = 0; i < keep->len && !protected; i++)
     {
       const char *k = g_ptr_array_index (keep, i);
@@ -1020,6 +1025,23 @@ is_protected_dir (const char *real, GogGame *game)
       protected = g_strcmp0 (real, k) == 0 || g_str_has_prefix (k, real_slash);
     }
   g_ptr_array_unref (keep);
+
+  /* Only strictly inside: a DLC's record shares its base game's folder. */
+  if (!protected)
+    {
+      GogState *state = gog_state_load ();
+      GStrv paths = gog_state_dup_install_paths (state);
+      for (GStrv p = paths; *p && !protected; p++)
+        {
+          char *other = realpath (*p, NULL);
+          gchar *canon = other ? g_strdup (other) : g_canonicalize_filename (*p, NULL);
+          free (other);
+          protected = g_str_has_prefix (canon, real_slash);
+          g_free (canon);
+        }
+      g_strfreev (paths);
+      gog_state_free (state);
+    }
 
   /* A mount point: the top of a drive is no game's folder. */
   if (!protected)

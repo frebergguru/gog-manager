@@ -104,7 +104,7 @@ if [ -z "${LGOG_TAG:-}" ]; then
   else
     log "Looking up the newest lgogdownloader release"
     LGOG_TAG="$(git ls-remote --tags --refs "$LGOG_REPO.git" 'v*' |
-      sed 's|.*refs/tags/||' | grep -E '^v[0-9]+(\.[0-9]+)*$' | sort -V | tail -n 1)"
+      sed 's|.*refs/tags/||' | grep -E '^v[0-9]+(\.[0-9]+)*$' | sort -V | tail -n 1 || true)"
     [ -n "$LGOG_TAG" ] && printf '%s\n' "$LGOG_TAG" > "$LGOG_LATEST"
   fi
 fi
@@ -145,9 +145,17 @@ esac
 APPDIR_HELPERS="$APPDIR$WEBKIT_HELPERS"
 log "Copying WebKitGTK's helper programs"
 mkdir -p "$APPDIR_HELPERS/injected-bundle"
-for helper in WebKitWebProcess WebKitNetworkProcess WebKitGPUProcess; do
-  [ -x "$WEBKIT_HELPERS/$helper" ] && install -m755 "$WEBKIT_HELPERS/$helper" "$APPDIR_HELPERS/"
+for helper in WebKitWebProcess WebKitNetworkProcess; do
+  if [ ! -x "$WEBKIT_HELPERS/$helper" ]; then
+    echo "error: $WEBKIT_HELPERS/$helper not found; the login page needs it" >&2
+    exit 1
+  fi
+  install -m755 "$WEBKIT_HELPERS/$helper" "$APPDIR_HELPERS/"
 done
+# Only some WebKit builds have a separate GPU process.
+if [ -x "$WEBKIT_HELPERS/WebKitGPUProcess" ]; then
+  install -m755 "$WEBKIT_HELPERS/WebKitGPUProcess" "$APPDIR_HELPERS/"
+fi
 install -m644 "$WEBKIT_HELPERS"/injected-bundle/*.so "$APPDIR_HELPERS/injected-bundle/"
 for licence in /usr/share/licenses/webkitgtk-6.0/LICENSE /usr/share/doc/libwebkitgtk-6.0-4/copyright; do
   if [ -f "$licence" ]; then

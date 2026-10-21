@@ -518,7 +518,8 @@ on_filters_changed (GtkWidget *widget, gpointer user_data)
 {
   (void) widget;
   GogMainWindow *self = user_data;
-  if (!self->ready)
+  /* The models go with the window's content, before "destroy". */
+  if (!self->ready || window_gone (self))
     return;
   gtk_filter_changed (GTK_FILTER (self->filter), GTK_FILTER_CHANGE_DIFFERENT);
   update_count_label (self);
@@ -529,7 +530,8 @@ on_sort_changed (GtkWidget *widget, gpointer user_data)
 {
   (void) widget;
   GogMainWindow *self = user_data;
-  if (!self->ready)
+  /* The models go with the window's content, before "destroy". */
+  if (!self->ready || window_gone (self))
     return;
   gtk_sorter_changed (GTK_SORTER (self->sorter), GTK_SORTER_CHANGE_DIFFERENT);
 }
@@ -2341,6 +2343,9 @@ gog_main_window_dispose (GObject *object)
     g_cancellable_cancel (self->categories_cancellable);
   if (self->library)
     g_signal_handlers_disconnect_by_data (self->library, self);
+  /* An open install window keeps the game page alive past this. */
+  if (self->detail)
+    g_signal_handlers_disconnect_by_data (self->detail, self);
   g_clear_pointer (&self->gog_updates, g_hash_table_unref);
   g_clear_pointer (&self->dlc_counts, g_hash_table_unref);
   G_OBJECT_CLASS (gog_main_window_parent_class)->dispose (object);

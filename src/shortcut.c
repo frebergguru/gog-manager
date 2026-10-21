@@ -55,9 +55,17 @@ gog_shortcut_exec_value (const char *path)
   GString *out = g_string_new (NULL);
   for (const char *p = quoted->str; *p; p++)
     {
-      if (*p == '\\')
-        g_string_append_c (out, '\\');
-      g_string_append_c (out, *p);
+      /* A raw line break would end the Exec= line. */
+      if (*p == '\n')
+        g_string_append (out, "\\n");
+      else if (*p == '\r')
+        g_string_append (out, "\\r");
+      else
+        {
+          if (*p == '\\')
+            g_string_append_c (out, '\\');
+          g_string_append_c (out, *p);
+        }
     }
   g_string_free (quoted, TRUE);
   return g_string_free (out, FALSE);

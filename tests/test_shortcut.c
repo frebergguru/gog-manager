@@ -31,6 +31,12 @@ test_exec_value_escaping (void)
   gchar *pct = gog_shortcut_exec_value ("/g/100% Juice/play.sh");
   g_assert_cmpstr (pct, ==, "\"/g/100%% Juice/play.sh\"");
   g_free (pct);
+
+  /* A line break would end the Exec= line: it goes in as \n. */
+  gchar *nl = gog_shortcut_exec_value ("/g/a\nExec=x/play.sh");
+  g_assert_cmpstr (nl, ==, "\"/g/a\\nExec=x/play.sh\"");
+  g_assert_null (strchr (nl, '\n'));
+  g_free (nl);
 }
 
 static void

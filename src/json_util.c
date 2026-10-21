@@ -4,6 +4,7 @@
 
 #include "json_util.h"
 #include <stdio.h>
+#include <string.h>
 
 json_object *
 ju_load_file (const char *path, GError **error)
@@ -22,6 +23,16 @@ ju_load_file (const char *path, GError **error)
       return NULL;
     }
 
+  /* json-c doesn't check UTF-8, and GLib's UTF-8 functions read past the
+   * end of a string that ends in a broken sequence. */
+  if (!g_utf8_validate_len (contents, length, NULL))
+    {
+      gchar *valid = g_utf8_make_valid (contents, (gssize) length);
+      g_free (contents);
+      contents = valid;
+      length = strlen (valid);
+    }
+
   json_tokener *tok = json_tokener_new ();
   json_object *obj = json_tokener_parse_ex (tok, contents, (int) length);
   enum json_tokener_error jerr = json_tokener_get_error (tok);
@@ -38,6 +49,19 @@ ju_load_file (const char *path, GError **error)
 
   json_tokener_free (tok);
   g_free (contents);
+  return obj;
+}
+
+json_object *
+ju_parse_string (const char *text)
+{
+  if (!text)
+    return NULL;
+  if (g_utf8_validate (text, -1, NULL))
+    return json_tokener_parse (text);
+  gchar *valid = g_utf8_make_valid (text, -1);
+  json_object *obj = json_tokener_parse (valid);
+  g_free (valid);
   return obj;
 }
 

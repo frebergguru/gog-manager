@@ -22,9 +22,10 @@ gog_fetch_files (const char *const *urls, const char *const *dests, guint n, int
     return TRUE;
 
   /* One line per file on stdout: "<HTTP status> <file>"; 000 when nothing
-   * came back. */
+   * came back. Web addresses only, never file:// and the like. */
   static const char *const base_argv[] = { "curl", "-sS", "--max-time", "30", "-A", "gog-manager",
-                                           "--parallel", "--parallel-max", PARALLEL, "-w",
+                                           "--proto", "=http,https", "--parallel",
+                                           "--parallel-max", PARALLEL, "-w",
                                            "%{http_code} %{filename_effective}\\n" };
   GPtrArray *argv = g_ptr_array_new_with_free_func (g_free);
   for (guint i = 0; i < G_N_ELEMENTS (base_argv); i++)
@@ -33,6 +34,8 @@ gog_fetch_files (const char *const *urls, const char *const *dests, guint n, int
     {
       g_ptr_array_add (argv, g_strdup ("-o"));
       g_ptr_array_add (argv, g_strdup (dests[i]));
+      /* --url: an address from GOG's answer is never read as an option. */
+      g_ptr_array_add (argv, g_strdup ("--url"));
       g_ptr_array_add (argv, g_strdup (urls[i]));
     }
   g_ptr_array_add (argv, NULL);

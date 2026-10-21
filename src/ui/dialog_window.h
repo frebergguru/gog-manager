@@ -33,6 +33,9 @@ void      gog_alert_add_response (GogAlert *alert, const char *id, const char *l
                                   AdwResponseAppearance appearance);
 void      gog_alert_set_default_response (GogAlert *alert, const char *id);
 void      gog_alert_set_close_response (GogAlert *alert, const char *id);
+/* Frees user_data when the alert goes, answered or not (after callback,
+ * if that runs). */
+void      gog_alert_set_user_data_free (GogAlert *alert, GDestroyNotify user_data_free);
 /* Shown between the body and the buttons; the window takes it over. */
 void      gog_alert_set_extra_child (GogAlert *alert, GtkWidget *child);
 void      gog_alert_present (GogAlert *alert, GtkWindow *parent, GogAlertFunc callback,

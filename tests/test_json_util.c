@@ -111,6 +111,49 @@ test_changelog_markup (void)
   g_free (out);
 }
 
+/* A tag opened right after a space, then closed or ended with nothing in
+ * it, must not lose its '>'; a '<' that starts no tag is text. */
+static void
+test_changelog_markup_edges (void)
+{
+  static const char *const inputs[] = {
+    "Fixed <b></b>",
+    "Text <strong><br>Bold</strong>",
+    "<ul><li>Item <i></li></ul>",
+    "Improved FPS when < 30",
+    "<p>Love <3 and a > b</p>",
+  };
+  for (gsize i = 0; i < G_N_ELEMENTS (inputs); i++)
+    {
+      gchar *out = text_changelog_markup (inputs[i]);
+      g_assert_true (pango_parse_markup (out, -1, 0, NULL, NULL, NULL, NULL));
+      g_free (out);
+    }
+  /* GtkLabel takes <a>, Pango doesn't: compared as text. */
+  gchar *out = text_changelog_markup ("<p>See <a href=\"https://x\"><img src=\"y\"></a></p>");
+  g_assert_cmpstr (out, ==, "See <a href=\"https://x\"></a>");
+  g_free (out);
+  out = text_changelog_markup ("Improved FPS when < 30");
+  g_assert_cmpstr (out, ==, "Improved FPS when &lt; 30");
+  g_free (out);
+  out = text_changelog_markup ("Fixed <b>bug</b> <i>now</i>");
+  g_assert_cmpstr (out, ==, "Fixed <b>bug</b> <i>now</i>");
+  g_free (out);
+  out = text_strip_html ("FPS < 30 now");
+  g_assert_cmpstr (out, ==, "FPS < 30 now");
+  g_free (out);
+}
+
+/* Broken UTF-8 in a JSON answer is mended, not passed on. */
+static void
+test_parse_string_invalid_utf8 (void)
+{
+  json_object *root = ju_parse_string ("{\"name\": \"caf\xC3\"}");
+  g_assert_nonnull (root);
+  g_assert_true (g_utf8_validate (ju_get_string (root, "name", ""), -1, NULL));
+  json_object_put (root);
+}
+
 /* GOG's placeholders for feature images aren't text. */
 static void
 test_strip_html_feature_placeholder (void)
@@ -228,6 +271,8 @@ main (int argc, char *argv[])
   g_test_add_func ("/text_util/strip_html_invalid_utf8", test_strip_html_invalid_utf8);
   g_test_add_func ("/text_util/strip_html_changelog", test_strip_html_changelog);
   g_test_add_func ("/text_util/changelog_markup", test_changelog_markup);
+  g_test_add_func ("/text_util/changelog_markup_edges", test_changelog_markup_edges);
+  g_test_add_func ("/json_util/parse_string_invalid_utf8", test_parse_string_invalid_utf8);
   g_test_add_func ("/text_util/strip_html_feature_placeholder",
                    test_strip_html_feature_placeholder);
   g_test_add_func ("/text_util/language_label", test_language_label);

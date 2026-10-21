@@ -1165,6 +1165,12 @@ gog_sync_job_new_download (const char *library_dir, const GogSyncRequest *reques
   for (guint i = 0; i < n_requests; i++)
     {
       GogSyncRequest r = requests[i];
+      /* Patches ticked after a check that listed them, then switched off:
+       * lgogdownloader won't fetch them, so they aren't asked for. */
+      if (!self->include_patches)
+        r.parts &= ~GOG_SYNC_PART_PATCH;
+      if (!r.parts)
+        continue;
       r.gamename = g_strdup (r.gamename);
       g_array_append_val (self->requests, r);
     }
@@ -1176,15 +1182,15 @@ gog_sync_job_new_download (const char *library_dir, const GogSyncRequest *reques
   for (guint i = 0; i < saved->len; i++)
     {
       GogSyncItem *item = g_ptr_array_index (saved, i);
-      for (guint r = 0; r < n_requests; r++)
+      for (guint r = 0; r < self->requests->len; r++)
         {
-          if (g_strcmp0 (requests[r].gamename, item->gamename) != 0)
+          const GogSyncRequest *req = &g_array_index (self->requests, GogSyncRequest, r);
+          if (g_strcmp0 (req->gamename, item->gamename) != 0)
             continue;
           for (guint f = 0; f < item->files->len; f++)
             {
               GogSyncFile *file = g_ptr_array_index (item->files, f);
-              if (!(file->part & requests[r].parts) ||
-                  !gog_sync_file_wanted (file, requests[r].languages))
+              if (!(file->part & req->parts) || !gog_sync_file_wanted (file, req->languages))
                 continue;
               self->total_bytes += file->size;
               self->total_files++;
@@ -2212,7 +2218,10 @@ download_sync (GogSyncJob *job, GError **error)
       for (guint f = item->files->len; f > 0; f--)
         {
           GogSyncFile *file = g_ptr_array_index (item->files, f - 1);
-          if (g_hash_table_contains (state.completed, file->filename))
+          /* lgogdownloader names files without their game; a name two
+           * games share that both finished and failed stays listed. */
+          if (g_hash_table_contains (state.completed, file->filename) &&
+              !g_hash_table_contains (state.failed, file->filename))
             g_ptr_array_remove_index (item->files, f - 1);
         }
       item->n_files = item->files->len;

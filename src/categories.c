@@ -273,7 +273,7 @@ gog_categories_forget (void)
 GStrv
 gog_categories_parse (const char *json)
 {
-  json_object *root = json ? json_tokener_parse (json) : NULL;
+  json_object *root = json ? ju_parse_string (json) : NULL;
   if (!root || !json_object_is_type (root, json_type_object))
     {
       if (root)
@@ -476,7 +476,7 @@ add_requirements (GogStoreInfo *info, json_object *systems)
 GogStoreInfo *
 gog_store_info_parse (const char *json)
 {
-  json_object *root = json ? json_tokener_parse (json) : NULL;
+  json_object *root = json ? ju_parse_string (json) : NULL;
   json_object *e = ju_get_obj (root, "_embedded");
   if (!root || !json_object_is_type (root, json_type_object) || !e)
     {

@@ -97,7 +97,10 @@ show_done (LoginCtx *ctx, const char *icon, const char *title, const char *text,
 {
   adw_status_page_set_icon_name (ctx->done_page, icon);
   adw_status_page_set_title (ctx->done_page, title);
-  adw_status_page_set_description (ctx->done_page, text);
+  /* The description is markup; error messages hold paths. */
+  gchar *escaped = text ? g_markup_escape_text (text, -1) : NULL;
+  adw_status_page_set_description (ctx->done_page, escaped);
+  g_free (escaped);
   /* A spinner while logging in, unless motion is turned down: then the
    * title says it. */
   gboolean animate = TRUE;
@@ -412,6 +415,8 @@ on_load_failed (WebKitWebView *view, WebKitLoadEvent event, const char *uri, GEr
   (void) view;
   (void) event;
   LoginCtx *ctx = user_data;
+  if (ctx->gone)
+    return FALSE;
   /* An ignored navigation (the final address) ends the load like this too. */
   if (ctx->submitted || (uri && g_str_has_prefix (uri, SUCCESS_PREFIX)) ||
       g_error_matches (error, WEBKIT_POLICY_ERROR, WEBKIT_POLICY_ERROR_FRAME_LOAD_INTERRUPTED_BY_POLICY_CHANGE))
@@ -498,6 +503,9 @@ on_destroy (GtkWidget *window, gpointer user_data)
   (void) window;
   LoginCtx *ctx = user_data;
   ctx->gone = TRUE;
+  /* The view may outlive ctx (its idle drop is still pending). */
+  if (ctx->web_view)
+    g_signal_handlers_disconnect_by_data (ctx->web_view, ctx);
   g_cancellable_cancel (ctx->cancellable);
   /* A login left half way must not linger, waiting for an address. */
   if (ctx->proc)

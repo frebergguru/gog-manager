@@ -7,6 +7,7 @@
 #include <json-c/json.h>
 #include <glib/gstdio.h>
 #include <errno.h>
+#include <unistd.h>
 
 /* Directory the app is running from. For an AppImage the executing binary
  * lives inside the mounted image, so the real on-disk location is given by the
@@ -81,14 +82,22 @@ migrate_app_files (const char *old_dir, const char *new_dir)
   G_UNLOCK (migrate);
 }
 
-/* The config folder, created (and older files moved into it) if needed. */
+/* The config folder, created (and older files moved into it) if needed.
+ * When the app's folder is not writable (a system install in /usr/bin), the
+ * files go to $XDG_CONFIG_HOME/gog-manager instead. */
 static gchar *
 config_dir (void)
 {
   gchar *app = app_dir ();
   gchar *dir = g_build_filename (app, CONFIG_SUBDIR, NULL);
-  if (g_mkdir_with_parents (dir, 0700) == 0)
+  if (g_mkdir_with_parents (dir, 0700) == 0 && g_access (dir, W_OK) == 0)
     migrate_app_files (app, dir);
+  else
+    {
+      g_free (dir);
+      dir = g_build_filename (g_get_user_config_dir (), "gog-manager", NULL);
+      g_mkdir_with_parents (dir, 0700);
+    }
   g_free (app);
   return dir;
 }
@@ -352,6 +361,25 @@ gog_state_update_from_game (GogState *state, GogGame *game)
   gint64 *hkey = g_new (gint64, 1);
   *hkey = id;
   g_hash_table_insert (state->by_id, hkey, rec);
+}
+
+GStrv
+gog_state_dup_install_paths (GogState *state)
+{
+  GPtrArray *paths = g_ptr_array_new ();
+  json_object *games = ju_get_obj (state->root, "games");
+  if (games)
+    {
+      json_object_object_foreach (games, key, rec)
+        {
+          (void) key;
+          const char *path = ju_get_string (rec, "install_path", NULL);
+          if (path && *path)
+            g_ptr_array_add (paths, g_strdup (path));
+        }
+    }
+  g_ptr_array_add (paths, NULL);
+  return (GStrv) g_ptr_array_free (paths, FALSE);
 }
 
 void

@@ -419,6 +419,8 @@ add_language_row (GameRow *game, const char *title)
 
   game->language_row = ADW_ACTION_ROW (adw_action_row_new ());
   adw_preferences_row_set_title (ADW_PREFERENCES_ROW (game->language_row), "Languages");
+  /* The subtitle can name Wikidata's developers: text, not markup. */
+  adw_preferences_row_set_use_markup (ADW_PREFERENCES_ROW (game->language_row), FALSE);
 
   GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
   gtk_widget_set_margin_start (box, 6);
@@ -816,6 +818,13 @@ typedef struct
 } FailuresAsk;
 
 static void
+failures_ask_free (FailuresAsk *ask)
+{
+  g_ptr_array_unref (ask->failures);
+  g_free (ask);
+}
+
+static void
 on_failures_response (const char *response, gpointer user_data)
 {
   FailuresAsk *ask = user_data;
@@ -833,8 +842,6 @@ on_failures_response (const char *response, gpointer user_data)
     }
   else
     append_log_line (ctx, "The files that failed stay in the list, to try again later.");
-  g_ptr_array_unref (ask->failures);
-  g_free (ask);
 }
 
 /* Lists the files that failed and why, and asks whether to keep them for
@@ -866,6 +873,8 @@ ask_about_failures (SyncCtx *ctx, GPtrArray *failures)
   FailuresAsk *ask = g_new0 (FailuresAsk, 1);
   ask->ctx = ctx;
   ask->failures = g_ptr_array_ref (failures);
+  /* Freed with the alert, also when it goes with the sync window. */
+  gog_alert_set_user_data_free (alert, (GDestroyNotify) failures_ask_free);
   /* No announce(): screen readers read a new window's description as it
    * opens, and announcing while an alert opened crashed GTK 4.22. */
   gog_alert_present (alert, ctx->window, on_failures_response, ask);
@@ -1061,6 +1070,9 @@ chosen_requests (SyncCtx *ctx, guint64 *bytes)
       /* Results from before files were listed have no parts to choose. */
       if (game->item->files->len == 0)
         r.parts = GOG_SYNC_PART_ALL;
+      /* Switched off since the check: they won't be downloaded. */
+      if (!gog_sync_get_include_patches ())
+        r.parts &= ~GOG_SYNC_PART_PATCH;
       if (!gtk_check_button_get_active (game->check) || !r.parts)
         continue;
       g_array_append_val (requests, r);
