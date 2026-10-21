@@ -18,6 +18,11 @@ G_BEGIN_DECLS
 gboolean gog_fetch_files (const char *const *urls, const char *const *dests, guint n, int *codes,
                           gchar **curl_error, GError **error);
 
+/* This system's CA certificates. A libcurl built elsewhere (the AppImage's,
+ * and the bundled lgogdownloader's) may look for them where this system has
+ * none, so it is told. NULL if none of the usual places has them. */
+const char *gog_fetch_ca_bundle (void);
+
 /* Removes a folder and the files in it (not subfolders). */
 void gog_fetch_remove_dir (const char *dir);
 

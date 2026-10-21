@@ -218,69 +218,6 @@ const char *gog_sync_job_get_summary (GogSyncJob *self);
 /* That text from --repair output. Exposed for tests. Transfer full. */
 gchar *gog_sync_describe_repair (const char *output);
 
-/* ---- Galaxy cloud saves ----
- *
- * lgogdownloader's --galaxy-show-cloud-saves, --galaxy-download-cloud-saves
- * and --galaxy-upload-cloud-saves for a Windows game installed in a Wine or
- * Proton prefix (lgogdownloader has them for Windows builds only). Three
- * things in lgogdownloader 3.19 are worked around:
- *   - a run saves the game's own login over lgogdownloader's GOG Galaxy one,
- *     after which cloud saves fail for every other game: the jobs run it
- *     with a private copy of its login (XDG_CONFIG_HOME), thrown away after;
- *   - its download skips the files that are newer on GOG and fetches the
- *     ones that are newer here: downloads ask for the files to fetch by name
- *     (--cloud-force --cloud-whitelist), worked out from the listing;
- *   - it looks for "Save Games" where Wine has "Saved Games": a link is made.
- * The location of each save comes from GOG, with <?INSTALL?> the game's
- * install folder. */
-
-typedef enum
-{
-  GOG_CLOUD_SHOW,     /* list the saves on GOG */
-  GOG_CLOUD_DOWNLOAD, /* fetch the files asked for, then list */
-  GOG_CLOUD_UPLOAD,   /* send the saves that are newer here or only here, then list */
-} GogCloudAction;
-
-typedef enum
-{
-  GOG_CLOUD_FILE_ONLY_ON_GOG,  /* not here */
-  GOG_CLOUD_FILE_NOT_NEWER,    /* here, as old as GOG's copy or older */
-  GOG_CLOUD_FILE_NEWER_HERE,   /* here, changed since GOG's copy */
-  GOG_CLOUD_FILE_LARGER_HERE,  /* here, bigger than GOG's copy (lgogdownloader calls it an
-                                * unfinished download; it may be a newer save) */
-} GogCloudFileState;
-
-typedef struct
-{
-  gchar *path; /* GOG's name for it: "<location>/<path under it>" */
-  GogCloudFileState state;
-} GogCloudFile;
-
-void gog_cloud_file_free (GogCloudFile *file);
-
-/* The user name a prefix has its folders under: Proton's is always
- * "steamuser", Wine's the login name. Transfer none. */
-const char *gog_sync_cloud_wine_user (gboolean proton);
-
-/* A cloud-save job for product_id installed in install_dir, with its
- * prefix's root (drive_c's parent) wine_root. paths are the files to fetch
- * for GOG_CLOUD_DOWNLOAD (GogCloudFile.path), NULL otherwise. */
-GogSyncJob *gog_sync_job_new_cloud (GogCloudAction action, gint64 product_id,
-                                    const char *install_dir, const char *wine_root,
-                                    const char *wine_user, const char *const *paths);
-
-/* After a cloud job: what is on GOG, sorted by path (GogCloudFile*, owned by
- * the job); NULL before. */
-GPtrArray *gog_sync_job_get_cloud_files (GogSyncJob *self);
-
-/* The first Gen 2 build's id in --galaxy-show-builds output; NULL when
- * there is none. Exposed for tests. Transfer full. */
-gchar *gog_sync_cloud_parse_builds (const char *output);
-
-/* The files in --galaxy-show-cloud-saves output ("<path> :: <state>"),
- * sorted by path. Exposed for tests. Element type: GogCloudFile*. */
-GPtrArray *gog_sync_cloud_parse_list (const char *output);
-
 /* Signals (all emitted on the main-loop thread):
  *   "progress" (gdouble fraction, gchar *message) — fraction -1 when unknown.
  *     While downloading, the fraction is of all the bytes to download.

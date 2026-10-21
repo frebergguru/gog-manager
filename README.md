@@ -75,14 +75,15 @@ login. GOG Manager can show GOG's login page for it.
   paste the address. The button shows when lgogdownloader is logged in.
 - **Check Files** — a downloaded game's page can compare its files with GOG's
   checksums (lgogdownloader `--repair`) and download damaged parts again.
-- **Cloud Saves** — a Windows game installed with Wine or Proton can share
-  its saves with GOG Galaxy's cloud (lgogdownloader
-  `--galaxy-show/download/upload-cloud-saves`), for other computers and
-  GOG Galaxy on Windows. The window lists the saves on GOG and which are
-  only there or newer here; Download and Upload never replace a newer save,
-  and **Replace with GOG's** asks first. lgogdownloader runs with a private
-  copy of its login, because a cloud-save run otherwise leaves it with a
-  login that only works for that one game.
+- **Cloud Saves** — a Windows game installed with Wine or Proton shares its
+  saves with GOG Galaxy's cloud, for other computers and GOG Galaxy on
+  Windows. GOG Manager does it itself, the way Galaxy does: it finds the
+  game's save folders in its prefix from what GOG says, and lists every save
+  as the same, only on GOG, only here, newer on GOG or newer here. **Sync**
+  downloads what is newer on GOG and uploads what is newer here, never
+  replacing a newer save; **Replace with GOG's** asks first and copies the
+  saves it replaces to `cloud-save-backups/` in the config folder. It uses
+  lgogdownloader's GOG login (only reads it) for a login of the game's own.
 - **Download languages** — by default each game's original language (looked
   up on Wikidata) plus the languages ticked under **Also Download** in
   Preferences; each game can have its own choice.
@@ -159,7 +160,8 @@ login. GOG Manager can show GOG's login page for it.
 - A C compiler with C17 support (GCC or Clang)
 - [Meson](https://mesonbuild.com/) and [Ninja](https://ninja-build.org/)
 - GTK 4 ≥ 4.10 (`gtk4`), libadwaita ≥ 1.6 (`libadwaita-1`), GLib/GIO (`gio-2.0`),
-  and [json-c](https://github.com/json-c/json-c) — with their development headers
+  [json-c](https://github.com/json-c/json-c) and libcurl (`libcurl`) — with their
+  development headers
 - Optional: WebKitGTK 6.0 (`webkitgtk-6.0`), to show GOG's login page inside
   GOG Manager (`-Dwebkit=enabled` to require it; the AppImage always has it)
 
@@ -388,6 +390,7 @@ Files an older version kept directly next to the executable are moved into
 | `<config dir>/gog-manager-categories.json` | GOG's store details per game: categories, features, tags, languages, requirements, age ratings, editions |
 | `<config dir>/gog-manager-original-languages.json` | Each game's original language (from Wikidata), for the default download languages |
 | `<config dir>/gog-manager-gamesdb.json` | Details from GOG's games database (summary, genres, developers, themes, rating, screenshot and video links...) |
+| `<config dir>/cloud-save-backups/<id>/` | Saves replaced by a cloud-save download, the last ten times for each game |
 | `<config dir>/gamesdb-images/` | Box art, backgrounds and the screenshots you have looked at, from GOG's games database |
 | `$XDG_DATA_HOME/gog-manager/proton/<tag>/` | Downloaded GE-Proton builds |
 | `$XDG_DATA_HOME/applications/gog-manager-<id>.desktop` | Applications menu entries you added |
@@ -417,6 +420,7 @@ src/
 ├── runner.{c,h}           Wine/Proton discovery and command building
 ├── installer_engine.{c,h} Install/uninstall jobs (async, with progress)
 ├── launch.{c,h}           Launching installed games, play sessions, play.sh
+├── cloud_saves.{c,h}      GOG Galaxy cloud saves (libcurl)
 ├── recommend.{c,h}        For You: continue playing, recommendations, what to play next
 ├── shortcut.{c,h}         Applications menu entries
 ├── proton_fetch.{c,h}     GE-Proton downloader and build management
@@ -435,7 +439,7 @@ src/
     ├── gog_sync_dialog.{c,h}      New Games and Updates on GOG (download window)
     ├── login_dialog.{c,h}         Log In to GOG (WebKit page or web browser)
     ├── repair_dialog.{c,h}        Check Files (lgogdownloader --repair)
-    ├── cloud_saves_dialog.{c,h}   Cloud Saves (GOG Galaxy cloud, through lgogdownloader)
+    ├── cloud_saves_dialog.{c,h}   Cloud Saves window
     ├── for_you.{c,h}              For You page
     ├── preferences_dialog.{c,h}   Preferences (Library, Runners, Downloads)
     ├── proton_fetch_dialog.{c,h}  GE-Proton download
@@ -447,7 +451,8 @@ tests/                     Unit tests (json-util and GOG's HTML text, runner
                            lgogdownloader output parsing, uninstall protection,
                            config folder, play.sh, categories and store
                            details, games database, menu entries, play
-                           sessions and history, recommendations)
+                           sessions and history, recommendations, cloud
+                           saves)
 
 packaging/
 ├── build-appimage.sh      Builds the AppImage (bundles lgogdownloader and WebKitGTK)

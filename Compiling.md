@@ -19,6 +19,7 @@ dependencies, compiling, running, and installing.
 | **libadwaita 1** (`libadwaita-1`) ≥ 1.6 | GNOME/Adwaita widgets |
 | **GLib / GIO** (`gio-2.0`) | Core object system, async I/O |
 | **json-c** | Parsing GOG `.info` manifests and config files |
+| **libcurl** (`libcurl`) | GOG Galaxy cloud saves |
 | `glib-compile-resources` | Bundles CSS/icons (ships with GLib) |
 | *Optional:* **WebKitGTK 6.0** (`webkitgtk-6.0`) | GOG's login page inside GOG Manager; without it the login opens in the web browser. `-Dwebkit=enabled` requires it, `-Dwebkit=disabled` leaves it out |
 
@@ -40,7 +41,7 @@ dependencies, compiling, running, and installing.
 
 ```sh
 sudo pacman -S --needed base-devel meson ninja pkgconf \
-    gtk4 libadwaita json-c webkitgtk-6.0
+    gtk4 libadwaita json-c curl webkitgtk-6.0
 ```
 
 ### Debian / Ubuntu
@@ -50,14 +51,14 @@ are too old; Ubuntu 25.04 or Debian 13 work.
 
 ```sh
 sudo apt install build-essential meson ninja-build pkg-config \
-    libgtk-4-dev libadwaita-1-dev libjson-c-dev libwebkitgtk-6.0-dev
+    libgtk-4-dev libadwaita-1-dev libjson-c-dev libcurl4-openssl-dev libwebkitgtk-6.0-dev
 ```
 
 ### Fedora
 
 ```sh
 sudo dnf install gcc meson ninja-build pkgconf-pkg-config \
-    gtk4-devel libadwaita-devel json-c-devel webkitgtk6.0-devel
+    gtk4-devel libadwaita-devel json-c-devel libcurl-devel webkitgtk6.0-devel
 ```
 
 Runtime helpers, if you want the Windows-game and GE-Proton features:

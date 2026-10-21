@@ -6,11 +6,11 @@
 #include "original_language.h"
 #include "config.h"
 #include "json_util.h"
+#include "fetch.h"
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
 #include <glib/gstdio.h>
-#include <unistd.h>
 
 /* The lgogdownloader to run: see lgog_program(). */
 #define LGOG ((gchar *) lgog_program ())
@@ -74,24 +74,6 @@ lgog_program (void)
   return bundled_lgog ? bundled_lgog : "lgogdownloader";
 }
 
-/* The bundled lgogdownloader's libcurl was built elsewhere and may look for
- * the CA certificates where this system has none, so it is told where they
- * are. NULL if none of the usual places has them. */
-static const char *
-ca_bundle (void)
-{
-  static const char *const places[] = {
-    "/etc/ssl/certs/ca-certificates.crt", /* Debian, Ubuntu, Arch */
-    "/etc/pki/tls/certs/ca-bundle.crt",   /* Fedora, RHEL */
-    "/etc/ssl/ca-bundle.pem",             /* openSUSE */
-    "/etc/ssl/cert.pem",                  /* Alpine, Void, others */
-  };
-  for (guint i = 0; i < G_N_ELEMENTS (places); i++)
-    if (g_file_test (places[i], G_FILE_TEST_IS_REGULAR))
-      return places[i];
-  return NULL;
-}
-
 gboolean
 gog_sync_is_available (void)
 {
@@ -117,7 +99,7 @@ gog_sync_lgog_argv (const char *const *args)
   g_ptr_array_add (argv, (gpointer) lgog_program ());
   for (const char *const *a = args; a && *a; a++)
     g_ptr_array_add (argv, (gpointer) *a);
-  const char *ca = bundled_lgog ? ca_bundle () : NULL;
+  const char *ca = bundled_lgog ? gog_fetch_ca_bundle () : NULL;
   if (ca)
     {
       g_ptr_array_add (argv, (gpointer) "--cacert");
@@ -1002,7 +984,6 @@ typedef enum
   JOB_CHECK,
   JOB_DOWNLOAD,
   JOB_REPAIR,
-  JOB_CLOUD,
 } JobKind;
 
 struct _GogSyncJob
@@ -1020,14 +1001,6 @@ struct _GogSyncJob
   GPtrArray *failures; /* GogSyncFailure*, after a download */
   gchar *repair_game;  /* repair only */
   gchar *summary;      /* after a repair */
-  GogCloudAction cloud_action; /* cloud only, as are the rest of these */
-  gint64 cloud_product;
-  gchar *cloud_install_dir;
-  gchar *cloud_wine_root;
-  gchar *cloud_wine_user;
-  GStrv cloud_paths;      /* files to download */
-  GPtrArray *cloud_files; /* GogCloudFile*, after the job */
-  gchar *config_home;     /* XDG_CONFIG_HOME for lgogdownloader, NULL for the usual */
   GPtrArray *items;   /* check result */
   GStrv only_games;   /* check only these, NULL for all */
   gboolean quick;          /* check only what GOG flags as updated or new */
@@ -1065,13 +1038,6 @@ gog_sync_job_finalize (GObject *object)
   g_free (self->library_dir);
   g_free (self->repair_game);
   g_free (self->summary);
-  g_free (self->cloud_install_dir);
-  g_free (self->cloud_wine_root);
-  g_free (self->cloud_wine_user);
-  g_strfreev (self->cloud_paths);
-  if (self->cloud_files)
-    g_ptr_array_unref (self->cloud_files);
-  g_free (self->config_home);
   g_strfreev (self->only_games);
   if (self->requests)
     {
@@ -1374,7 +1340,7 @@ with_job_options (GogSyncJob *job, gchar **argv, gchar *rate)
       download = download || g_str_equal (*a, "--download");
     }
   gboolean login = argv[1] && g_str_equal (argv[1], "--check-login-status");
-  const char *ca = bundled_lgog && g_str_equal (argv[0], bundled_lgog) ? ca_bundle () : NULL;
+  const char *ca = bundled_lgog && g_str_equal (argv[0], bundled_lgog) ? gog_fetch_ca_bundle () : NULL;
   if (ca)
     {
       g_ptr_array_add (full, (gpointer) "--cacert");
@@ -1410,10 +1376,6 @@ run_streaming (GogSyncJob *job, gchar **plain_argv, LineFunc on_line, gpointer d
   g_subprocess_launcher_setenv (launcher, "TERM", "dumb", TRUE);
   if (gog_config_launch_dir ())
     g_subprocess_launcher_set_cwd (launcher, gog_config_launch_dir ());
-  if (job->config_home)
-    g_subprocess_launcher_setenv (launcher, "XDG_CONFIG_HOME", job->config_home, TRUE);
-  if (job->cloud_wine_user)
-    g_subprocess_launcher_setenv (launcher, "USER", job->cloud_wine_user, TRUE);
   GSubprocess *proc = g_subprocess_launcher_spawnv (launcher, (const gchar *const *) argv, error);
   g_object_unref (launcher);
   if (!proc)
@@ -2384,350 +2346,6 @@ repair_sync (GogSyncJob *job, GError **error)
   return ok;
 }
 
-/* ---- Galaxy cloud saves ---- */
-
-/* The client lgogdownloader logs in to GOG Galaxy as. */
-#define GALAXY_CLIENT_ID "46899977096215655"
-
-void
-gog_cloud_file_free (GogCloudFile *file)
-{
-  if (!file)
-    return;
-  g_free (file->path);
-  g_free (file);
-}
-
-const char *
-gog_sync_cloud_wine_user (gboolean proton)
-{
-  return proton ? "steamuser" : g_get_user_name ();
-}
-
-GogSyncJob *
-gog_sync_job_new_cloud (GogCloudAction action, gint64 product_id, const char *install_dir,
-                        const char *wine_root, const char *wine_user, const char *const *paths)
-{
-  GogSyncJob *self = g_object_new (GOG_TYPE_SYNC_JOB, NULL);
-  self->kind = JOB_CLOUD;
-  self->cloud_action = action;
-  self->cloud_product = product_id;
-  self->cloud_install_dir = g_strdup (install_dir);
-  self->cloud_wine_root = g_strdup (wine_root);
-  self->cloud_wine_user = g_strdup (wine_user);
-  self->cloud_paths = g_strdupv ((gchar **) paths);
-  return self;
-}
-
-GPtrArray *
-gog_sync_job_get_cloud_files (GogSyncJob *self)
-{
-  return self->cloud_files;
-}
-
-gchar *
-gog_sync_cloud_parse_builds (const char *output)
-{
-  gchar **lines = g_strsplit_set (output ? output : "", "\r\n", -1);
-  gchar *id = NULL;
-  for (gchar **l = lines; *l && !id; l++)
-    {
-      const char *p = strstr (*l, "(Build id: ");
-      if (!strstr (*l, "(Gen 2)") || !p)
-        continue;
-      p += strlen ("(Build id: ");
-      gsize n = strspn (p, "0123456789");
-      if (n > 0 && p[n] == ')')
-        id = g_strndup (p, n);
-    }
-  g_strfreev (lines);
-  return id;
-}
-
-static gint
-compare_cloud_files (gconstpointer a, gconstpointer b)
-{
-  const GogCloudFile *fa = *(GogCloudFile *const *) a;
-  const GogCloudFile *fb = *(GogCloudFile *const *) b;
-  return g_strcmp0 (fa->path, fb->path);
-}
-
-GPtrArray *
-gog_sync_cloud_parse_list (const char *output)
-{
-  static const struct
-  {
-    const char *text;
-    GogCloudFileState state;
-  } states[] = {
-    { "Isn't downloaded yet", GOG_CLOUD_FILE_ONLY_ON_GOG },
-    { "Already up to date", GOG_CLOUD_FILE_NOT_NEWER },
-    { "Out of date", GOG_CLOUD_FILE_NEWER_HERE },
-    { "not yet completed download", GOG_CLOUD_FILE_LARGER_HERE },
-  };
-  GPtrArray *files = g_ptr_array_new_with_free_func ((GDestroyNotify) gog_cloud_file_free);
-  gchar **lines = g_strsplit_set (output ? output : "", "\r\n", -1);
-  for (gchar **l = lines; *l; l++)
-    {
-      const char *sep = g_strrstr (*l, " :: ");
-      if (!sep || sep == *l)
-        continue;
-      for (guint i = 0; i < G_N_ELEMENTS (states); i++)
-        if (g_str_equal (g_strstrip ((gchar *) sep + 4), states[i].text))
-          {
-            GogCloudFile *file = g_new0 (GogCloudFile, 1);
-            file->path = g_strndup (*l, sep - *l);
-            file->state = states[i].state;
-            g_ptr_array_add (files, file);
-            break;
-          }
-    }
-  g_strfreev (lines);
-  g_ptr_array_sort (files, compare_cloud_files);
-  return files;
-}
-
-/* Removes dir and everything in it. */
-static void
-remove_tree (const char *dir)
-{
-  GDir *d = g_dir_open (dir, 0, NULL);
-  if (d)
-    {
-      const char *name;
-      while ((name = g_dir_read_name (d)))
-        {
-          gchar *path = g_build_filename (dir, name, NULL);
-          if (g_file_test (path, G_FILE_TEST_IS_DIR) && !g_file_test (path, G_FILE_TEST_IS_SYMLINK))
-            remove_tree (path);
-          else
-            g_unlink (path);
-          g_free (path);
-        }
-      g_dir_close (d);
-    }
-  g_rmdir (dir);
-}
-
-/* A private copy of lgogdownloader's login, for a run that would otherwise
- * save a game's login over it. NULL with error set when there is no Galaxy
- * login to copy, or it is already a game's. Transfer full: remove_tree() it. */
-static gchar *
-private_login_copy (GogSyncJob *job, GError **error)
-{
-  gchar *real = g_build_filename (g_get_user_config_dir (), "lgogdownloader", NULL);
-  gchar *tokens_path = g_build_filename (real, "galaxy_tokens.json", NULL);
-  gchar *tokens = NULL;
-  gsize tokens_len = 0;
-  gboolean have = g_file_get_contents (tokens_path, &tokens, &tokens_len, NULL);
-  json_object *root = have ? ju_parse_string (tokens) : NULL;
-  gboolean galaxy = root && g_strcmp0 (ju_get_string (root, "client_id", NULL), GALAXY_CLIENT_ID) == 0;
-  if (root)
-    json_object_put (root);
-  g_free (tokens_path);
-  if (!galaxy)
-    {
-      job->needs_login = TRUE;
-      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,
-                           have ? "lgogdownloader's GOG login only works for one game now: a "
-                                  "cloud-save run of lgogdownloader itself (not through GOG "
-                                  "Manager) replaces it like that. Log in to GOG again with "
-                                  "\"Log In to GOG\", and try again."
-                                : "lgogdownloader has no GOG Galaxy login. Log in with \"Log In "
-                                  "to GOG\", and try again.");
-      g_free (tokens);
-      g_free (real);
-      return NULL;
-    }
-
-  gchar *home = g_build_filename (g_get_user_runtime_dir (), "gog-manager-cloud-XXXXXX", NULL);
-  gboolean ok = g_mkdtemp_full (home, 0700) != NULL;
-  gchar *copy = g_build_filename (home, "lgogdownloader", NULL);
-  ok = ok && g_mkdir (copy, 0700) == 0;
-  gchar *dest = g_build_filename (copy, "galaxy_tokens.json", NULL);
-  ok = ok && g_file_set_contents_full (dest, tokens, tokens_len, G_FILE_SET_CONTENTS_NONE, 0600,
-                                       error);
-  g_free (dest);
-  g_free (tokens);
-
-  /* The website login, which lgogdownloader also wants. */
-  gchar *cookies_path = g_build_filename (real, "cookies.txt", NULL);
-  gchar *cookies = NULL;
-  gsize cookies_len = 0;
-  if (ok && g_file_get_contents (cookies_path, &cookies, &cookies_len, NULL))
-    {
-      dest = g_build_filename (copy, "cookies.txt", NULL);
-      ok = g_file_set_contents_full (dest, cookies, cookies_len, G_FILE_SET_CONTENTS_NONE, 0600,
-                                     error);
-      g_free (dest);
-      g_free (cookies);
-    }
-  g_free (cookies_path);
-  g_free (copy);
-  g_free (real);
-  if (!ok)
-    {
-      if (error && !*error)
-        g_set_error (error, G_IO_ERROR, g_io_error_from_errno (errno),
-                     "Could not make a folder for lgogdownloader's login: %s", g_strerror (errno));
-      remove_tree (home);
-      g_free (home);
-      return NULL;
-    }
-  return home;
-}
-
-/* lgogdownloader puts <?SAVED_GAMES?> in "Save Games", Wine has it in
- * "Saved Games": the one is made a link to the other. */
-static void
-link_saved_games (const char *wine_root, const char *user)
-{
-  gchar *profile = g_build_filename (wine_root, "drive_c", "users", user, NULL);
-  gchar *saved = g_build_filename (profile, "Saved Games", NULL);
-  gchar *link = g_build_filename (profile, "Save Games", NULL);
-  if (g_file_test (profile, G_FILE_TEST_IS_DIR) && !g_file_test (link, G_FILE_TEST_EXISTS) &&
-      !g_file_test (link, G_FILE_TEST_IS_SYMLINK) && g_mkdir_with_parents (saved, 0755) == 0 &&
-      symlink ("Saved Games", link) != 0)
-    g_warning ("Could not link %s to Saved Games: %s", link, g_strerror (errno));
-  g_free (link);
-  g_free (saved);
-  g_free (profile);
-}
-
-/* Readable reasons for what lgogdownloader prints when it can't go on. */
-static gboolean
-cloud_output_error (const char *output, GError **error)
-{
-  static const struct
-  {
-    const char *text;
-    const char *message;
-  } known[] = {
-    { "Only generation 2 builds are supported",
-      "This game has no GOG Galaxy build, so GOG keeps no cloud saves for it." },
-    { "No cloud save locations found", "GOG keeps no cloud saves for this game." },
-    { "Cloud saves not supported for this game", "GOG keeps no cloud saves for this game." },
-    { "Couldn't refresh login",
-      "GOG did not accept the login for this game's cloud saves. Log in to GOG again with \"Log "
-      "In to GOG\", and try again." },
-  };
-  for (guint i = 0; i < G_N_ELEMENTS (known); i++)
-    if (strstr (output, known[i].text))
-      {
-        g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED, known[i].message);
-        return TRUE;
-      }
-  return FALSE;
-}
-
-static void
-cloud_line (GogSyncJob *job, const char *line, gboolean by_cr, gpointer data)
-{
-  GString *collected = data;
-  g_string_append (collected, line);
-  g_string_append_c (collected, '\n');
-  if (!by_cr)
-    job_log (job, line);
-}
-
-/* Runs one cloud command against the game; FALSE with a readable error when
- * lgogdownloader couldn't do it. */
-static gboolean
-run_cloud (GogSyncJob *job, const char *option, const char *selector, gboolean force,
-           GString *out, GError **error)
-{
-  GPtrArray *argv = g_ptr_array_new ();
-  g_ptr_array_add (argv, LGOG);
-  g_ptr_array_add (argv, (gpointer) option);
-  g_ptr_array_add (argv, (gpointer) selector);
-  g_ptr_array_add (argv, "--wine-prefix");
-  g_ptr_array_add (argv, job->cloud_wine_root);
-  g_ptr_array_add (argv, "--directory");
-  g_ptr_array_add (argv, job->cloud_install_dir);
-  g_ptr_array_add (argv, "--no-subdirectories");
-  if (force)
-    {
-      g_ptr_array_add (argv, "--cloud-force");
-      g_ptr_array_add (argv, "--cloud-whitelist");
-      for (gchar **p = job->cloud_paths; p && *p; p++)
-        g_ptr_array_add (argv, *p);
-    }
-  g_ptr_array_add (argv, NULL);
-  gboolean ok = run_streaming (job, (gchar **) argv->pdata, cloud_line, out, error);
-  g_ptr_array_unref (argv);
-  if (ok && cloud_output_error (out->str, error))
-    {
-      ok = FALSE;
-      job->needs_login = strstr (out->str, "Couldn't refresh login") != NULL;
-    }
-  return ok;
-}
-
-static gboolean
-cloud_sync (GogSyncJob *job, GError **error)
-{
-  job_progress (job, -1, "Checking the GOG login…");
-  /* With lgogdownloader's own login, which it renews and saves if it has
-   * run out; the private copy below is then new enough not to be renewed,
-   * which would make the saved one useless. */
-  if (!check_login (job, error))
-    return FALSE;
-  job->config_home = private_login_copy (job, error);
-  if (!job->config_home)
-    return FALSE;
-  link_saved_games (job->cloud_wine_root, job->cloud_wine_user);
-
-  gboolean ok = TRUE;
-  gchar *id = g_strdup_printf ("%" G_GINT64_FORMAT, job->cloud_product);
-  gchar *selector = NULL;
-  job_progress (job, -1, "Finding the game's GOG Galaxy build…");
-  gchar *argv[] = { LGOG, "--galaxy-show-builds", id, NULL };
-  GString *out = g_string_new (NULL);
-  ok = run_streaming (job, argv, cloud_line, out, error);
-  if (ok)
-    {
-      gchar *build = gog_sync_cloud_parse_builds (out->str);
-      if (build)
-        selector = g_strdup_printf ("%s/%s", id, build);
-      else
-        {
-          ok = FALSE;
-          g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
-                               "This game has no GOG Galaxy build, so GOG keeps no cloud saves "
-                               "for it.");
-        }
-      g_free (build);
-    }
-
-  if (ok && job->cloud_action == GOG_CLOUD_DOWNLOAD && job->cloud_paths && *job->cloud_paths)
-    {
-      job_progress (job, -1, "Downloading saves from GOG…");
-      g_string_truncate (out, 0);
-      ok = run_cloud (job, "--galaxy-download-cloud-saves", selector, TRUE, out, error);
-    }
-  else if (ok && job->cloud_action == GOG_CLOUD_UPLOAD)
-    {
-      job_progress (job, -1, "Uploading saves to GOG…");
-      g_string_truncate (out, 0);
-      ok = run_cloud (job, "--galaxy-upload-cloud-saves", selector, FALSE, out, error);
-    }
-
-  if (ok)
-    {
-      job_progress (job, -1, "Listing the saves on GOG…");
-      g_string_truncate (out, 0);
-      ok = run_cloud (job, "--galaxy-show-cloud-saves", selector, FALSE, out, error);
-      if (ok)
-        job->cloud_files = gog_sync_cloud_parse_list (out->str);
-    }
-
-  g_string_free (out, TRUE);
-  g_free (selector);
-  g_free (id);
-  remove_tree (job->config_home);
-  return ok;
-}
-
 static gpointer
 job_thread_func (gpointer data)
 {
@@ -2735,7 +2353,6 @@ job_thread_func (gpointer data)
   GError *error = NULL;
   gboolean ok = job->kind == JOB_CHECK    ? check_sync (job, &error)
                 : job->kind == JOB_REPAIR ? repair_sync (job, &error)
-                : job->kind == JOB_CLOUD  ? cloud_sync (job, &error)
                                           : download_sync (job, &error);
   queue_signal (job, SIG_FINISHED, 0, ok,
                 ok ? NULL : (error ? error->message : "lgogdownloader failed"));

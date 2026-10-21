@@ -8,12 +8,14 @@ All notable changes to GOG Manager are listed here. The format follows
 
 ### Added
 - **Cloud Saves** on the page of a Windows game installed with Wine or
-  Proton: lists the game's saves in GOG Galaxy's cloud and which of them
-  are only on GOG or newer here, and downloads or uploads them through
-  lgogdownloader, so they are shared with other computers and GOG Galaxy on
-  Windows. Download and Upload never replace a newer save; **Replace with
-  GOG's** overwrites the ones that differ here after asking. A **Log In to
-  GOG** button shows when the login has to be renewed.
+  Proton: the game's saves in GOG Galaxy's cloud and here, each the same,
+  only on GOG, only here, newer on GOG or newer here. **Sync** downloads
+  what is newer on GOG and uploads what is newer here, so saves are shared
+  with other computers and GOG Galaxy on Windows; it never replaces a newer
+  save. **Replace with GOG's** asks first, and the saves it replaces are
+  copied to a backup folder. GOG Manager does this itself, with
+  lgogdownloader's GOG login, which it only reads; a **Log In to GOG**
+  button shows when that login has to be renewed.
 - **Play history**: when each game was last played and for how long,
   counted from Play until the game quits, on the game page and as a
   **Last played** sort. It is kept when a game is uninstalled.
@@ -26,10 +28,6 @@ All notable changes to GOG Manager are listed here. The format follows
 ### Fixed
 - Summaries from GOG's games database that are HTML (The Witcher 3's) were
   shown with their tags on the game page.
-- lgogdownloader's own cloud-save commands save the game's login over its
-  GOG Galaxy one, after which cloud saves fail for every other game. GOG
-  Manager runs them with a private copy of the login instead, and asks for
-  a new login when an earlier run has already replaced it.
 
 ## [0.7.0] - 2026-10-21
 

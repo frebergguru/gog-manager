@@ -74,6 +74,21 @@ gog_fetch_files (const char *const *urls, const char *const *dests, guint n, int
   return ok;
 }
 
+const char *
+gog_fetch_ca_bundle (void)
+{
+  static const char *const places[] = {
+    "/etc/ssl/certs/ca-certificates.crt", /* Debian, Ubuntu, Arch */
+    "/etc/pki/tls/certs/ca-bundle.crt",   /* Fedora, RHEL */
+    "/etc/ssl/ca-bundle.pem",             /* openSUSE */
+    "/etc/ssl/cert.pem",                  /* Alpine, Void, others */
+  };
+  for (guint i = 0; i < G_N_ELEMENTS (places); i++)
+    if (g_file_test (places[i], G_FILE_TEST_IS_REGULAR))
+      return places[i];
+  return NULL;
+}
+
 void
 gog_fetch_remove_dir (const char *dir)
 {
